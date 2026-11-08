@@ -1,8 +1,8 @@
-"""NyanwHair 0.35.18 Guided Surfaces (preview)."""
+"""NyanwHair 0.35.19 Guided Surfaces (preview)."""
 bl_info = {
     'name': 'NyanwHair - Guided Surfaces',
     'author': 'NyanWake',
-    'version': (0,35,18),
+    'version': (0,35,19),
     'blender': (5,1,0),
     'location': 'View3D > Sidebar > NyanwHair',
     'description': 'Hair ribbons with neutral boundaries, regular quad strips and smart extrusion',

@@ -1772,7 +1772,7 @@ class NYANW35_OT_hair_loop(Operator):
 
 
 class NYANW35_PT_main(Panel):
-    bl_label='NyanwHair v0.35.18'
+    bl_label='NyanwHair v0.35.19'
     bl_idname='NYANW35_PT_main'
     bl_space_type='VIEW_3D'
     bl_region_type='UI'
@@ -1803,11 +1803,14 @@ class NYANW35_PT_main(Panel):
             box.label(text='Tab: Edit Mode, F: создать грань')
         else:
             box.label(text='F / M / V / Shift+D: обычный Blender')
+            # Keep the wrapped BMesh alive while any BMFace/BMLoop is read.
+            # Temporary from_edit_mesh() owners invalidate returned wrappers.
+            bm=bmesh.from_edit_mesh(obj.data)
             ui=context.window_manager.nh35_ui
             parameters=box.column()
-            parameters.enabled=bool(_zone_ui_faces(bmesh.from_edit_mesh(obj.data),obj))
+            parameters.enabled=bool(_zone_ui_faces(bm,obj))
             parameters.prop(ui,'width')
-            primary=_zone_ui_primary(bmesh.from_edit_mesh(obj.data),obj)
+            primary=_zone_ui_primary(bm,obj)
             result=_CACHE.get(obj.as_pointer(),{}).get('result')
             effective=result.effective_widths.get(primary.index) if primary is not None and result else None
             if effective is not None and effective!=ui.width:parameters.label(text='По общему краю: %d колонок'%effective)
@@ -1815,8 +1818,8 @@ class NYANW35_PT_main(Panel):
             parameters.prop(ui,'bias')
             parameters.prop(ui,'flip')
             caps_box=box.box();caps_box.label(text='Края активного сегмента')
-            face=_zone_ui_primary(bmesh.from_edit_mesh(obj.data),obj) or _active_face(bmesh.from_edit_mesh(obj.data),obj)
-            state=_read_caps(face,_boundary_layer(bmesh.from_edit_mesh(obj.data))) if face else None
+            face=_zone_ui_primary(bm,obj) or _active_face(bm,obj)
+            state=_read_caps(face,_boundary_layer(bm)) if face else None
             caps_box.label(text='Указано краёв: %d / 2'%sum(c is not None and c[0] in ('edge','point') for c in (state or (None,None))))
             if face and state:
                 loops=list(face.loops);selected={v for v in face.verts if v.select}
@@ -1838,7 +1841,7 @@ class NYANW35_PT_main(Panel):
             extrude_row=box.row();extrude_row.operator_context='INVOKE_REGION_WIN';extrude_row.operator('nyanw35.extrude',text='Умное вытягивание (E)')
             smooth=box.box()
             smooth.label(text='Сглаживание направлений',icon='CURVE_BEZCURVE')
-            mesh=bmesh.from_edit_mesh(obj.data)
+            mesh=bm
             targets=_smooth_targets(mesh,_CACHE.get(obj.as_pointer(),{}).get('result'))
             controls=smooth.row(align=True);controls.enabled=bool(targets)
             controls.prop(ui,'direction_smoothing',slider=True)
