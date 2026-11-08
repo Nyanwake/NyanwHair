@@ -1,4 +1,4 @@
-"""NyanwHair 0.35.9: face-defined zones and canonical shared boundary profiles.
+"""NyanwHair 0.35.11: inherited rail rows and local seam transitions.
 
 Pure Python, no Blender IDs or tags on vertices/edges. Blender face corners may
 store the user's chosen end caps; this module only consumes that choice.
@@ -36,6 +36,7 @@ class ZoneSettings:
     bulge: float=0.08
     bias: float=0.0
     flip: bool=False
+    order: int=0
 
 @dataclass(frozen=True)
 class FacePlan:
@@ -68,6 +69,14 @@ class MeshResult:
     orientation_by_face: dict=field(default_factory=dict)
     base_rows: int=0
     surface_grids: dict=field(default_factory=dict)
+    surface_sections: dict=field(default_factory=dict)
+    rail_samples: dict=field(default_factory=dict)
+    vertex_keys: list=field(default_factory=list)
+
+
+def _plan_priority(plan):
+    # Positive creation IDs survive save/load, face reordering and Undo.
+    return (0,plan.settings.order,plan.index) if plan.settings.order>0 else (1,plan.index,0)
 
 
 def _boundary_key(boundary):
@@ -377,83 +386,6 @@ def sample_smooth(points,path,count,evaluate,ident):
 
 
 
-def _shared_runs(plans):
-    """Maximal shared guide chains, NOT one station run per control edge.
-
-    A BMVert of degree two inside the same two-zone seam is purely a spline
-    control and must not impose an output polygon row.  Only changes in seam
-    ownership (true junctions), or the end of a zone, stop a shared run.
-    """
-    owners=defaultdict(set)
-    for plan in plans:
-        for path in (plan.left,plan.right):
-            for key in physical_edges(path):
-                owners[key].add(plan.index)
-    common={edge:tuple(sorted(group)) for edge,group in owners.items() if len(group)>=2}
-    by_pair=defaultdict(set)
-    for edge,pair in common.items():
-        by_pair[pair].add(edge)
-    chains={}
-    edge_to_chain={}
-    for pair,edges in sorted(by_pair.items()):
-        adjacency=defaultdict(list)
-        for a,b in sorted(edges):
-            adjacency[a].append(b)
-            adjacency[b].append(a)
-        pending=set(edges)
-        # The endpoints of an open shared chain must have non-2 valence in
-        # the subgraph owned by exactly this set of zones.
-        def walk(first,second):
-            seq=[first,second]
-            pending.remove(edge_key(first,second))
-            prev,cur=first,second
-            while len(adjacency[cur])==2:
-                candidates=[n for n in adjacency[cur] if n!=prev]
-                if not candidates: break
-                nxt=candidates[0]
-                key=edge_key(cur,nxt)
-                if key not in pending: break
-                pending.remove(key)
-                seq.append(nxt)
-                prev,cur=cur,nxt
-            return tuple(seq)
-        for first in sorted(adjacency):
-            if len(adjacency[first])==2: continue
-            for second in sorted(adjacency[first]):
-                if edge_key(first,second) not in pending: continue
-                sequence=walk(first,second)
-                reverse=sequence[::-1]
-                chain=min(sequence,reverse)
-                chains[chain]=chain
-                for u,v in zip(chain,chain[1:]): edge_to_chain[edge_key(u,v)]=chain
-        # Closed seams are uncommon for hair ribbons.  Keep their edges
-        # independent instead of inventing an arbitrary loop cut station.
-        while pending:
-            a,b=min(pending)
-            pending.remove((a,b))
-            chain=(a,b)
-            chains[chain]=chain
-            edge_to_chain[(a,b)]=chain
-    return chains,edge_to_chain
-
-
-def allocate_stations(points,plans,rows,previous=None):
-    """Share one station schedule per continuous seam between true junctions.
-
-    An intermediate control vertex is part of the curve geometry, not a
-    required polygon vertex. The schedule is independent of its position
-    while dragging, as long as the topology is unchanged.
-    """
-    chains,edge_to_chain=_shared_runs(plans)
-    anchored={p.index:(any(e in edge_to_chain for e in physical_edges(p.left)),
-                       any(e in edge_to_chain for e in physical_edges(p.right)))
-              for p in plans}
-    # A fixed budget per logical run is a function of topology + settings.
-    # Frozen geometry-derived counts lived only in RAM and changed on reopen.
-    counts={chain:rows for chain in chains}
-    return counts,anchored,chains,edge_to_chain
-
-
 def bias_cross_position(u,bias):
     """Symmetric width redistribution: positive toward centre, negative outward.
 
@@ -463,49 +395,6 @@ def bias_cross_position(u,bias):
     u=max(0.,min(1.,float(u)))
     exponent=2.0**max(-2.,min(2.,float(bias)))
     return .5+math.copysign(.5*(abs(2.*u-1.)**exponent),u-.5) if u!=.5 else .5
-
-
-def _sample_shared_curve(points,chain,count,evaluate):
-    return sample_smooth(points,chain,count,evaluate,('shared',chain))
-
-
-def _sample_rail(points,path,counts,rows,evaluate,edge_to_chain,shared_cache,ident):
-    """Emit seam stations identically for both owners and free stations elsewhere.
-
-    Each shared chain is sampled by arc length as a WHOLE, regardless of how
-    many intermediate Blender control vertices it contains. Private guide
-    sections are also sampled as complete uninterrupted subcurves.
-    """
-    edges=physical_edges(path)
-    if not any(e in edge_to_chain for e in edges): return None
-    result=[]
-    index=0
-    while index<len(edges):
-        chain=edge_to_chain.get(edges[index])
-        if chain is not None:
-            reverse=chain[::-1]
-            seq=path[index:index+len(chain)]
-            if tuple(seq)==chain or tuple(seq)==reverse:
-                if chain not in shared_cache:
-                    shared_cache[chain]=_sample_shared_curve(points,chain,counts[chain],evaluate)
-                sample=(shared_cache[chain] if tuple(seq)==chain
-                        else list(reversed(shared_cache[chain])))
-                index+=len(chain)-1
-            else:
-                # A face that owns only a partial chain indicates an unusual
-                # topology. Do not silently generate nonidentical seam keys.
-                raise ValueError('Общая направляющая разорвана внутри области')
-        else:
-            end=index+1
-            while end<len(edges) and edges[end] not in edge_to_chain:
-                end+=1
-            subpath=path[index:end+1]
-            budget=rows
-            sample=sample_smooth(points,subpath,budget,evaluate,(ident,index,end))
-            index=end
-        if result: sample=sample[1:]
-        result.extend(sample)
-    return result
 
 
 def plan_widths(plans):
@@ -593,7 +482,7 @@ def generate(points,boundaries,settings=None,rows=12,max_polygons=200000,
             parity=-1 if directions[(u,edge)]==directions[(v,edge)] else 1
             neighbors[u].append((v,parity)); neighbors[v].append((u,parity))
     signs={}
-    for first in sorted(by_id,key=lambda i:_boundary_key(by_id[i].boundary)):
+    for first in sorted(by_id,key=lambda i:_plan_priority(by_id[i])):
         if first in signs: continue
         signs[first]=1
         queue=[first]
@@ -607,14 +496,13 @@ def generate(points,boundaries,settings=None,rows=12,max_polygons=200000,
                 signs[j]=desired
                 queue.append(j)
     plans=[replace(p,normal=mul(p.normal,signs[p.index])) for p in plans]
-    counts,anchors,shared_chains,edge_to_chain=allocate_stations(points,plans,rows)
-    out.samples_per_edge=counts
+    from .topology import RailRegistry
     widths=plan_widths(plans)
     out.effective_widths=widths
     out.base_rows=rows
     evaluate=make_edge_evaluator(points,plans)
     cap_profiles=_cap_profiles(points,plans,widths,evaluate)
-    shared_cache={}
+    registry=RailRegistry(points,evaluate,rows)
     vertex_index={}
     produced=set()
     def put(key,pos):
@@ -622,110 +510,100 @@ def generate(points,boundaries,settings=None,rows=12,max_polygons=200000,
             vertex_index[key]=len(out.vertices)
             out.vertices.append(pos)
         return vertex_index[key]
-    for p in plans:
+    for p in sorted(plans,key=_plan_priority):
         try:
-            al,ar=anchors[p.index]
-            # Control points on a shared guide no longer introduce rows.
-            # Complete shared chains have one common arclength schedule.
-            left=_sample_rail(points,p.left,counts,rows,evaluate,edge_to_chain,
-                              shared_cache,(p.index,'left')) if al else None
-            right=_sample_rail(points,p.right,counts,rows,evaluate,edge_to_chain,
-                               shared_cache,(p.index,'right')) if ar else None
-            if left is None:
-                target=len(right)-1 if right is not None else rows
-                left=sample_smooth(points,p.left,max(2,target),evaluate,(p.index,'left'))
-            if right is None:
-                right=sample_smooth(points,p.right,max(2,len(left)-1),evaluate,(p.index,'right'))
-            out.guide_curves[p.index]=(tuple(pos for key,pos in left),
-                                       tuple(pos for key,pos in right))
-            na=len(left)-1; nb=len(right)-1
-            path=zipper_path(na,nb)
-            if not path: raise ValueError('Недостаточно точек направляющих')
+            ca,cb,left,right,body_left,body_right,fractions=registry.pair(p.left,p.right)
+            actual_a=[put(key,pos) for key,pos in left]
+            actual_b=[put(key,pos) for key,pos in right]
+            out.guide_curves[p.index]=(tuple(pos for key,pos in left),tuple(pos for key,pos in right))
+            out.transitions[p.index]=(len(left)-1,len(right)-1)
             w=widths[p.index]
-            out.transitions[p.index]=(na,nb)
-            center=[mix(a[1],b[1],.5) for a,b in ((left[i],right[j]) for i,j in path)]
             normals=[]
-            for k,(i,j) in enumerate(path):
-                a=left[i][1]; b=right[j][1]
-                wvec=sub(b,a)
-                if len(path)>1:
-                    t=sub(center[min(len(path)-1,k+1)],center[max(0,k-1)])
-                else: t=(0.,0.,1.)
-                n=norm(cross(wvec,t))
-                if length(n)<EPS:
-                    n=normals[-1] if normals else norm(p.normal)
-                # Consistent transport from the first row. Individual
-                # dot(n, face_normal) tests would make bulge flip mid-strand.
+            for u,(_,a),(_,b) in zip(fractions,body_left,body_right):
+                n=registry.normal(ca,cb,u,a,b)
+                if length(n)<EPS:n=normals[-1] if normals else p.normal
                 reference=normals[-1] if normals else p.normal
-                if dot(n,reference)<0: n=mul(n,-1.)
+                if dot(n,reference)<0:n=mul(n,-1.)
                 normals.append(n)
-            # Winding is a face-level decision.  Reversing individual quads
-            # according to near-zero local signed area creates flickering
-            # topology during edits and can make adjacent faces disagree.
             first=p.boundary.index(p.left[0])
             reverse=(p.boundary[(first+1)%len(p.boundary)]==p.left[1])
-            if signs[p.index]<0: reverse=not reverse
+            if signs[p.index]<0:reverse=not reverse
             out.orientation_by_face[p.index]=reverse
-            grid=[]
-            for k,(i,j) in enumerate(path):
-                akey,a=left[i]; bkey,b=right[j]
-                # Bias and bulge describe the CROSS SECTION of a strand.
-                # They do not vanish at its root/tip: that produced the
-                # characteristic 'hill in the middle' in v0.35.0.
-                row=[]
+            grid=[];sections=[]
+            for k,((akey,a),(bkey,b)) in enumerate(zip(body_left,body_right)):
+                row=[];coords=[]
                 for x in range(w+1):
-                    if x==0: key=akey; pos=a
-                    elif x==w: key=bkey; pos=b
-                    elif akey==bkey: key=akey; pos=a
+                    if x==0:key=akey;pos=a
+                    elif x==w:key=bkey;pos=b
+                    elif akey==bkey:key=akey;pos=a
                     else:
                         v=bias_cross_position(x/w,p.settings.bias)
                         pos=mix(a,b,v)
                         amplitude=p.settings.bulge*length(sub(b,a))*math.sin(math.pi*v)
-                        if p.settings.flip: amplitude=-amplitude
+                        if p.settings.flip:amplitude=-amplitude
                         pos=add(pos,mul(normals[k],amplitude))
-                        if k==0 and p.start[0]=='edge' or k==len(path)-1 and p.end[0]=='edge':
+                        if k==0 and p.start[0]=='edge' or k==len(body_left)-1 and p.end[0]=='edge':
                             cap=p.start if k==0 else p.end
                             lo,hi=edge_key(p.boundary[cap[1]],p.boundary[(cap[1]+1)%len(p.boundary)])
                             a_v=p.left[0 if k==0 else -1]
                             aligned=x if a_v==lo else w-x
-                            key=('cap',lo,hi,aligned,w)
-                            pos=cap_profiles[(lo,hi)][aligned]
-                        else: key=('inside',p.index,k,x)
-                    row.append(put(key,pos))
-                grid.append(row)
-            local=[]
-            local_keys=set()
-            for k in range(len(path)-1):
-                for x in range(w):
-                    face=[grid[k][x],grid[k][x+1],grid[k+1][x+1],grid[k+1][x]]
-                    face=[v for j,v in enumerate(face) if v!=face[j-1]]
-                    if len(face)>1 and face[0]==face[-1]: face.pop()
-                    if len(set(face))<3: continue
-                    a,b,c=(out.vertices[idx] for idx in face[:3])
-                    if length(cross(sub(b,a),sub(c,a)))<1e-12: continue
-                    if reverse: face.reverse()
-                    sig=tuple(sorted(face))
-                    if sig in produced or sig in local_keys: continue
-                    local_keys.add(sig); local.append(tuple(face))
-            if len(local)+len(out.faces)>max_polygons:
-                raise ValueError('Превышен лимит полигонов')
-            actual_edges={edge_key(a,b) for f in local
-                          for a,b in zip(f, f[1:]+f[:1])}
-            # Ctrl+R must pick a line present in the final mesh, not a
-            # theoretical interpolation that failed to produce any polygons.
-            out.cut_lines[p.index]={
-                x/w:tuple(out.vertices[grid[k][x]] for k in range(len(grid)))
-                for x in range(1,w)
-                if all(edge_key(grid[k][x],grid[k+1][x]) in actual_edges
-                       for k in range(len(grid)-1)
-                       if grid[k][x]!=grid[k+1][x])
-            }
+                            key=('cap',lo,hi,aligned,w);pos=cap_profiles[(lo,hi)][aligned]
+                        else:key=('inside',p.index,k,x)
+                    # A resampled non-master boundary is shape reference only.
+                    # Actual seam points remain the first owner's schedule.
+                    row.append(vertex_index.get(key) if x in (0,w) else put(key,pos))
+                    coords.append(pos)
+                grid.append(row);sections.append(tuple(coords))
+            local=[];local_keys=set()
+            def emit(face):
+                face=[v for j,v in enumerate(face) if v!=face[j-1]]
+                if len(face)>1 and face[0]==face[-1]:face.pop()
+                if len(set(face))<3 or length(newell(out.vertices,face))<EPS:return
+                if reverse:face.reverse()
+                signature=tuple(sorted(face))
+                if signature in produced or signature in local_keys:return
+                local_keys.add(signature);local.append(tuple(face))
+            def band(a,b):
+                path=zipper_path(len(a)-1,len(b)-1)
+                for (i,j),(ni,nj) in zip(path,path[1:]):emit([a[i],b[j],b[nj],a[ni]])
+            if w==1:band(actual_a,actual_b)
+            else:
+                band(actual_a,[row[1] for row in grid])
+                for x in range(1,w-1):
+                    band([row[x] for row in grid],[row[x+1] for row in grid])
+                band([row[w-1] for row in grid],actual_b)
+            if len(local)+len(out.faces)>max_polygons:raise ValueError('Превышен лимит полигонов')
             produced.update(local_keys)
-            out.faces.extend(local)
-            out.owners.extend([p.index]*len(local))
+            out.faces.extend(local);out.owners.extend([p.index]*len(local))
             out.surface_grids[p.index]=tuple(tuple(row) for row in grid)
+            out.surface_sections[p.index]=tuple(sections)
+            out.rail_samples[p.index]=(tuple(left),tuple(right))
+            registry.register(ca,left,_plan_priority(p));registry.register(cb,right,_plan_priority(p))
         except (ValueError,IndexError,ZeroDivisionError) as exc:
             out.warnings[p.index]=str(exc)
+    out.faces,out.owners=registry.stitch(out.vertices,out.faces,out.owners,vertex_index)
+    if len(out.faces)>max_polygons:raise ValueError('Превышен лимит полигонов после сшивки')
+    # Keep baked meshes free of unused reference/degenerate positions.
+    used=sorted({v for face in out.faces for v in face})
+    remap={old:new for new,old in enumerate(used)}
+    keys={vid:key for key,vid in vertex_index.items()}
+    out.vertex_keys=[keys[v] for v in used]
+    out.vertices=[out.vertices[v] for v in used]
+    out.faces=[tuple(remap[v] for v in face) for face in out.faces]
+    out.surface_grids={zone:tuple(tuple(remap.get(v) if v is not None else None for v in row) for row in grid)
+                       for zone,grid in out.surface_grids.items()}
+    owner_edges=defaultdict(set)
+    for face,owner in zip(out.faces,out.owners):
+        owner_edges[owner].update(edge_key(a,b) for a,b in zip(face,face[1:]+face[:1]))
+    for zone,grid in out.surface_grids.items():
+        w=len(grid[0])-1
+        out.cut_lines[zone]={}
+        for x in range(1,w):
+            line=[row[x] for row in grid]
+            if any(v is None for v in line):continue
+            if all(a==b or edge_key(a,b) in owner_edges[zone] for a,b in zip(line,line[1:])):
+                out.cut_lines[zone][x/w]=tuple(out.vertices[v] for v in line)
+    out.samples_per_edge={edge:max(0,len(stations)-1) for edge,stations in registry.stations.items()}
     return out
 
 
@@ -749,15 +627,12 @@ def sample_cut_guide(result, zone, t, count=20):
     The edit tool and the displayed mesh must never use different surface
     formulas. This also preserves the zipper correspondence on uneven rails.
     """
-    grid=result.surface_grids.get(zone)
-    if not grid:
-        raise ValueError('У зоны нет рассчитанной поверхности')
-    width=len(grid[0])-1
+    sections=result.surface_sections.get(zone)
+    if not sections:raise ValueError('У зоны нет рассчитанной поверхности')
+    width=len(sections[0])-1
     x=max(0.,min(float(width),float(t)*width))
-    column=min(width-1,int(x))
-    blend=x-column
-    line=[mix(result.vertices[row[column]],result.vertices[row[column+1]],blend)
-          for row in grid]
+    column=min(width-1,int(x));blend=x-column
+    line=[mix(row[column],row[column+1],blend) for row in sections]
     distances=[0.]
     for a,b in zip(line,line[1:]): distances.append(distances[-1]+length(sub(b,a)))
     total=distances[-1]

@@ -7,6 +7,7 @@ import bpy
 import bmesh
 import math
 import traceback
+from dataclasses import replace
 from bpy.app.handlers import persistent
 from bpy.props import BoolProperty, FloatProperty, FloatVectorProperty, IntProperty, PointerProperty, EnumProperty
 from bpy.types import Operator, Panel, PropertyGroup
@@ -29,6 +30,7 @@ L_BULGE = 'nh35_bulge'
 L_BIAS = 'nh35_bias'
 L_FLIP = 'nh35_flip'
 L_CAP = 'nh35_cap_corner'  # BMLOOP, per-face direction, never a vertex/edge tag
+L_ORDER = 'nh35_zone_order'  # stable creation order, persisted in source faces
 
 _COLOR_BLUE = (0.56, 0.714, 0.91, 1.0)  # #8FB6E8
 _COLOR_TINT = (0.424, 0.812, 0.769)   # #6CCFC4
@@ -94,11 +96,13 @@ def _get_zone(f,bm):
     b=floats.get(L_BULGE)
     bias=floats.get(L_BIAS)
     flip=ints.get(L_FLIP)
+    order=ints.get(L_ORDER)
     return core.ZoneSettings(
         width=max(1,min(32,int(f[w]))) if w and f[w]>0 else 2,
         bulge=max(-3.0,min(3.0,float(f[b]))) if b else _DEFAULT_BULGE,
         bias=max(-2.0,min(2.0,float(f[bias]))) if bias else 0.0,
         flip=bool(f[flip]) if flip else False,
+        order=int(f[order]) if order else 0,
     )
 
 
@@ -243,7 +247,7 @@ def _prepare_bmesh(bm, result=None):
     CustomData allocation can invalidate BMesh Python wrappers even without
     a topology edit. Never call this while holding vertices/faces/loops.
     """
-    for name,integer,default in ((L_WIDTH,True,2),(L_FLIP,True,0),
+    for name,integer,default in ((L_WIDTH,True,2),(L_FLIP,True,0),(L_ORDER,True,0),
                                 (L_BULGE,False,_DEFAULT_BULGE),(L_BIAS,False,0.)):
         layers=bm.faces.layers.int if integer else bm.faces.layers.float
         if layers.get(name) is None:
@@ -252,6 +256,14 @@ def _prepare_bmesh(bm, result=None):
     if bm.loops.layers.int.get(L_CAP) is None:
         bm.loops.layers.int.new(L_CAP)
     bm.verts.index_update(); bm.faces.index_update()
+    order_layer=bm.faces.layers.int[L_ORDER]
+    next_order=max((int(f[order_layer]) for f in bm.faces),default=0)+1
+    seen=set()
+    for face in bm.faces:
+        order=int(face[order_layer])
+        if order<=0 or order in seen:
+            order=next_order;next_order+=1;face[order_layer]=order
+        seen.add(order)
     layer=bm.loops.layers.int[L_CAP]
     points=[tuple(v.co) for v in bm.verts]
     for face in bm.faces:
@@ -367,6 +379,13 @@ def _capture(obj):
         positions=[tuple(float(x) for x in v.co) for v in bm.verts]
         zones=[tuple(v.index for v in f.verts) for f in bm.faces]
         options=[_get_zone(f,bm) for f in bm.faces]
+        # Native F / duplicate can copy a neighbor's custom face attributes.
+        # A copied creation ID must not let a new zone preempt older owners.
+        seen_orders=set()
+        for i,option in enumerate(options):
+            if option.order>0:
+                if option.order in seen_orders:options[i]=replace(option,order=0)
+                seen_orders.add(option.order)
         cap_layer=bm.loops.layers.int.get(L_CAP)
         caps=[_read_caps(face,cap_layer) for face in bm.faces]
         # BMesh indices are only temporary array offsets within this snapshot.
@@ -382,7 +401,7 @@ def _signature(positions,zones,options,rows,caps):
     return (int(rows),
             tuple(tuple(round(x,6) for x in p) for p in positions),
             tuple(zones),tuple(caps),
-            tuple((o.width,round(o.bulge,5),round(o.bias,5),o.flip) for o in options))
+            tuple((o.width,round(o.bulge,5),round(o.bias,5),o.flip,o.order) for o in options))
 
 
 def _rebuild(obj,force=False):
@@ -1007,21 +1026,24 @@ def _split_on_bmesh(bm, zone, t, result, select_result=False):
     left_width,right_width=core.width_budget_split(budget,t)
     # As in the earlier loft tool, a narrower daughter needs less bulge.
     # Copying the parent's full bulge onto both halves inflates the surface.
-    grid=result.surface_grids[zone]
+    grid=result.surface_sections[zone]
     column=min(len(grid[0])-2,int(t*(len(grid[0])-1)))
     blend=t*(len(grid[0])-1)-column
     v=core.bias_cross_position(t,settings.bias)
     factors=[[],[]]
     for row in grid:
-        a=result.vertices[row[0]]; b=result.vertices[row[-1]]
-        cut=core.mix(result.vertices[row[column]],result.vertices[row[column+1]],blend)
+        a=row[0]; b=row[-1]
+        cut=core.mix(row[column],row[column+1],blend)
         size=core.length(core.sub(b,a))
         for side,distance,fraction in ((0,core.length(core.sub(cut,a)),v),
                                        (1,core.length(core.sub(b,cut)),1.-v)):
             if distance>core.EPS:
                 factors[side].append(size*fraction*fraction/distance)
     gains=[sorted(values)[len(values)//2] if values else .5 for values in factors]
+    order_layer=bm.faces.layers.int[L_ORDER]
+    new_order=max(int(f[order_layer]) for f in bm.faces)+1
     for child in children:
+        child[order_layer]=settings.order if child==left_child else new_order
         for loop in child.loops:
             loop[layer]=0
         for k,(kind,lv,rv,_) in enumerate(end_caps):
@@ -1247,7 +1269,7 @@ class NYANW35_OT_hair_loop(Operator):
 
 
 class NYANW35_PT_main(Panel):
-    bl_label='NyanwHair v0.35.10'
+    bl_label='NyanwHair v0.35.11'
     bl_idname='NYANW35_PT_main'
     bl_space_type='VIEW_3D'
     bl_region_type='UI'
@@ -1410,7 +1432,7 @@ def _draw_preview():
                 if selected:
                     selected_shader=gpu.shader.from_builtin('UNIFORM_COLOR')
                     selected_shader.bind()
-                    selected_shader.uniform_float('color',(1.,.68,.30,1.))
+                    selected_shader.uniform_float('color',(1.,.74,.46,.72))
                     gpu.state.depth_test_set('NONE')
                     gpu.state.line_width_set(3.4)
                     selected.draw(selected_shader)
