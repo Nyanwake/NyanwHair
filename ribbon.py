@@ -1,5 +1,6 @@
 """Monotone transverse correspondence between two curved ribbon boundaries."""
 import bisect
+import math
 from .core import EPS,add,sub,mul,dot,length,norm,cross
 
 
@@ -59,6 +60,10 @@ class RibbonMap:
         for k in range(1,n):vs[k]=max(vs[k],vs[k-1]+1e-7)
         for k in range(n-1,0,-1):vs[k]=min(vs[k],vs[k+1]-1e-7)
         self.u_to_v=MonotoneMap(us,vs);self.v_to_u=MonotoneMap(vs,us)
+        turn=sum(math.acos(max(-1.,min(1.,dot(p,q)))) for tangent in (ta,tb) for p,q in zip(tangent,tangent[1:]))*.5
+        widths=[norm(sub(b.at(v)[1],p)) for p,v in zip(aa,vs)]
+        twist=sum(math.acos(max(-1.,min(1.,dot(p,q)))) for p,q in zip(widths,widths[1:]) if length(p)>EPS and length(q)>EPS)
+        self.strong_turn=turn>1.6 or twist>1.6
         centers=[mul(add(p,b.at(v)[1]),.5) for p,v in zip(aa,vs)]
         distance=[0.]
         for p,q in zip(centers,centers[1:]):distance.append(distance[-1]+max(EPS,length(sub(q,p))))

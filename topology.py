@@ -4,6 +4,7 @@ The curve evaluator is supplied by core. Topological sample identity is a
 source vertex or an oriented parameter on a source edge, never a position.
 """
 import bisect
+import math
 from collections import defaultdict
 from .core import EPS,CURVE_SUBDIVISIONS,sub,add,cross,length,norm,edge_key,newell,mix
 
@@ -73,10 +74,11 @@ class RailRegistry:
     Logical junctions are mandatory anchors. Regular support vertices do
     not allocate rows. No RAM cache or per-zone length budget is involved.
     """
-    def __init__(self,points,evaluate,rows,plans,reference_length=0.,max_samples=200000):
+    def __init__(self,points,evaluate,rows,plans,reference_length=0.,max_samples=200000,local_density=None):
         self.points=points;self.evaluate=evaluate;self.rows=rows
         self.stations=defaultdict(dict);self.paths={};self.boundaries=[]
         self.maps={}
+        self.density={key:max(1.,min(8.,float(value))) for key,value in (local_density or {}).items()}
         chains=[]
         for path in evaluate.paths:
             if sum(length(sub(points[b],points[a])) for a,b in zip(path,path[1:]))>EPS:
@@ -110,6 +112,28 @@ class RailRegistry:
                 adaptive.append(hi)
                 allocated+=len(adaptive)-len(fractions)
                 if allocated>2*max_samples:raise ValueError('Превышен лимит точек детализации')
+                if any(self.density.get(edge,1.)>1. for edge in curve.edges):
+                    # Preserve every original sample. Insert only inside
+                    # selected source-edge intervals, sharing their identities.
+                    expanded=[]
+                    for start,end in zip(adaptive,adaptive[1:]):
+                        cuts=[start]
+                        for index in range(1,len(curve.path)-1):
+                            fraction=curve.offsets[index]/curve.total
+                            before=self.density.get(edge_key(curve.path[index-1],curve.path[index]),1.)
+                            after=self.density.get(edge_key(curve.path[index],curve.path[index+1]),1.)
+                            if start+1e-10<fraction<end-1e-10 and abs(before-after)>1e-8:cuts.append(fraction)
+                        cuts.append(end)
+                        for a,b in zip(cuts,cuts[1:]):
+                            edge_i=min(len(curve.path)-2,max(0,bisect.bisect_right(curve.offsets,(a+b)*.5*curve.total)-1))
+                            factor=self.density.get(edge_key(curve.path[edge_i],curve.path[edge_i+1]),1.)
+                            count=max(1,int(math.ceil(factor*(b-a)/(end-start)-1e-8)))
+                            if allocated+len(expanded)+count+1-len(adaptive)>2*max_samples:raise ValueError('Превышен лимит локального уплотнения')
+                            expanded.extend(a+(b-a)*i/count for i in range(count))
+                    expanded.append(adaptive[-1])
+                    allocated+=len(expanded)-len(adaptive)
+                    adaptive=expanded
+                    if allocated>2*max_samples:raise ValueError('Превышен лимит локального уплотнения')
                 samples=curve.sample(adaptive)
                 samples[0]=(('v',first),points[first]);samples[-1]=(('v',last),points[last])
                 for key,pos in samples:

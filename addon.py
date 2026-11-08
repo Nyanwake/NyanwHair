@@ -1,7 +1,7 @@
 """NyanwHair Guided Surface Blender adapter. F zones own two ordered rails.
 
-No tags on control vertices or edges. User direction tags live only on the
-face's corner data. Live does not mutate Blender Mesh or Object datablocks.
+Curve direction settings live on face corners, density is a user edge value.
+No control-element IDs are used. Live does not mutate Blender datablocks.
 """
 import bpy
 import bmesh
@@ -30,6 +30,7 @@ L_BULGE = 'nh35_bulge'
 L_BIAS = 'nh35_bias'
 L_FLIP = 'nh35_flip'
 L_CAP = 'nh35_cap_corner'  # BMLOOP, per-face direction, never a vertex/edge tag
+L_DENSITY = 'nh35_density'
 L_SMOOTH_START = 'nh35_smooth_start'
 L_SMOOTH_END = 'nh35_smooth_end'
 L_ORDER = 'nh35_zone_order'  # stable creation order, persisted in source faces
@@ -145,12 +146,87 @@ def _ray_zone(cache,origin,direction):
     return result.owners[index] if index is not None else None
 
 
+def _zone_key(plan):
+    return ('order',plan.settings.order) if plan.settings.order>0 else ('boundary',core._boundary_key(plan.boundary))
+
+
+def _zone_lookup(result):
+    return {_zone_key(plan):plan.index for plan in result.plans_by_loop.values()}
+
+
+def _selected_zone_indices(cache):
+    if cache.get('zone_selection_explicit'):
+        lookup=_zone_lookup(cache['result'])
+        return {lookup[key] for key in cache.get('zone_selection',()) if key in lookup}
+    active=cache.get('active',-1)
+    return {active} if active>=0 else set()
+
+
+def _update_zone_selection(bm,cache,hovered,extend=False,component=None):
+    zone=hovered if component is False and hovered is not None else _selection_zone(bm,hovered,cache.get('active',-1))
+    if hovered is None and not any(v.select for v in bm.verts):zone=-1
+    lookup=_zone_lookup(cache['result']);by_index={v:k for k,v in lookup.items()}
+    selected=set(cache.get('zone_selection',())) if cache.get('zone_selection_explicit') else {by_index[i] for i in _selected_zone_indices(cache) if i in by_index}
+    key=by_index.get(zone)
+    if not extend:selected={key} if key is not None else set()
+    elif key is not None:
+        if component:selected.add(key)
+        elif key in selected:selected.remove(key)
+        else:selected.add(key)
+    selected.intersection_update(lookup)
+    indices={lookup[key] for key in selected}
+    active=zone if zone in indices else (cache.get('active',-1) if cache.get('active',-1) in indices else min(indices,default=-1))
+    cache['zone_selection']=frozenset(selected);cache['zone_selection_explicit']=True;cache['active']=active
+
+
+def _zone_ui_faces(bm,obj):
+    cache=_CACHE.get(obj.as_pointer(),{})
+    if cache.get('zone_selection_explicit'):
+        bm.faces.ensure_lookup_table();bm.faces.index_update()
+        return [bm.faces[i] for i in sorted(_selected_zone_indices(cache)) if 0<=i<len(bm.faces)]
+    face=_active_face(bm,obj)
+    return [face] if face is not None else []
+
+
+def _zone_ui_primary(bm,obj):
+    faces=_zone_ui_faces(bm,obj)
+    active=_CACHE.get(obj.as_pointer(),{}).get('active',-1)
+    return next((f for f in faces if f.index==active),faces[-1] if faces else None)
+
+
+def _near_control_component(ctx,obj,xy,cache):
+    mode=ctx.tool_settings.mesh_select_mode
+    if mode[2]:return False
+    mouse=Vector(xy)
+    if mode[0]:
+        bm=bmesh.from_edit_mesh(obj.data)
+        for vertex in bm.verts:
+            if vertex.hide:continue
+            world=obj.matrix_world@vertex.co
+            screen=view3d_utils.location_3d_to_region_2d(ctx.region,ctx.region_data,world)
+            if screen is not None and (screen-mouse).length<=9. and _point_visible(ctx,world):return True
+    if mode[1]:
+        segments_to_check=list(cache.get('rail_segments',{}).values())
+        bm=bmesh.from_edit_mesh(obj.data)
+        segments_to_check.extend([tuple(obj.matrix_world@edge.verts[0].co),tuple(obj.matrix_world@edge.verts[1].co)] for edge in bm.edges if not edge.hide)
+        for segments in segments_to_check:
+            for a,b in zip(segments[::2],segments[1::2]):
+                start=Vector(a);end=Vector(b)
+                p=view3d_utils.location_3d_to_region_2d(ctx.region,ctx.region_data,start)
+                q=view3d_utils.location_3d_to_region_2d(ctx.region,ctx.region_data,end)
+                if p is None or q is None:continue
+                span=q-p;blend=max(0.,min(1.,(mouse-p).dot(span)/span.length_squared)) if span.length_squared>1e-10 else 0.
+                if (mouse-(p+span*blend)).length<=7. and _point_visible(ctx,start.lerp(end,blend)):return True
+    return False
+
+
 def _finish_zone_pick():
     global _PENDING_PICK
     pending=_PENDING_PICK
     _PENDING_PICK=None
     if pending is None or not _RUNNING or _UNDOING: return None
-    obj,hovered,topology,area=pending
+    obj,hovered,topology,area,*modifiers=pending
+    extend=bool(modifiers[0]) if modifiers else False
     try:
         if bpy.context.edit_object!=obj or not is_guide(obj): return None
         bm=bmesh.from_edit_mesh(obj.data)
@@ -159,8 +235,8 @@ def _finish_zone_pick():
             return None
         cached=_CACHE.get(obj.as_pointer())
         if cached is None: return None
-        zone=_selection_zone(bm,hovered,cached.get('active',-1))
-        cached['active']=zone
+        component=bool(modifiers[1]) if len(modifiers)>1 else None
+        _update_zone_selection(bm,cached,hovered,extend,component)
         _sync_ui(obj)
         area.tag_redraw()
     except (ReferenceError,RuntimeError):
@@ -187,7 +263,7 @@ class NYANW35_OT_pick_zone(Operator):
                     context.region.type=='WINDOW' and context.region_data)
 
     def invoke(self,context,event):
-        # Observe the click, then let Blender do native selection/toggle/drag.
+        # Snapshot preview selection on PRESS, before native selection changes.
         # The deferred read sees its result; it never edits BMesh selection.
         global _PENDING_PICK
         if event.ctrl or event.alt or event.oskey: return {'PASS_THROUGH'}
@@ -196,12 +272,16 @@ class NYANW35_OT_pick_zone(Operator):
         _rebuild(obj)
         cached=_CACHE.get(obj.as_pointer())
         if cached is None: return {'PASS_THROUGH'}
+        if not cached.get('zone_selection_explicit'):
+            lookup=_zone_lookup(cached['result'])
+            cached['zone_selection']=frozenset(k for k,i in lookup.items() if i==cached.get('active',-1))
+            cached['zone_selection_explicit']=True
         xy=(event.mouse_region_x,event.mouse_region_y)
         origin=view3d_utils.region_2d_to_origin_3d(context.region,context.region_data,xy)
         direction=view3d_utils.region_2d_to_vector_3d(context.region,context.region_data,xy)
         inverse=obj.matrix_world.inverted_safe()
         hovered=_ray_zone(cached,inverse@origin,(inverse.to_3x3()@direction).normalized())
-        _PENDING_PICK=(obj,hovered,cached['topology'],context.area)
+        _PENDING_PICK=(obj,hovered,cached['topology'],context.area,bool(getattr(event,'shift',False)),_near_control_component(context,obj,xy,cached))
         if not bpy.app.timers.is_registered(_finish_zone_pick):
             bpy.app.timers.register(_finish_zone_pick,first_interval=0.)
         return {'PASS_THROUGH'}
@@ -257,6 +337,7 @@ def _prepare_bmesh(bm, result=None):
             for face in bm.faces: face[layer]=default
     if bm.loops.layers.int.get(L_CAP) is None:
         bm.loops.layers.int.new(L_CAP)
+    if bm.edges.layers.float.get(L_DENSITY) is None:bm.edges.layers.float.new(L_DENSITY)
     for name in (L_SMOOTH_START,L_SMOOTH_END):
         if bm.loops.layers.float.get(name) is None:bm.loops.layers.float.new(name)
     bm.verts.index_update(); bm.faces.index_update()
@@ -466,7 +547,68 @@ class NYANW35_OT_direction_smoothing(Operator):
         return {'FINISHED'}
 
 
-def _capture(obj,include_smoothing=False):
+def _edge_density(bm,objects=False):
+    layer=bm.edges.layers.float.get(L_DENSITY)
+    if layer is None:return {}
+    bm.verts.index_update()
+    return {(tuple(edge.verts) if objects else core.edge_key(*(v.index for v in edge.verts))):
+            max(1.,min(8.,1.+float(edge[layer]))) for edge in bm.edges if edge[layer]>0.}
+
+
+def _restore_density(bm,records,split_edges=()):
+    layer=bm.edges.layers.float[L_DENSITY]
+    for edge in bm.edges:edge[layer]=0.
+    for (a,b),factor in records.items():
+        edge=bm.edges.get((a,b)) if a.is_valid and b.is_valid else None
+        if edge is not None:edge[layer]=factor-1.
+    lookup={frozenset(key):value for key,value in records.items()}
+    for a,b,middle in split_edges:
+        factor=lookup.get(frozenset((a,b)),1.)
+        for endpoint in (a,b):
+            edge=bm.edges.get((endpoint,middle))
+            if edge is not None:edge[layer]=factor-1.
+
+
+def _density_targets(bm,result):
+    if result is None:return []
+    return _selected_guide_edges(bm,result,bpy.context.tool_settings.mesh_select_mode[0])
+
+
+def _get_local_density(self):
+    obj=bpy.context.edit_object
+    if not is_guide(obj):return 1.
+    bm=bmesh.from_edit_mesh(obj.data)
+    keys=_density_targets(bm,_CACHE.get(obj.as_pointer(),{}).get('result'))
+    values=_edge_density(bm)
+    return sum(values.get(key,1.) for key in keys)/len(keys) if keys else 1.
+
+
+def _set_local_density(self,value):
+    if not _SYNCING_UI and is_guide(bpy.context.edit_object):
+        bpy.ops.nyanw35.local_density('EXEC_DEFAULT',True,value=float(value))
+
+
+class NYANW35_OT_local_density(Operator):
+    bl_idname='nyanw35.local_density'
+    bl_label='Уплотнение выбранных участков'
+    bl_options={'REGISTER','UNDO','UNDO_GROUPED'}
+    value: FloatProperty(name='Множитель плотности',default=1.,min=1.,max=8.)
+    def execute(self,context):
+        obj=context.edit_object
+        if not is_guide(obj):return {'CANCELLED'}
+        bm=bmesh.from_edit_mesh(obj.data);_prepare_bmesh(bm);_rebuild(obj,False)
+        keys=_density_targets(bm,_CACHE.get(obj.as_pointer(),{}).get('result'))
+        if not keys:return {'CANCELLED'}
+        bm.verts.ensure_lookup_table();layer=bm.edges.layers.float[L_DENSITY]
+        for a,b in keys:
+            edge=bm.edges.get((bm.verts[a],bm.verts[b]))
+            if edge is not None:edge[layer]=self.value-1.
+        bmesh.update_edit_mesh(obj.data,loop_triangles=False,destructive=False)
+        _rebuild(obj,True)
+        return {'FINISHED'}
+
+
+def _capture(obj,include_smoothing=False,include_detail=False):
     bm,owned=_mesh_bm(obj)
     try:
         bm.verts.ensure_lookup_table(); bm.verts.index_update()
@@ -488,13 +630,15 @@ def _capture(obj,include_smoothing=False):
         selected=_active_face(bm,obj)
         active=selected.index if selected is not None else -1
         snapshot=(positions,zones,options,active,caps)
-        return snapshot+(_directional_smoothing(bm),) if include_smoothing else snapshot
+        if include_smoothing:snapshot+=(_directional_smoothing(bm),)
+        if include_detail:snapshot+=(_edge_density(bm),)
+        return snapshot
     finally:
         if owned: bm.free()
 
 
-def _signature(positions,zones,options,rows,caps,detail_length=0.,smoothing=None):
-    return (int(rows),round(detail_length,8),tuple(sorted((a,b,round(v,6)) for (a,b),v in (smoothing or {}).items())),
+def _signature(positions,zones,options,rows,caps,detail_length=0.,smoothing=None,density=None):
+    return (int(rows),round(detail_length,8),tuple(sorted((a,b,round(v,6)) for (a,b),v in (density or {}).items())),tuple(sorted((a,b,round(v,6)) for (a,b),v in (smoothing or {}).items())),
             tuple(tuple(round(x,6) for x in p) for p in positions),
             tuple(zones),tuple(caps),
             tuple((o.width,round(o.bulge,5),round(o.bias,5),o.flip,o.order) for o in options))
@@ -508,13 +652,13 @@ def _rebuild(obj,force=False):
     """
     if _UNDOING or not is_guide(obj): return False
     if obj.data.is_editmode and obj.mode != 'EDIT': return False
-    positions,zones,options,active,caps,smoothing=_capture(obj,True)
+    positions,zones,options,active,caps,smoothing,density=_capture(obj,True,True)
     key=obj.as_pointer()
     rows=obj.nh35.rows
-    signature=_signature(positions,zones,options,rows,caps,obj.nh35.detail_length,smoothing)
+    signature=_signature(positions,zones,options,rows,caps,obj.nh35.detail_length,smoothing,density)
     old=_CACHE.get(key)
     if old and old['signature']==signature and not force:
-        if active>=0: old['active']=active
+        if active>=0 and not old.get('zone_selection_explicit'): old['active']=active
         return False
     topology=tuple(zones)
     # Unpinned/new native faces use deterministic current geometry, never a
@@ -531,15 +675,22 @@ def _rebuild(obj,force=False):
     # coordinate-only changes reuse the same face plan and mesh row counts.
     previous=(old['result'] if old and old['topology']==topology else None)
     try:
-        result=core.generate(positions,zones,options,rows,previous=previous,caps=caps,reference_length=obj.nh35.detail_length,directional_smoothing=smoothing)
+        result=core.generate(positions,zones,options,rows,previous=previous,caps=caps,reference_length=obj.nh35.detail_length,directional_smoothing=smoothing,local_density=density)
         warnings=result.warnings
         if warnings:
             status='; '.join('Зона %d: %s'%(i+1,msg)
                              for i,msg in sorted(warnings.items())[:3])
         else:
             status='%d зон, %d граней результата'%(len(zones),len(result.faces))
+        selection={}
+        if old and old.get('zone_selection_explicit'):
+            lookup=_zone_lookup(result)
+            keys=frozenset(k for k in old.get('zone_selection',()) if k in lookup)
+            previous=next((_zone_key(p) for p in old['result'].plans_by_loop.values() if p.index==old.get('active',-1)),None)
+            active=lookup.get(previous,min((lookup[k] for k in keys),default=-1))
+            selection={'zone_selection':keys,'zone_selection_explicit':True}
         # Caches are not Blender IDs and never appear in the undo memfile.
-        _CACHE[key]={
+        _CACHE[key]={**selection,
             'signature':signature,'topology':topology,'rows':rows,
             'positions':tuple(positions),'zones':tuple(zones),
             'result':result,'active':active if active>=0 else
@@ -565,7 +716,7 @@ def _sync_ui(obj):
     if not bpy.context.window_manager: return
     bm,owned=_mesh_bm(obj)
     try:
-        f=_active_face(bm,obj)
+        f=_zone_ui_primary(bm,obj)
         if f is None: return
         data=_get_zone(f,bm)
         cached=_CACHE.get(obj.as_pointer())
@@ -589,11 +740,10 @@ def _on_ui_change(field):
         if not is_guide(obj): return
         bm=bmesh.from_edit_mesh(obj.data)
         _prepare_bmesh(bm)
-        f=_active_face(bm,obj)
-        if f is None: return
-        if not f.is_valid: return
+        faces=_zone_ui_faces(bm,obj)
+        if not faces:return
         try:
-            _set_zone(f,bm,field,getattr(self,field))
+            for face in faces:_set_zone(face,bm,field,getattr(self,field))
         except ReferenceError:
             return
         bmesh.update_edit_mesh(obj.data,loop_triangles=False,destructive=False)
@@ -616,6 +766,7 @@ class NHGuidedProperties(PropertyGroup):
 
 
 class NHGuidedUISettings(PropertyGroup):
+    local_density: FloatProperty(name='Множитель плотности',min=1.,max=8.,get=_get_local_density,set=_set_local_density,description='Количество отсчётов на выбранных рёбрах направляющих; форма кривой сохраняется')
     direction_smoothing: FloatProperty(name='Сглаживание конца',min=0.,max=1.,get=_get_direction_smoothing,set=_set_direction_smoothing,description='1 — автоматическая плавная касательная; 0 — направление к соседней точке. Только активный конец выбранных направлений')
     width: IntProperty(name='Шаги по ширине',min=1,max=32,default=2,update=_on_ui_change('width'))
     bulge: FloatProperty(name='Выпуклость',default=_DEFAULT_BULGE,min=-3,max=3,step=5,precision=3,update=_on_ui_change('bulge'))
@@ -1025,6 +1176,7 @@ def _split_on_bmesh(bm, zone, t, result, select_result=False):
     bm.faces.index_update()
     if not 0 <= zone < len(bm.faces):
         raise ValueError('Зона больше не существует')
+    density_records=_edge_density(bm,objects=True)
     direction_records=_directional_smoothing(bm,objects=True)
     source = bm.faces[zone]
     plan = result.plans_by_loop.get(tuple(v.index for v in source.verts))
@@ -1187,6 +1339,7 @@ def _split_on_bmesh(bm, zone, t, result, select_result=False):
         bm.select_history.add(left_child)
     split_records=[(left,right,ends[i]) for i,(kind,left,right,edge) in enumerate(end_caps) if kind=='edge']
     _restore_directions(bm,direction_records,split_records)
+    _restore_density(bm,density_records,split_records)
     return budget,left_width,right_width
 
 
@@ -1212,6 +1365,7 @@ def _insert_anchor_bmesh(bm,proposal,result,select_result=False):
     edge=bm.edges[idx]
     if not edge.is_valid or {v.index for v in edge.verts}!=set(proposal['ends']):
         raise ValueError('Исходное ребро изменилось')
+    density_records=_edge_density(bm,objects=True)
     direction_records=_directional_smoothing(bm,objects=True)
     original_ends=tuple(edge.verts)
     original_faces=list(edge.link_faces)
@@ -1252,6 +1406,7 @@ def _insert_anchor_bmesh(bm,proposal,result,select_result=False):
         new_vert.select_set(True)
         bm.select_history.add(new_vert)
     _restore_directions(bm,direction_records,[(original_ends[0],original_ends[1],new_vert)])
+    _restore_density(bm,density_records,[(original_ends[0],original_ends[1],new_vert)])
     return new_vert
 
 
@@ -1267,20 +1422,15 @@ class NYANW35_OT_adjust(Operator):
         obj=context.edit_object
         bm=bmesh.from_edit_mesh(obj.data)
         _prepare_bmesh(bm)
-        f=_active_face(bm,obj)
-        if f is None: return {'CANCELLED'}
-        data=_get_zone(f,bm)
-        if self.field=='width':
-            val=max(1,min(32,data.width+(1 if self.direction>0 else -1)))
-        else:
-            val=round(max(-3.,min(3.,data.bulge+.03*(1 if self.direction>0 else -1))),4)
-        if val==getattr(data,self.field): return {'CANCELLED'}
-        if not f.is_valid: return {'CANCELLED'}
-        try:
-            _set_zone(f,bm,self.field,val)
-        except ReferenceError:
-            self.report({'WARNING'},'Топология изменилась: выбери зону заново')
-            return {'CANCELLED'}
+        faces=_zone_ui_faces(bm,obj)
+        if not faces:return {'CANCELLED'}
+        changed=False
+        for face in faces:
+            data=_get_zone(face,bm)
+            if self.field=='width':value=max(1,min(32,data.width+(1 if self.direction>0 else -1)))
+            else:value=round(max(-3.,min(3.,data.bulge+.03*(1 if self.direction>0 else -1))),4)
+            if value!=getattr(data,self.field):_set_zone(face,bm,self.field,value);changed=True
+        if not changed:return {'CANCELLED'}
         bmesh.update_edit_mesh(obj.data,loop_triangles=False,destructive=False)
         cached=_CACHE.get(obj.as_pointer())
         if cached: cached['signature']=None
@@ -1373,7 +1523,7 @@ class NYANW35_OT_hair_loop(Operator):
 
 
 class NYANW35_PT_main(Panel):
-    bl_label='NyanwHair v0.35.14'
+    bl_label='NyanwHair v0.35.15'
     bl_idname='NYANW35_PT_main'
     bl_space_type='VIEW_3D'
     bl_region_type='UI'
@@ -1390,6 +1540,8 @@ class NYANW35_PT_main(Panel):
             layout.label(text='F задаёт зону; две кривые задают форму',icon='INFO')
             return
         props=obj.nh35
+        selected_count=len(_selected_zone_indices(_CACHE.get(obj.as_pointer(),{})))
+        if selected_count>1:layout.label(text='Выбрано сегментов: %d'%selected_count,icon='FACESEL')
         row=layout.row(align=True)
         row.prop(props,'live',text='Live',toggle=True,icon='PLAY')
         row.operator('nyanw35.rebuild',text='',icon='FILE_REFRESH')
@@ -1402,10 +1554,12 @@ class NYANW35_PT_main(Panel):
         else:
             box.label(text='F / M / V / Shift+D: обычный Blender')
             ui=context.window_manager.nh35_ui
-            box.prop(ui,'width')
-            box.prop(ui,'bulge')
-            box.prop(ui,'bias')
-            box.prop(ui,'flip')
+            parameters=box.column()
+            parameters.enabled=bool(_zone_ui_faces(bmesh.from_edit_mesh(obj.data),obj))
+            parameters.prop(ui,'width')
+            parameters.prop(ui,'bulge')
+            parameters.prop(ui,'bias')
+            parameters.prop(ui,'flip')
             smooth=box.box()
             smooth.label(text='Сглаживание направлений',icon='CURVE_BEZCURVE')
             mesh=bmesh.from_edit_mesh(obj.data)
@@ -1420,6 +1574,15 @@ class NYANW35_PT_main(Panel):
                 if max(values)-min(values)>1e-5:smooth.label(text='Разные значения',icon='INFO')
             smooth.label(text='Нужную точку выдели последней')
             smooth.label(text='Соседние выбранные точки задают направления')
+            density_box=box.box()
+            density_box.label(text='Локальная плотность',icon='MOD_SUBSURF')
+            density_keys=_density_targets(mesh,_CACHE.get(obj.as_pointer(),{}).get('result'))
+            density_controls=density_box.column(align=True);density_controls.enabled=bool(density_keys)
+            density_controls.prop(ui,'local_density')
+            row=density_controls.row(align=True)
+            for label,value in [('×2',2.),('×4',4.),('Сброс',1.)]:
+                op=row.operator('nyanw35.local_density',text=label);op.value=value
+            density_box.label(text='Выдели рёбра нужного участка')
             action=box.operator('nyanw35.hair_loop',text='Hair Loop (Ctrl+R)',icon='MOD_SUBSURF')
             action.mode='AUTO'
             box.label(text='Shift+колесо: ширина; Ctrl+колесо: выпуклость')
@@ -1481,10 +1644,11 @@ def _gpu_batches(cache,guide,shader):
     """
     result=cache['result']
     transform=tuple(float(x) for row in guide.matrix_world for x in row)
-    active=-1
+    selected=set()
     if guide==bpy.context.edit_object and guide.nh35.show_tint and guide.nh35.opacity>0:
-        active=cache.get('active',-1)
-    tint=(active,tuple(guide.nh35.tint),float(guide.nh35.opacity))
+        selected=_selected_zone_indices(cache)
+    active=cache.get('active',-1)
+    tint=(tuple(sorted(selected)),active,tuple(guide.nh35.tint),float(guide.nh35.opacity))
     signature=(id(result),transform,tint)
     if cache.get('gpu_signature')==signature: return cache['gpu_batches']
     matrix=guide.matrix_world
@@ -1512,8 +1676,8 @@ def _gpu_batches(cache,guide,shader):
         else: n=Vector((0,0,1))
         intensity=.70+.26*abs(n.dot(light))
         base=(.74*intensity,.79*intensity,.87*intensity)
-        if owner==active:
-            alpha=guide.nh35.opacity
+        if owner in selected:
+            alpha=guide.nh35.opacity*(1. if owner==active else .65)
             base=tuple(v*(1.-alpha)+color*alpha for v,color in zip(base,guide.nh35.tint))
         face_color=(*base,1.0)
         for i in range(1,len(poly)-1):
@@ -1790,7 +1954,7 @@ def _on_undo_post(_dummy):
     _UNDOING=False
 
 
-_CLASSES=(NHGuidedProperties,NHGuidedUISettings,NYANW35_OT_direction_smoothing,
+_CLASSES=(NHGuidedProperties,NHGuidedUISettings,NYANW35_OT_direction_smoothing,NYANW35_OT_local_density,
           NYANW35_OT_create_guide,NYANW35_OT_activate,NYANW35_OT_disable,
           NYANW35_OT_demo,NYANW35_OT_rebuild,NYANW35_OT_bake,
           NYANW35_OT_pin_rails, NYANW35_OT_adjust,NYANW35_OT_pick_zone,
@@ -1801,9 +1965,8 @@ def _register_keys():
     kc=bpy.context.window_manager.keyconfigs.addon
     if kc is None: return
     km=kc.keymaps.new(name='Mesh',space_type='EMPTY')
-    pick_map=kc.keymaps.new(name='3D View',space_type='VIEW_3D')
-    click=pick_map.keymap_items.new('nyanw35.pick_zone','LEFTMOUSE','CLICK',any=True)
-    _KEYMAPS.append((pick_map,click))
+    click=km.keymap_items.new('nyanw35.pick_zone','LEFTMOUSE','PRESS',any=True)
+    _KEYMAPS.append((km,click))
     # Add-on Mesh keymap takes precedence over Blender's default Mesh Ctrl+R
     # only when poll() accepts a NyanwHair guide. Shift+R is untouched.
     kmi=km.keymap_items.new('nyanw35.hair_loop','R','PRESS',ctrl=True)

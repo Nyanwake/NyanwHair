@@ -1,4 +1,4 @@
-"""NyanwHair 0.35.14: quad strips and directed endpoint smoothing.
+"""NyanwHair 0.35.15: local density and flow-aligned curl patches.
 
 Pure Python, no Blender IDs or tags on vertices/edges. Blender face corners may
 store the user's chosen end caps; this module only consumes that choice.
@@ -76,6 +76,8 @@ class MeshResult:
     rail_samples: dict=field(default_factory=dict)
     vertex_keys: list=field(default_factory=list)
     directional_smoothing: dict=field(default_factory=dict)
+    local_density: dict=field(default_factory=dict)
+    surface_columns: dict=field(default_factory=dict)
 
 
 def _plan_priority(plan):
@@ -376,7 +378,7 @@ def plan_widths(plans):
 
 
 def generate(points,boundaries,settings=None,rows=12,max_polygons=200000,
-             previous=None,caps=None,reference_length=0.,directional_smoothing=None):
+             previous=None,caps=None,reference_length=0.,directional_smoothing=None,local_density=None):
     points=[tuple(map(float,p)) for p in points]
     settings=list(settings or [ZoneSettings() for _ in boundaries])
     rows=max(2,min(256,int(rows)))
@@ -437,7 +439,8 @@ def generate(points,boundaries,settings=None,rows=12,max_polygons=200000,
     out.directional_smoothing=dict(directional_smoothing or {})
     evaluate=make_edge_evaluator(points,plans,out.directional_smoothing)
     cap_profiles=_cap_profiles(points,plans,widths,evaluate)
-    registry=RailRegistry(points,evaluate,rows,plans,reference_length,max_polygons)
+    out.local_density=dict(local_density or {})
+    registry=RailRegistry(points,evaluate,rows,plans,reference_length,max_polygons,out.local_density)
     out.reference_length=registry.reference_length
     out.target_spacing=registry.spacing
     vertex_index={}
@@ -455,42 +458,10 @@ def generate(points,boundaries,settings=None,rows=12,max_polygons=200000,
             out.guide_curves[p.index]=(tuple(pos for key,pos in left),tuple(pos for key,pos in right))
             out.transitions[p.index]=(len(left)-1,len(right)-1)
             w=widths[p.index]
-            normals=[]
-            for u,(_,a),(_,b) in zip(fractions,body_left,body_right):
-                n=registry.normal(ca,cb,u,a,b)
-                if length(n)<EPS:n=normals[-1] if normals else p.normal
-                reference=normals[-1] if normals else p.normal
-                if dot(n,reference)<0:n=mul(n,-1.)
-                normals.append(n)
             first=p.boundary.index(p.left[0])
             reverse=(p.boundary[(first+1)%len(p.boundary)]==p.left[1])
             if signs[p.index]<0:reverse=not reverse
             out.orientation_by_face[p.index]=reverse
-            grid=[];sections=[]
-            for k,((akey,a),(bkey,b)) in enumerate(zip(body_left,body_right)):
-                row=[];coords=[]
-                for x in range(w+1):
-                    if x==0:key=akey;pos=a
-                    elif x==w:key=bkey;pos=b
-                    elif akey==bkey:key=akey;pos=a
-                    else:
-                        v=bias_cross_position(x/w,p.settings.bias)
-                        pos=mix(a,b,v)
-                        amplitude=p.settings.bulge*length(sub(b,a))*math.sin(math.pi*v)
-                        if p.settings.flip:amplitude=-amplitude
-                        pos=add(pos,mul(normals[k],amplitude))
-                        if k==0 and p.start[0]=='edge' or k==len(body_left)-1 and p.end[0]=='edge':
-                            cap=p.start if k==0 else p.end
-                            lo,hi=edge_key(p.boundary[cap[1]],p.boundary[(cap[1]+1)%len(p.boundary)])
-                            a_v=p.left[0 if k==0 else -1]
-                            aligned=x if a_v==lo else w-x
-                            key=('cap',lo,hi,aligned,w);pos=cap_profiles[(lo,hi)][aligned]
-                        else:key=('inside',p.index,k,x)
-                    # A resampled non-master boundary is shape reference only.
-                    # Actual seam points remain the first owner's schedule.
-                    row.append(vertex_index.get(key) if x in (0,w) else put(key,pos))
-                    coords.append(pos)
-                grid.append(row);sections.append(tuple(coords))
             local=[];local_keys=set()
             def emit(face):
                 face=[v for j,v in enumerate(face) if v!=face[j-1]]
@@ -500,18 +471,59 @@ def generate(points,boundaries,settings=None,rows=12,max_polygons=200000,
                 signature=tuple(sorted(face))
                 if signature in produced or signature in local_keys:return
                 local_keys.add(signature);local.append(tuple(face))
-            def band(a,b,fa,fb):
-                from .ribbon import zipper_flows
-                path=zipper_flows(fa,fb)
-                for (i,j),(ni,nj) in zip(path,path[1:]):emit([a[i],b[j],b[nj],a[ni]])
-            flows_a=registry.flows(ca,cb,ca,left)
-            flows_b=registry.flows(ca,cb,cb,right)
-            if w==1:band(actual_a,actual_b,flows_a,flows_b)
+            mapping=registry.maps[ca.path,cb.path]
+            density_here=any(registry.density.get(edge,1.)>1. for curve in (ca,cb) for edge in curve.edges)
+            if mapping.strong_turn or density_here:
+                from .surface import build_patch
+                sections,columns=build_patch(p,w,registry,ca,cb,left,right,cap_profiles,put,emit,max_polygons)
+                grid=[]
             else:
-                band(actual_a,[row[1] for row in grid],flows_a,fractions)
-                for x in range(1,w-1):
-                    band([row[x] for row in grid],[row[x+1] for row in grid],fractions,fractions)
-                band([row[w-1] for row in grid],actual_b,fractions,flows_b)
+                normals=[]
+                for u,(_,a),(_,b) in zip(fractions,body_left,body_right):
+                    n=registry.normal(ca,cb,u,a,b)
+                    if length(n)<EPS:n=normals[-1] if normals else p.normal
+                    reference=normals[-1] if normals else p.normal
+                    if dot(n,reference)<0:n=mul(n,-1.)
+                    normals.append(n)
+                grid=[];sections=[]
+                for k,((akey,a),(bkey,b)) in enumerate(zip(body_left,body_right)):
+                    row=[];coords=[]
+                    for x in range(w+1):
+                        if x==0:key=akey;pos=a
+                        elif x==w:key=bkey;pos=b
+                        elif akey==bkey:key=akey;pos=a
+                        else:
+                            v=bias_cross_position(x/w,p.settings.bias)
+                            pos=mix(a,b,v)
+                            amplitude=p.settings.bulge*length(sub(b,a))*math.sin(math.pi*v)
+                            if p.settings.flip:amplitude=-amplitude
+                            pos=add(pos,mul(normals[k],amplitude))
+                            if k==0 and p.start[0]=='edge' or k==len(body_left)-1 and p.end[0]=='edge':
+                                cap=p.start if k==0 else p.end
+                                lo,hi=edge_key(p.boundary[cap[1]],p.boundary[(cap[1]+1)%len(p.boundary)])
+                                a_v=p.left[0 if k==0 else -1]
+                                aligned=x if a_v==lo else w-x
+                                key=('cap',lo,hi,aligned,w);pos=cap_profiles[(lo,hi)][aligned]
+                            else:key=('inside',p.index,k,x)
+                        # Resampled boundaries shape the interior only.
+                        # Real seam points are shared by all owners.
+                        row.append(vertex_index.get(key) if x in (0,w) else put(key,pos))
+                        coords.append(pos)
+                    grid.append(row);sections.append(tuple(coords))
+                def band(a,b,fa,fb):
+                    from .ribbon import zipper_flows
+                    path=zipper_flows(fa,fb)
+                    for (i,j),(ni,nj) in zip(path,path[1:]):emit([a[i],b[j],b[nj],a[ni]])
+                flows_a=registry.flows(ca,cb,ca,left)
+                flows_b=registry.flows(ca,cb,cb,right)
+                if w==1:band(actual_a,actual_b,flows_a,flows_b)
+                else:
+                    band(actual_a,[row[1] for row in grid],flows_a,fractions)
+                    for x in range(1,w-1):
+                        band([row[x] for row in grid],[row[x+1] for row in grid],fractions,fractions)
+                    band([row[w-1] for row in grid],actual_b,fractions,flows_b)
+                columns=[actual_a]+[[row[x] for row in grid] for x in range(1,w)]+[actual_b]
+            out.surface_columns[p.index]=tuple(tuple(column) for column in columns)
             if len(local)+len(out.faces)>max_polygons:raise ValueError('Превышен лимит полигонов')
             produced.update(local_keys)
             out.faces.extend(local);out.owners.extend([p.index]*len(local))
@@ -532,16 +544,17 @@ def generate(points,boundaries,settings=None,rows=12,max_polygons=200000,
     out.faces=[tuple(remap[v] for v in face) for face in out.faces]
     out.surface_grids={zone:tuple(tuple(remap.get(v) if v is not None else None for v in row) for row in grid)
                        for zone,grid in out.surface_grids.items()}
+    out.surface_columns={zone:tuple(tuple(remap[v] for v in column if v in remap) for column in columns)
+                         for zone,columns in out.surface_columns.items()}
     owner_edges=defaultdict(set)
     for face,owner in zip(out.faces,out.owners):
         owner_edges[owner].update(edge_key(a,b) for a,b in zip(face,face[1:]+face[:1]))
-    for zone,grid in out.surface_grids.items():
-        w=len(grid[0])-1
+    for zone,columns in out.surface_columns.items():
+        w=len(columns)-1
         out.cut_lines[zone]={}
         for x in range(1,w):
-            line=[row[x] for row in grid]
-            if any(v is None for v in line):continue
-            if all(a==b or edge_key(a,b) in owner_edges[zone] for a,b in zip(line,line[1:])):
+            line=columns[x]
+            if len(line)>1 and all(a==b or edge_key(a,b) in owner_edges[zone] for a,b in zip(line,line[1:])):
                 out.cut_lines[zone][x/w]=tuple(out.vertices[v] for v in line)
     out.samples_per_edge={edge:max(0,len(stations)-1) for edge,stations in registry.stations.items()}
     return out
@@ -572,7 +585,8 @@ def sample_cut_guide(result, zone, t, count=20):
     width=len(sections[0])-1
     x=max(0.,min(float(width),float(t)*width))
     column=min(width-1,int(x));blend=x-column
-    line=[mix(row[column],row[column+1],blend) for row in sections]
+    line=next((list(line) for fraction,line in result.cut_lines.get(zone,{}).items() if abs(fraction-t)<1e-8),None)
+    if line is None:line=[mix(row[column],row[column+1],blend) for row in sections]
     distances=[0.]
     for a,b in zip(line,line[1:]): distances.append(distances[-1]+length(sub(b,a)))
     total=distances[-1]
