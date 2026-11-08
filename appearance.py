@@ -8,7 +8,7 @@ def sharp_edges(result):
         for samples in rails:
             for (ka,pa),(kb,pb) in zip(samples,samples[1:]):
                 if ka in indices and kb in indices and indices[ka]!=indices[kb]:sharp.add(edge_key(indices[ka],indices[kb]))
-    return sharp
+    return sharp|set(getattr(result,"extra_sharp_edges",()))
 
 
 def corner_normals(result,smooth=True):
@@ -52,23 +52,21 @@ def shader():
     if _SHADER is None:
         import gpu
         info=gpu.types.GPUShaderCreateInfo();interface=gpu.types.GPUStageInterfaceInfo('nyanwhair_surface')
-        interface.smooth('VEC3','viewNormal');interface.smooth('VEC4','tint')
+        interface.smooth('VEC3','viewNormal');interface.smooth('VEC4','tint');interface.smooth('VEC3','baseColor')
         info.push_constant('MAT4','viewProjectionMatrix');info.push_constant('MAT3','viewRotation');info.push_constant('VEC4','lighting')
-        info.vertex_in(0,'VEC3','pos');info.vertex_in(1,'VEC3','normal');info.vertex_in(2,'VEC4','color');info.vertex_out(interface)
+        info.vertex_in(0,'VEC3','pos');info.vertex_in(1,'VEC3','normal');info.vertex_in(2,'VEC4','color');info.vertex_in(3,'VEC3','base');info.vertex_out(interface)
         info.sampler(0,'FLOAT_2D','matcapDiffuse');info.sampler(1,'FLOAT_2D','matcapSpecular');info.fragment_out(0,'VEC4','fragColor')
-        info.vertex_source('void main(){gl_Position=viewProjectionMatrix*vec4(pos,1.0);viewNormal=viewRotation*normal;tint=color;}')
+        info.vertex_source('void main(){gl_Position=viewProjectionMatrix*vec4(pos,1.0);viewNormal=viewRotation*normal;tint=color;baseColor=base;}')
         info.fragment_source('''
-        vec3 displayColor(vec3 x){x=max(x,vec3(0.0));return mix(x*12.92,1.055*pow(x,vec3(1.0/2.4))-.055,step(vec3(.0031308),x));}
         void main(){
             vec3 n=normalize(viewNormal)*(gl_FrontFacing?1.0:-1.0);
             float intensity=.65+.35*abs(dot(n,normalize(vec3(.31,.43,.85))));
-            vec3 base=vec3(.74,.79,.87)*intensity;
+            vec3 base=baseColor*.4*intensity;
             if(lighting.x>.5){
                 vec2 uv=clamp(n.xy*.5+.5,vec2(.001),vec2(.999));
-                vec3 light=texture(matcapDiffuse,uv).rgb+lighting.y*texture(matcapSpecular,uv).rgb;
-                base=displayColor(light);
+                base=baseColor*texture(matcapDiffuse,uv).rgb+lighting.y*texture(matcapSpecular,uv).rgb;
             }
-            fragColor=vec4(mix(base,tint.rgb,tint.a),1.0);
+            fragColor=vec4(mix(base*lighting.z,tint.rgb,tint.a),1.0);
         }''')
         _SHADER=gpu.shader.create_from_info(info)
     return _SHADER
@@ -110,7 +108,7 @@ def _textures(path):
     return texture(diffuse),texture(specular)
 
 
-def bind(context,follow_matcap=True):
+def bind(context,follow_matcap=True,brightness=.8):
     import gpu
     surface=shader();surface.bind()
     view=gpu.matrix.get_model_view_matrix();surface.uniform_float('viewProjectionMatrix',gpu.matrix.get_projection_matrix()@view);surface.uniform_float('viewRotation',view.to_3x3())
@@ -128,7 +126,7 @@ def bind(context,follow_matcap=True):
         if None not in _MATCAPS:_MATCAPS[None]=_dummy()
         textures=_MATCAPS[None];status='MatCap недоступен: используется студийный свет'
     surface.uniform_sampler('matcapDiffuse',textures[0]);surface.uniform_sampler('matcapSpecular',textures[1])
-    surface.uniform_float('lighting',(float(bool(path and status is None)),float(shading.show_specular_highlight),0.,0.))
+    surface.uniform_float('lighting',(float(bool(path and status is None)),float(shading.show_specular_highlight),brightness,0.))
     return surface,status
 
 

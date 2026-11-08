@@ -120,7 +120,7 @@ class RailRegistry:
     Logical junctions are mandatory anchors. Regular support vertices do
     not allocate rows. No RAM cache or per-zone length budget is involved.
     """
-    def __init__(self,points,evaluate,rows,plans,reference_length=0.,max_samples=200000,local_density=None,point_density=None,previous=None,layout_lengths=None):
+    def __init__(self,points,evaluate,rows,plans,reference_length=0.,max_samples=200000,local_density=None,point_density=None,previous=None,layout_lengths=None,edge_details=None):
         self.points=points;self.evaluate=evaluate;self.rows=rows
         self.stations=defaultdict(dict);self.paths={};self.boundaries=[];self.complete_boundaries={};self.needs_stitch=False
         self.maps={};self.geometry_cache={};self.map_cache={}
@@ -178,6 +178,14 @@ class RailRegistry:
                 self._register_samples(curve,first,last,adaptive)
         self.stations.clear()
         for curve,first,last,adaptive in sections:
+            if any((edge_details or {}).get(edge,1.)>1.+1e-7 for edge in curve.edges):
+                from .density import redistribute
+                def factor(u):
+                    i=min(len(curve.path)-2,max(0,bisect.bisect_right(curve.offsets,u*curve.total)-1))
+                    return (edge_details or {}).get(edge_key(curve.path[i],curve.path[i+1]),1.)
+                knots=[offset/curve.total for offset in curve.offsets[1:-1]]
+                refined=redistribute(adaptive,lambda u:u*curve.total,factor,knots,2*max_samples)
+                allocated+=len(refined)-len(adaptive);adaptive=refined
             if any(self.density.get(edge,1.)>1. for edge in curve.edges):
                 # Preserve every original sample. Insert only inside
                 # selected source-edge intervals, sharing their identities.

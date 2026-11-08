@@ -1,4 +1,4 @@
-"""NyanwHair 0.35.20: independent body widths and shared boundary contracts.
+"""NyanwHair 0.35.22: grouped ownership, local detail and shared boundary contracts.
 
 Pure Python, no Blender IDs or tags on vertices/edges. Blender face corners may
 store the user's chosen end caps; this module only consumes that choice.
@@ -38,6 +38,10 @@ class ZoneSettings:
     bias: float=0.0
     flip: bool=False
     order: int=0
+    group: int=1
+    detail: int=0
+    back: float=0.
+    back_simple: bool=False
 
 @dataclass(frozen=True)
 class FacePlan:
@@ -393,7 +397,7 @@ def plan_widths(plans,fixed=None,warnings=None):
     widths={}
     for p in plans:
         k=root(p.index)
-        widths[k]=max(widths.get(k,1),max(1,min(32,int(p.settings.width))))
+        widths[k]=max(widths.get(k,1),max(2 if p.settings.back>0 else 1,min(32,int(p.settings.width))))
     constraints=defaultdict(set)
     for owner,value in (fixed or {}).items():constraints[root(owner)].add(value)
     for key,values in constraints.items():
@@ -408,7 +412,7 @@ def plan_widths(plans,fixed=None,warnings=None):
 
 
 def generate(points,boundaries,settings=None,rows=12,max_polygons=200000,
-             previous=None,caps=None,reference_length=0.,directional_smoothing=None,local_density=None,point_density=None,layout_lengths=None,regular_rows=False):
+             previous=None,caps=None,reference_length=0.,directional_smoothing=None,local_density=None,point_density=None,layout_lengths=None,regular_rows=False,face_indices=None):
     points=[tuple(map(float,p)) for p in points]
     settings=list(settings or [ZoneSettings() for _ in boundaries])
     rows=max(2,min(256,int(rows)))
@@ -418,12 +422,13 @@ def generate(points,boundaries,settings=None,rows=12,max_polygons=200000,
         try:
             hint=previous.plans_by_loop.get(tuple(boundary)) if previous else None
             explicit=caps[i] if caps and i<len(caps) else None
-            plan=plan_face(points,boundary,i,settings[i],hint=hint,caps=explicit)
+            index=face_indices[i] if face_indices is not None else i
+            plan=plan_face(points,boundary,index,settings[i],hint=hint,caps=explicit)
             plans.append(plan)
-            out.face_paths[i]=(plan.left,plan.right)
+            out.face_paths[plan.index]=(plan.left,plan.right)
             out.plans_by_loop[plan.boundary]=plan
         except (ValueError,IndexError,TypeError) as exc:
-            out.warnings[i]=str(exc)
+            out.warnings[face_indices[i] if face_indices is not None else i]=str(exc)
     if not plans: return out
     face_owners=defaultdict(set)
     for p in plans:
@@ -463,14 +468,20 @@ def generate(points,boundaries,settings=None,rows=12,max_polygons=200000,
                 queue.append(j)
     plans=[replace(p,normal=mul(p.normal,signs[p.index])) for p in plans]
     from .topology import RailRegistry
-    widths={p.index:max(1,min(32,int(p.settings.width))) for p in plans}
+    widths={p.index:max(2 if p.settings.back>0 else 1,min(32,int(p.settings.width))) for p in plans}
     out.effective_widths=widths
     out.base_rows=rows
     out.directional_smoothing=dict(directional_smoothing or {})
     evaluate=make_edge_evaluator(points,plans,out.directional_smoothing)
     out.local_density=dict(local_density or {})
     out.point_density=dict(point_density or {})
-    registry=RailRegistry(points,evaluate,rows,plans,reference_length,max_polygons,out.local_density,out.point_density,previous,layout_lengths)
+    details={p.index:p.settings.detail if p.settings.detail>0 else rows for p in plans}
+    base=min(details.values(),default=rows)
+    edge_details={}
+    for p in plans:
+        for rail in (p.left,p.right):
+            for edge in physical_edges(rail):edge_details[edge]=max(edge_details.get(edge,1.),details[p.index]/base)
+    registry=RailRegistry(points,evaluate,base,plans,reference_length,max_polygons,out.local_density,out.point_density,previous,layout_lengths,edge_details)
     rail_edges={edge for p in plans for rail in (p.left,p.right) for edge in physical_edges(rail)}
     interfaces={};cap_widths={}
     for p in plans:
