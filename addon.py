@@ -1269,7 +1269,7 @@ class NYANW35_OT_hair_loop(Operator):
 
 
 class NYANW35_PT_main(Panel):
-    bl_label='NyanwHair v0.35.11'
+    bl_label='NyanwHair v0.35.12'
     bl_idname='NYANW35_PT_main'
     bl_space_type='VIEW_3D'
     bl_region_type='UI'

@@ -5,7 +5,7 @@ source vertex or an oriented parameter on a source edge, never a position.
 """
 import bisect
 from collections import defaultdict
-from .core import EPS,sub,add,cross,length,norm,edge_key,newell
+from .core import EPS,CURVE_SUBDIVISIONS,sub,add,cross,length,norm,edge_key,newell
 
 
 class CurvePath:
@@ -14,8 +14,9 @@ class CurvePath:
         self.vertices={v:i for i,v in enumerate(path)}
         self.edges={edge_key(a,b):(i,a,b) for i,(a,b) in enumerate(zip(path,path[1:]))}
         self.tables=[]; self.offsets=[0.]
+        subdivisions=CURVE_SUBDIVISIONS
         for a,b in zip(path,path[1:]):
-            positions=[evaluate(a,b,j/12.) for j in range(13)]
+            positions=[evaluate(a,b,j/subdivisions) for j in range(subdivisions+1)]
             arc=[0.]
             for p,q in zip(positions,positions[1:]):arc.append(arc[-1]+length(sub(q,p)))
             self.tables.append(arc); self.offsets.append(self.offsets[-1]+arc[-1])
@@ -34,7 +35,9 @@ class CurvePath:
         s=self.parameter(key)
         if s is None:raise ValueError('Точка не принадлежит направляющей')
         i=min(len(self.tables)-1,int(s));t=s-i
-        x=max(0.,min(12.,t*12.));j=min(11,int(x));blend=x-j
+        subdivisions=CURVE_SUBDIVISIONS
+        x=max(0.,min(float(subdivisions),t*subdivisions))
+        j=min(subdivisions-1,int(x));blend=x-j
         arc=self.tables[i]
         return (self.offsets[i]+arc[j]*(1.-blend)+arc[j+1]*blend)/self.total
 
@@ -52,8 +55,8 @@ class CurvePath:
         if abs(distance-self.total)<1e-10:
             v=self.path[-1];return ('v',v),self.points[v]
         arc=self.tables[i];d=distance-self.offsets[i]
-        j=min(12,max(1,bisect.bisect_left(arc,d)))
-        t=((j-1)+(d-arc[j-1])/max(EPS,arc[j]-arc[j-1]))/12.
+        j=min(CURVE_SUBDIVISIONS,max(1,bisect.bisect_left(arc,d)))
+        t=((j-1)+(d-arc[j-1])/max(EPS,arc[j]-arc[j-1]))/CURVE_SUBDIVISIONS
         a,b=self.path[i:i+2];lo,hi=edge_key(a,b)
         t=round(t if a==lo else 1.-t,10)
         if t<=1e-10:return ('v',lo),self.points[lo]

@@ -1,4 +1,4 @@
-"""NyanwHair 0.35.11: inherited rail rows and local seam transitions.
+"""NyanwHair 0.35.12: smooth guides with independent junction branches.
 
 Pure Python, no Blender IDs or tags on vertices/edges. Blender face corners may
 store the user's chosen end caps; this module only consumes that choice.
@@ -17,6 +17,7 @@ from dataclasses import dataclass, field, replace
 from collections import defaultdict
 
 EPS = 1e-10
+CURVE_SUBDIVISIONS = 48
 
 def add(a,b): return (a[0]+b[0],a[1]+b[1],a[2]+b[2])
 def sub(a,b): return (a[0]-b[0],a[1]-b[1],a[2]-b[2])
@@ -301,47 +302,39 @@ def physical_edges(path): return [edge_key(a,b) for a,b in zip(path,path[1:])]
 
 
 def make_edge_evaluator(points,plans):
-    """Piecewise Catmull-Rom following the two *working rails* per face.
+    """Interpolating cubics with first-owner, reciprocal continuations.
 
-    A curve's intended interior continuation is read from its own ordered
-    rail, not guessed from arbitrary adjacent graph edges. A shared edge
-    always has a single identical evaluator for all zones. If shared zones
-    disagree on a continuation, use a safe one-sided tangent at that end.
+    A shared source edge has ONE shape. Its first owner specifies both
+    endpoint roles, including a free end. New walls cannot reinterpret it.
+    Continuations must agree on both incident half-edges: a child meeting a
+    through-guide is an independent curve end, not another tangent vote.
+
+    As in GuideCurveV19, free ends have zero handles; interior directions
+    bisect the adjacent unit chords. Handle lengths belong to their OWN
+    chord, so a nearby short support cannot flatten the longer curve.
+    This gives geometric (G1), not parameter-speed (C1), continuity.
     """
-    through=defaultdict(set)
-    for p in plans:
+    claims={}
+    for p in sorted(plans,key=_plan_priority):
         for rail in (p.left,p.right):
-            for prev,a,nxt in zip(rail,rail[1:],rail[2:]):
-                through[(a,nxt)].add(prev)
-                through[(a,prev)].add(nxt)
+            for i,(a,b) in enumerate(zip(rail,rail[1:])):
+                claims.setdefault((a,b),rail[i-1] if i else None)
+                claims.setdefault((b,a),rail[i+2] if i+2<len(rail) else None)
+    through={half:other for half,other in claims.items()
+             if other is not None and claims.get((half[0],other))==half[1]}
     cache={}
     def tangent(a,b):
-        span=sub(points[b],points[a]); spanlen=length(span)
-        options=through.get((a,b),set())
-        if len(options)==1:
-            other=next(iter(options))
-        elif len(options)>1:
-            other=None
-        else:
-            # A cap is NOT a through-rail. Taking the other adjacent edge
-            # here caused the rectangular starter to bulge into waves, since
-            # its top/bottom cross-edge was mistaken for a curve continuation.
-            other=None
-        if other is not None:
-            # Angle-bisector Hermite tangent with centripetal-length limiter.
-            # It follows the intended through-rail, cannot overshoot a short
-            # neighbouring control edge, and is the same for shared zones.
-            incoming=sub(points[a],points[other]); prevlen=length(incoming)
-            if prevlen>EPS:
-                direction=norm(add(norm(incoming),norm(span)))
-                if dot(direction,span)>EPS:
-                    # A modestly stronger centripetal tangent rounds the
-                    # transition through supports while remaining bounded by
-                    # the two adjoining spans; it cannot flare arbitrarily.
-                    magnitude=min(1.20*spanlen,1.20*prevlen,
-                                  .69*(spanlen+prevlen))
-                    return mul(direction,magnitude)
-        return span
+        other=through.get((a,b))
+        span=sub(points[b],points[a]);size=length(span)
+        if other is None or size<EPS:return (0.,0.,0.)
+        incoming=sub(points[a],points[other])
+        direction=norm(add(norm(incoming),norm(span)))
+        # A true U-turn has no unique tangent. A zero handle avoids a loop.
+        if dot(direction,norm(span))<=EPS:return (0.,0.,0.)
+        # Bezier handle = tangent / 3, hence <= 0.4 * this chord.
+        # Both handles project forwards and their combined projection is
+        # <= 0.8 * chord: the control polygon cannot double back along it.
+        return mul(direction,1.20*size)
     def evaluate(a,b,t):
         u,v=edge_key(a,b)
         pair=(u,v)
