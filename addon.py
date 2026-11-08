@@ -1,6 +1,6 @@
 """NyanwHair Guided Surface Blender adapter. F zones own two ordered rails.
 
-Curve direction settings live on face corners, density is a user edge value.
+Curve directions live on face corners; density values belong to edges or points.
 No control-element IDs are used. Live does not mutate Blender datablocks.
 """
 import bpy
@@ -31,6 +31,8 @@ L_BIAS = 'nh35_bias'
 L_FLIP = 'nh35_flip'
 L_CAP = 'nh35_cap_corner'  # BMLOOP, per-face direction, never a vertex/edge tag
 L_DENSITY = 'nh35_density'
+L_POINT_DENSITY = 'nh35_point_density'
+L_POINT_RADIUS = 'nh35_point_radius'
 L_SMOOTH_START = 'nh35_smooth_start'
 L_SMOOTH_END = 'nh35_smooth_end'
 L_ORDER = 'nh35_zone_order'  # stable creation order, persisted in source faces
@@ -338,6 +340,8 @@ def _prepare_bmesh(bm, result=None):
     if bm.loops.layers.int.get(L_CAP) is None:
         bm.loops.layers.int.new(L_CAP)
     if bm.edges.layers.float.get(L_DENSITY) is None:bm.edges.layers.float.new(L_DENSITY)
+    for name in (L_POINT_DENSITY,L_POINT_RADIUS):
+        if bm.verts.layers.float.get(name) is None:bm.verts.layers.float.new(name)
     for name in (L_SMOOTH_START,L_SMOOTH_END):
         if bm.loops.layers.float.get(name) is None:bm.loops.layers.float.new(name)
     bm.verts.index_update(); bm.faces.index_update()
@@ -574,10 +578,63 @@ def _density_targets(bm,result):
     return _selected_guide_edges(bm,result,bpy.context.tool_settings.mesh_select_mode[0])
 
 
+def _point_density(bm):
+    gain=bm.verts.layers.float.get(L_POINT_DENSITY);radius=bm.verts.layers.float.get(L_POINT_RADIUS)
+    if gain is None:return {}
+    bm.verts.index_update()
+    return {v.index:(min(8.,1.+float(v[gain])),float(v[radius]) if radius and v[radius]>0. else .2)
+            for v in bm.verts if v[gain]>0.}
+
+
+def _point_density_target(bm,result):
+    if result is None:return None
+    active=bm.select_history.active
+    if not isinstance(active,bmesh.types.BMVert) or not active.is_valid or not active.select:
+        selected=[v for v in bm.verts if v.select]
+        active=selected[0] if len(selected)==1 else None
+    rails={v for paths in result.face_paths.values() for path in paths for v in path}
+    return active if active is not None and active.index in rails else None
+
+
+def _get_point_radius(self):
+    obj=bpy.context.edit_object
+    if not is_guide(obj):return 20.
+    bm=bmesh.from_edit_mesh(obj.data);vertex=_point_density_target(bm,_CACHE.get(obj.as_pointer(),{}).get('result'))
+    layer=bm.verts.layers.float.get(L_POINT_RADIUS)
+    return float(vertex[layer])*100. if vertex is not None and layer and vertex[layer]>0. else 20.
+
+
+def _set_point_radius(self,value):
+    if not _SYNCING_UI and is_guide(bpy.context.edit_object):
+        bpy.ops.nyanw35.point_density('EXEC_DEFAULT',True,field='RADIUS',value=float(value))
+
+
+class NYANW35_OT_point_density(Operator):
+    bl_idname='nyanw35.point_density'
+    bl_label='Плотность вокруг активной точки'
+    bl_options={'REGISTER','UNDO','UNDO_GROUPED'}
+    field: EnumProperty(items=[('FACTOR','Сила',''),('RADIUS','Радиус','')],default='FACTOR')
+    value: FloatProperty(default=1.,min=.1,max=200.)
+    def execute(self,context):
+        obj=context.edit_object
+        if not is_guide(obj):return {'CANCELLED'}
+        bm=bmesh.from_edit_mesh(obj.data);_prepare_bmesh(bm);_rebuild(obj,False)
+        vertex=_point_density_target(bm,_CACHE.get(obj.as_pointer(),{}).get('result'))
+        if vertex is None:return {'CANCELLED'}
+        if self.field=='RADIUS':vertex[bm.verts.layers.float[L_POINT_RADIUS]]=max(.001,min(2.,self.value/100.))
+        else:vertex[bm.verts.layers.float[L_POINT_DENSITY]]=max(1.,min(8.,self.value))-1.
+        bmesh.update_edit_mesh(obj.data,loop_triangles=False,destructive=False)
+        _rebuild(obj,True)
+        return {'FINISHED'}
+
+
 def _get_local_density(self):
     obj=bpy.context.edit_object
     if not is_guide(obj):return 1.
     bm=bmesh.from_edit_mesh(obj.data)
+    if self.density_mode=='POINT':
+        vertex=_point_density_target(bm,_CACHE.get(obj.as_pointer(),{}).get('result'))
+        return _point_density(bm).get(vertex.index,(1.,.2))[0] if vertex is not None else 1.
     keys=_density_targets(bm,_CACHE.get(obj.as_pointer(),{}).get('result'))
     values=_edge_density(bm)
     return sum(values.get(key,1.) for key in keys)/len(keys) if keys else 1.
@@ -585,7 +642,8 @@ def _get_local_density(self):
 
 def _set_local_density(self,value):
     if not _SYNCING_UI and is_guide(bpy.context.edit_object):
-        bpy.ops.nyanw35.local_density('EXEC_DEFAULT',True,value=float(value))
+        operator=bpy.ops.nyanw35.point_density if self.density_mode=='POINT' else bpy.ops.nyanw35.local_density
+        operator('EXEC_DEFAULT',True,value=float(value))
 
 
 class NYANW35_OT_local_density(Operator):
@@ -608,7 +666,7 @@ class NYANW35_OT_local_density(Operator):
         return {'FINISHED'}
 
 
-def _capture(obj,include_smoothing=False,include_detail=False):
+def _capture(obj,include_smoothing=False,include_detail=False,include_points=False):
     bm,owned=_mesh_bm(obj)
     try:
         bm.verts.ensure_lookup_table(); bm.verts.index_update()
@@ -626,19 +684,20 @@ def _capture(obj,include_smoothing=False,include_detail=False):
         cap_layer=bm.loops.layers.int.get(L_CAP)
         caps=[_read_caps(face,cap_layer) for face in bm.faces]
         # BMesh indices are only temporary array offsets within this snapshot.
-        # Nothing is written on BMVert or BMEdge.
+        # Capture never writes to source elements.
         selected=_active_face(bm,obj)
         active=selected.index if selected is not None else -1
         snapshot=(positions,zones,options,active,caps)
         if include_smoothing:snapshot+=(_directional_smoothing(bm),)
         if include_detail:snapshot+=(_edge_density(bm),)
+        if include_points:snapshot+=(_point_density(bm),)
         return snapshot
     finally:
         if owned: bm.free()
 
 
-def _signature(positions,zones,options,rows,caps,detail_length=0.,smoothing=None,density=None):
-    return (int(rows),round(detail_length,8),tuple(sorted((a,b,round(v,6)) for (a,b),v in (density or {}).items())),tuple(sorted((a,b,round(v,6)) for (a,b),v in (smoothing or {}).items())),
+def _signature(positions,zones,options,rows,caps,detail_length=0.,smoothing=None,density=None,point_density=None):
+    return (tuple(sorted((i,round(f,6),round(r,6)) for i,(f,r) in (point_density or {}).items())),int(rows),round(detail_length,8),tuple(sorted((a,b,round(v,6)) for (a,b),v in (density or {}).items())),tuple(sorted((a,b,round(v,6)) for (a,b),v in (smoothing or {}).items())),
             tuple(tuple(round(x,6) for x in p) for p in positions),
             tuple(zones),tuple(caps),
             tuple((o.width,round(o.bulge,5),round(o.bias,5),o.flip,o.order) for o in options))
@@ -652,10 +711,10 @@ def _rebuild(obj,force=False):
     """
     if _UNDOING or not is_guide(obj): return False
     if obj.data.is_editmode and obj.mode != 'EDIT': return False
-    positions,zones,options,active,caps,smoothing,density=_capture(obj,True,True)
+    positions,zones,options,active,caps,smoothing,density,point_density=_capture(obj,True,True,True)
     key=obj.as_pointer()
     rows=obj.nh35.rows
-    signature=_signature(positions,zones,options,rows,caps,obj.nh35.detail_length,smoothing,density)
+    signature=_signature(positions,zones,options,rows,caps,obj.nh35.detail_length,smoothing,density,point_density)
     old=_CACHE.get(key)
     if old and old['signature']==signature and not force:
         if active>=0 and not old.get('zone_selection_explicit'): old['active']=active
@@ -675,7 +734,7 @@ def _rebuild(obj,force=False):
     # coordinate-only changes reuse the same face plan and mesh row counts.
     previous=(old['result'] if old and old['topology']==topology else None)
     try:
-        result=core.generate(positions,zones,options,rows,previous=previous,caps=caps,reference_length=obj.nh35.detail_length,directional_smoothing=smoothing,local_density=density)
+        result=core.generate(positions,zones,options,rows,previous=previous,caps=caps,reference_length=obj.nh35.detail_length,directional_smoothing=smoothing,local_density=density,point_density=point_density)
         warnings=result.warnings
         if warnings:
             status='; '.join('Зона %d: %s'%(i+1,msg)
@@ -766,7 +825,9 @@ class NHGuidedProperties(PropertyGroup):
 
 
 class NHGuidedUISettings(PropertyGroup):
-    local_density: FloatProperty(name='Множитель плотности',min=1.,max=8.,get=_get_local_density,set=_set_local_density,description='Количество отсчётов на выбранных рёбрах направляющих; форма кривой сохраняется')
+    density_mode: EnumProperty(name='Центр уплотнения',items=[('POINT','Точка','Плавное уплотнение вокруг активной точки'),('EDGE','Рёбра','Прежний множитель на выбранных рёбрах')],default='POINT')
+    point_radius: FloatProperty(name='Радиус, % длины',min=.1,max=200.,get=_get_point_radius,set=_set_point_radius,description='Расстояние вдоль направляющих в процентах от опорной длины детализации; плавное затухание до обычной сетки')
+    local_density: FloatProperty(name='Множитель плотности',min=1.,max=8.,get=_get_local_density,set=_set_local_density,description='Плотность вокруг активной точки или на выбранных рёбрах; форма кривой сохраняется')
     direction_smoothing: FloatProperty(name='Сглаживание конца',min=0.,max=1.,get=_get_direction_smoothing,set=_set_direction_smoothing,description='1 — автоматическая плавная касательная; 0 — направление к соседней точке. Только активный конец выбранных направлений')
     width: IntProperty(name='Шаги по ширине',min=1,max=32,default=2,update=_on_ui_change('width'))
     bulge: FloatProperty(name='Выпуклость',default=_DEFAULT_BULGE,min=-3,max=3,step=5,precision=3,update=_on_ui_change('bulge'))
@@ -1176,6 +1237,7 @@ def _split_on_bmesh(bm, zone, t, result, select_result=False):
     bm.faces.index_update()
     if not 0 <= zone < len(bm.faces):
         raise ValueError('Зона больше не существует')
+    original_vertices=set(bm.verts)
     density_records=_edge_density(bm,objects=True)
     direction_records=_directional_smoothing(bm,objects=True)
     source = bm.faces[zone]
@@ -1237,6 +1299,8 @@ def _split_on_bmesh(bm, zone, t, result, select_result=False):
         else:
             _,new_vert=bmesh.utils.edge_split(edge,left,t)
             new_vert.co=Vector(profile[0 if k==0 else -1])
+            new_vert[bm.verts.layers.float[L_POINT_DENSITY]]=0.
+            new_vert[bm.verts.layers.float[L_POINT_RADIUS]]=0.
             ends.append(new_vert)
     start,finish=ends
     if start==finish: raise ValueError('Оба конца разреза совпадают')
@@ -1337,6 +1401,10 @@ def _split_on_bmesh(bm, zone, t, result, select_result=False):
         left_child.select_set(True)
         bm.faces.active=left_child
         bm.select_history.add(left_child)
+    for vertex in bm.verts:
+        if vertex not in original_vertices:
+            vertex[bm.verts.layers.float[L_POINT_DENSITY]]=0.
+            vertex[bm.verts.layers.float[L_POINT_RADIUS]]=0.
     split_records=[(left,right,ends[i]) for i,(kind,left,right,edge) in enumerate(end_caps) if kind=='edge']
     _restore_directions(bm,direction_records,split_records)
     _restore_density(bm,density_records,split_records)
@@ -1378,6 +1446,8 @@ def _insert_anchor_bmesh(bm,proposal,result,select_result=False):
     if anchor is None:raise ValueError('Начальная вершина ребра недоступна')
     _,new_vert=bmesh.utils.edge_split(edge,anchor,proposal['t'])
     new_vert.co=Vector(proposal['point_local'])
+    new_vert[bm.verts.layers.float[L_POINT_DENSITY]]=0.
+    new_vert[bm.verts.layers.float[L_POINT_RADIUS]]=0.
     bm.verts.index_update(); bm.faces.index_update()
     _restore_cap_records(bm,records,modified_vertex=new_vert)
     # Verify that the saved face-corner caps still describe two continuous
@@ -1523,7 +1593,7 @@ class NYANW35_OT_hair_loop(Operator):
 
 
 class NYANW35_PT_main(Panel):
-    bl_label='NyanwHair v0.35.15'
+    bl_label='NyanwHair v0.35.16'
     bl_idname='NYANW35_PT_main'
     bl_space_type='VIEW_3D'
     bl_region_type='UI'
@@ -1576,13 +1646,16 @@ class NYANW35_PT_main(Panel):
             smooth.label(text='Соседние выбранные точки задают направления')
             density_box=box.box()
             density_box.label(text='Локальная плотность',icon='MOD_SUBSURF')
-            density_keys=_density_targets(mesh,_CACHE.get(obj.as_pointer(),{}).get('result'))
+            density_box.prop(ui,'density_mode',expand=True)
+            density_result=_CACHE.get(obj.as_pointer(),{}).get('result')
+            density_keys=(_point_density_target(mesh,density_result) is not None) if ui.density_mode=='POINT' else _density_targets(mesh,density_result)
             density_controls=density_box.column(align=True);density_controls.enabled=bool(density_keys)
             density_controls.prop(ui,'local_density')
+            if ui.density_mode=='POINT':density_controls.prop(ui,'point_radius')
             row=density_controls.row(align=True)
             for label,value in [('×2',2.),('×4',4.),('Сброс',1.)]:
-                op=row.operator('nyanw35.local_density',text=label);op.value=value
-            density_box.label(text='Выдели рёбра нужного участка')
+                op=row.operator('nyanw35.point_density' if ui.density_mode=='POINT' else 'nyanw35.local_density',text=label);op.value=value
+            density_box.label(text='Последняя выбранная точка — центр' if ui.density_mode=='POINT' else 'Выдели рёбра нужного участка')
             action=box.operator('nyanw35.hair_loop',text='Hair Loop (Ctrl+R)',icon='MOD_SUBSURF')
             action.mode='AUTO'
             box.label(text='Shift+колесо: ширина; Ctrl+колесо: выпуклость')
@@ -1954,7 +2027,7 @@ def _on_undo_post(_dummy):
     _UNDOING=False
 
 
-_CLASSES=(NHGuidedProperties,NHGuidedUISettings,NYANW35_OT_direction_smoothing,NYANW35_OT_local_density,
+_CLASSES=(NHGuidedProperties,NHGuidedUISettings,NYANW35_OT_direction_smoothing,NYANW35_OT_local_density,NYANW35_OT_point_density,
           NYANW35_OT_create_guide,NYANW35_OT_activate,NYANW35_OT_disable,
           NYANW35_OT_demo,NYANW35_OT_rebuild,NYANW35_OT_bake,
           NYANW35_OT_pin_rails, NYANW35_OT_adjust,NYANW35_OT_pick_zone,

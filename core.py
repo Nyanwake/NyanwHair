@@ -1,4 +1,4 @@
-"""NyanwHair 0.35.15: local density and flow-aligned curl patches.
+"""NyanwHair 0.35.16: smooth point density and cached flow-aligned patches.
 
 Pure Python, no Blender IDs or tags on vertices/edges. Blender face corners may
 store the user's chosen end caps; this module only consumes that choice.
@@ -77,7 +77,12 @@ class MeshResult:
     vertex_keys: list=field(default_factory=list)
     directional_smoothing: dict=field(default_factory=dict)
     local_density: dict=field(default_factory=dict)
+    point_density: dict=field(default_factory=dict)
     surface_columns: dict=field(default_factory=dict)
+    sampling_cache: dict=field(default_factory=dict,repr=False)
+    correspondence_cache: dict=field(default_factory=dict,repr=False)
+    patch_cache: dict=field(default_factory=dict,repr=False)
+    reused_patches: int=0
 
 
 def _plan_priority(plan):
@@ -378,7 +383,7 @@ def plan_widths(plans):
 
 
 def generate(points,boundaries,settings=None,rows=12,max_polygons=200000,
-             previous=None,caps=None,reference_length=0.,directional_smoothing=None,local_density=None):
+             previous=None,caps=None,reference_length=0.,directional_smoothing=None,local_density=None,point_density=None):
     points=[tuple(map(float,p)) for p in points]
     settings=list(settings or [ZoneSettings() for _ in boundaries])
     rows=max(2,min(256,int(rows)))
@@ -440,7 +445,8 @@ def generate(points,boundaries,settings=None,rows=12,max_polygons=200000,
     evaluate=make_edge_evaluator(points,plans,out.directional_smoothing)
     cap_profiles=_cap_profiles(points,plans,widths,evaluate)
     out.local_density=dict(local_density or {})
-    registry=RailRegistry(points,evaluate,rows,plans,reference_length,max_polygons,out.local_density)
+    out.point_density=dict(point_density or {})
+    registry=RailRegistry(points,evaluate,rows,plans,reference_length,max_polygons,out.local_density,out.point_density,previous)
     out.reference_length=registry.reference_length
     out.target_spacing=registry.spacing
     vertex_index={}
@@ -473,9 +479,11 @@ def generate(points,boundaries,settings=None,rows=12,max_polygons=200000,
                 local_keys.add(signature);local.append(tuple(face))
             mapping=registry.maps[ca.path,cb.path]
             density_here=any(registry.density.get(edge,1.)>1. for curve in (ca,cb) for edge in curve.edges)
-            if mapping.strong_turn or density_here:
+            if mapping.strong_turn or density_here or registry.point_field.affected(ca) or registry.point_field.affected(cb):
                 from .surface import build_patch
-                sections,columns=build_patch(p,w,registry,ca,cb,left,right,cap_profiles,put,emit,max_polygons)
+                sections,columns,reused=build_patch(p,w,registry,ca,cb,left,right,cap_profiles,put,emit,max_polygons,
+                    out.patch_cache,getattr(previous,'patch_cache',{}))
+                out.reused_patches+=reused
                 grid=[]
             else:
                 normals=[]
@@ -533,6 +541,8 @@ def generate(points,boundaries,settings=None,rows=12,max_polygons=200000,
             registry.register(ca,left);registry.register(cb,right)
         except (ValueError,IndexError,ZeroDivisionError) as exc:
             out.warnings[p.index]=str(exc)
+    out.sampling_cache=registry.geometry_cache
+    out.correspondence_cache=registry.map_cache
     out.faces,out.owners=registry.stitch(out.vertices,out.faces,out.owners,vertex_index)
     if len(out.faces)>max_polygons:raise ValueError('Превышен лимит полигонов после сшивки')
     # Keep baked meshes free of unused reference/degenerate positions.

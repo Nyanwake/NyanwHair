@@ -27,7 +27,7 @@ class MonotoneMap:
 
 class RibbonMap:
     def __init__(self,a,b):
-        self.a=a;self.b=b
+        self.a=a;self.b=b;self._samples={}
         n=max(24,min(64,8*max(len(a.path),len(b.path))))
         us=[i/n for i in range(n+1)]
         aa=[a.at(u)[1] for u in us];bb=[b.at(u)[1] for u in us]
@@ -40,8 +40,13 @@ class RibbonMap:
         for i in range(size):
             for j in range(size):
                 if i==j==0:continue
-                width=sub(bb[j],aa[i]);tangent=norm(add(ta[i],tb[j]))
-                local=dot(width,width)+4*dot(width,tangent)**2
+                # Squared projection needs no normalized temporary vector
+                # or square root at every cell of the correspondence table.
+                dx=bb[j][0]-aa[i][0];dy=bb[j][1]-aa[i][1];dz=bb[j][2]-aa[i][2]
+                tx=ta[i][0]+tb[j][0];ty=ta[i][1]+tb[j][1];tz=ta[i][2]+tb[j][2]
+                square=tx*tx+ty*ty+tz*tz
+                projection=dx*tx+dy*ty+dz*tz
+                local=dx*dx+dy*dy+dz*dz+(4*projection*projection/square if square>EPS*EPS else 0.)
                 candidates=[]
                 if i and j:candidates.append((cost[(i-1)*size+j-1]+local,1))
                 if i:candidates.append((cost[(i-1)*size+j]+local*.55,2))
@@ -72,8 +77,10 @@ class RibbonMap:
         self.u_to_flow=MonotoneMap(us,flow);self.flow_to_u=MonotoneMap(flow,us)
 
     def at(self,flow):
-        u=self.flow_to_u(flow)
-        return self.a.at(u),self.b.at(self.u_to_v(u))
+        if flow not in self._samples:
+            u=self.flow_to_u(flow)
+            self._samples[flow]=(self.a.at(u),self.b.at(self.u_to_v(u)))
+        return self._samples[flow]
 
     def fraction(self,curve,key):
         u=curve.fraction(key)

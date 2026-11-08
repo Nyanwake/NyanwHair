@@ -10,11 +10,14 @@ from .core import EPS,CURVE_SUBDIVISIONS,sub,add,cross,length,norm,edge_key,newe
 
 
 class CurvePath:
-    def __init__(self,points,path,evaluate):
+    def __init__(self,points,path,evaluate,cached=None):
         self.points=points; self.path=tuple(path); self.evaluate=evaluate
         self.vertices={v:i for i,v in enumerate(path)}
         self.edges={edge_key(a,b):(i,a,b) for i,(a,b) in enumerate(zip(path,path[1:]))}
-        self.tables=[]; self.offsets=[0.]
+        self.tables=[]; self.offsets=[0.]; self._samples={}
+        if cached is not None:
+            self.tables,self.offsets,self.total=cached
+            return
         subdivisions=CURVE_SUBDIVISIONS
         for a,b in zip(path,path[1:]):
             positions=[evaluate(a,b,j/subdivisions) for j in range(subdivisions+1)]
@@ -43,6 +46,11 @@ class CurvePath:
         return (self.offsets[i]+arc[j]*(1.-blend)+arc[j+1]*blend)/self.total
 
     def at(self,u):
+        if u in self._samples:return self._samples[u]
+        sample=self._at(u);self._samples[u]=sample
+        return sample
+
+    def _at(self,u):
         u=max(0.,min(1.,float(u)))
         # Zero-length construction edges must not change endpoint identity.
         if u==0.:
@@ -74,10 +82,12 @@ class RailRegistry:
     Logical junctions are mandatory anchors. Regular support vertices do
     not allocate rows. No RAM cache or per-zone length budget is involved.
     """
-    def __init__(self,points,evaluate,rows,plans,reference_length=0.,max_samples=200000,local_density=None):
+    def __init__(self,points,evaluate,rows,plans,reference_length=0.,max_samples=200000,local_density=None,point_density=None,previous=None):
         self.points=points;self.evaluate=evaluate;self.rows=rows
         self.stations=defaultdict(dict);self.paths={};self.boundaries=[]
-        self.maps={}
+        self.maps={};self.geometry_cache={};self.map_cache={}
+        self.old_geometry=getattr(previous,'sampling_cache',{})
+        self.old_maps=getattr(previous,'correspondence_cache',{})
         self.density={key:max(1.,min(8.,float(value))) for key,value in (local_density or {}).items()}
         chains=[]
         for path in evaluate.paths:
@@ -85,6 +95,8 @@ class RailRegistry:
                 chains.append(self.curve(path))
         self.reference_length=reference_length if reference_length>EPS else max((c.total for c in chains),default=1.)
         self.spacing=self.reference_length/rows
+        from .density import DensityField
+        self.point_field=DensityField(chains,point_density,self.reference_length)
         mandatory={v for p in plans for rail in (p.left,p.right) for v in (rail[0],rail[-1])}
         mandatory.update(v for v,neighbors in evaluate.adjacency.items() if len(neighbors)!=2)
         mandatory.update(a for (a,b),strength in getattr(evaluate,'smoothing',{}).items() if strength<1.)
@@ -134,6 +146,12 @@ class RailRegistry:
                     allocated+=len(expanded)-len(adaptive)
                     adaptive=expanded
                     if allocated>2*max_samples:raise ValueError('Превышен лимит локального уплотнения')
+                if self.point_field.affected(curve):
+                    from .density import redistribute
+                    refined=redistribute(adaptive,lambda u:u*curve.total,
+                        lambda u:self.point_field.at(curve,u),self.point_field.profile(curve)[1],2*max_samples)
+                    allocated+=len(refined)-len(adaptive);adaptive=refined
+                    if allocated>2*max_samples:raise ValueError('Превышен лимит локального уплотнения')
                 samples=curve.sample(adaptive)
                 samples[0]=(('v',first),points[first]);samples[-1]=(('v',last),points[last])
                 for key,pos in samples:
@@ -146,7 +164,16 @@ class RailRegistry:
 
     def curve(self,path):
         path=tuple(path)
-        if path not in self.paths:self.paths[path]=CurvePath(self.points,path,self.evaluate)
+        if path not in self.paths:
+            coefficients=getattr(self.evaluate,'coefficients',{})
+            signature=(tuple(self.points[v] for v in path),
+                tuple((coefficients.get((a,b)),coefficients.get((b,a))) for a,b in zip(path,path[1:])))
+            old=self.old_geometry.get(path)
+            cached=old[1] if coefficients and old and old[0]==signature else None
+            curve=CurvePath(self.points,path,self.evaluate,cached)
+            curve.geometry_signature=signature
+            self.paths[path]=curve
+            self.geometry_cache[path]=(signature,(curve.tables,curve.offsets,curve.total))
         return self.paths[path]
 
     def boundary(self,curve):
@@ -161,7 +188,14 @@ class RailRegistry:
         from .ribbon import RibbonMap
         a=self.curve(left);b=self.curve(right)
         left_samples=self.boundary(a);right_samples=self.boundary(b)
-        mapping=RibbonMap(a,b);self.maps[a.path,b.path]=mapping
+        key=(a.path,b.path);signature=(a.geometry_signature,b.geometry_signature)
+        old=self.old_maps.get(key)
+        if old and old[0]==signature:
+            mapping=RibbonMap.__new__(RibbonMap)
+            mapping.__dict__.update(old[1]);mapping.a=a;mapping.b=b;mapping._samples={}
+        else:mapping=RibbonMap(a,b)
+        self.maps[key]=mapping
+        self.map_cache[key]=(signature,{k:v for k,v in mapping.__dict__.items() if k not in ('a','b','_samples')})
         fa=[mapping.fraction(a,key) for key,pos in left_samples]
         fb=[mapping.fraction(b,key) for key,pos in right_samples]
         count=max(1,int(((len(fa)-1)+(len(fb)-1))*.5+.5))

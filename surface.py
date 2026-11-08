@@ -13,7 +13,7 @@ def _rotate(vector,old,new):
 
 class FlowSurface:
     def __init__(self,plan,width,mapping,cap_profiles):
-        self.plan=plan;self.width=width;self.mapping=mapping;self.caps=cap_profiles
+        self.plan=plan;self.width=width;self.mapping=mapping;self.caps=cap_profiles;self._samples={}
         self.n=max(64,min(192,16*max(len(mapping.a.path),len(mapping.b.path))))
         self.u=[i/self.n for i in range(self.n+1)]
         pairs=[mapping.at(u) for u in self.u]
@@ -29,6 +29,11 @@ class FlowSurface:
             self.normals.append(normal);previous=normal;old=tangents[i]
 
     def at(self,u,x):
+        key=(u,x)
+        if key not in self._samples:self._samples[key]=self._at(u,x)
+        return self._samples[key]
+
+    def _at(self,u,x):
         (ka,a),(kb,b)=self.mapping.at(u)
         if x==0:return ka,a
         if x==self.width:return kb,b
@@ -70,6 +75,7 @@ def _column(surface,x,spacing,density):
     samples=[]
     for a,b in zip(base,base[1:]):samples.extend(refine(a,b)[:-1])
     samples.append(1.)
+    if not density:return samples
     output=[];v=bias_cross_position(x/surface.width,surface.plan.settings.bias)
     for a,b in zip(samples,samples[1:]):
         factor=0.
@@ -135,7 +141,7 @@ def geometry_path(a,b,fa,fb):
     return path[::-1]
 
 
-def build_patch(plan,width,registry,left_curve,right_curve,left,right,cap_profiles,put,emit,max_polygons):
+def _build_patch(plan,width,registry,left_curve,right_curve,left,right,cap_profiles,put,emit,max_polygons):
     mapping=registry.maps[left_curve.path,right_curve.path]
     surface=FlowSurface(plan,width,mapping,cap_profiles)
     columns=[];flows=[];coords=[]
@@ -146,6 +152,20 @@ def build_patch(plan,width,registry,left_curve,right_curve,left,right,cap_profil
             pairs=samples
         else:
             us=_column(surface,x,registry.spacing,registry.density)
+            if registry.point_field.affected(left_curve) or registry.point_field.affected(right_curve):
+                from .density import redistribute
+                positions=[surface.at(u,x)[1] for u in surface.u];arc=[0.]
+                for a,b in zip(positions,positions[1:]):arc.append(arc[-1]+length(sub(b,a)))
+                def arc_at(u):
+                    k=min(surface.n-1,int(u*surface.n));t=u*surface.n-k
+                    return arc[k]*(1.-t)+arc[k+1]*t
+                v=bias_cross_position(x/width,plan.settings.bias)
+                def factor(u):
+                    a=mapping.flow_to_u(u);b=mapping.u_to_v(a)
+                    return registry.point_field.at(left_curve,a)*(1.-v)+registry.point_field.at(right_curve,b)*v
+                knots=[mapping.u_to_flow(u) for u in registry.point_field.profile(left_curve)[1]]
+                knots.extend(mapping.u_to_flow(mapping.v_to_u(u)) for u in registry.point_field.profile(right_curve)[1])
+                us=redistribute(us,arc_at,factor,knots,2*max_polygons)
             pairs=[]
             for k,u in enumerate(us):
                 key,pos=surface.at(u,x)
@@ -158,3 +178,36 @@ def build_patch(plan,width,registry,left_curve,right_curve,left,right,cap_profil
     count=max(2,min(256,max(map(len,columns))-1))
     sections=[tuple(surface.at(i/count,x)[1] for x in range(width+1)) for i in range(count+1)]
     return sections,columns
+
+
+def build_patch(plan,width,registry,left_curve,right_curve,left,right,cap_profiles,put,emit,max_polygons,cache=None,previous=None):
+    """Reuse an unchanged patch recipe; never retain another MeshResult.
+
+    Include exact curve coefficients, seam stations, cap profiles, settings
+    and local field distances. A matching source boundary alone is unsafe.
+    """
+    caps=[]
+    for kind,i in (plan.start,plan.end):
+        if kind=='edge':
+            edge=edge_key(plan.boundary[i],plan.boundary[(i+1)%len(plan.boundary)])
+            caps.append((edge,tuple(cap_profiles[edge])))
+    edges=set(left_curve.edges)|set(right_curve.edges)
+    signature=(plan,width,registry.spacing,left_curve.geometry_signature,right_curve.geometry_signature,
+        tuple(left),tuple(right),tuple(caps),tuple(sorted((e,registry.density[e]) for e in edges if e in registry.density)),
+        tuple(registry.point_field.profile(left_curve)[0]),tuple(registry.point_field.profile(right_curve)[0]))
+    old=(previous or {}).get(plan.boundary)
+    reused=bool(old and old[0]==signature)
+    if reused:recipe=old[1]
+    else:
+        points=[];faces=[];indices={}
+        def local_put(key,pos):
+            if key not in indices:indices[key]=len(points);points.append((key,pos))
+            return indices[key]
+        def local_emit(face):faces.append(tuple(face))
+        sections,columns=_build_patch(plan,width,registry,left_curve,right_curve,left,right,cap_profiles,local_put,local_emit,max_polygons)
+        recipe=(tuple(points),tuple(faces),tuple(sections),tuple(tuple(c) for c in columns))
+    if cache is not None:cache[plan.boundary]=(signature,recipe)
+    points,faces,sections,columns=recipe
+    remap=[put(key,pos) for key,pos in points]
+    for face in faces:emit([remap[v] for v in face])
+    return sections,[[remap[v] for v in column] for column in columns],reused
