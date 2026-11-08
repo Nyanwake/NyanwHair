@@ -30,6 +30,8 @@ L_BULGE = 'nh35_bulge'
 L_BIAS = 'nh35_bias'
 L_FLIP = 'nh35_flip'
 L_CAP = 'nh35_cap_corner'  # BMLOOP, per-face direction, never a vertex/edge tag
+L_SMOOTH_START = 'nh35_smooth_start'
+L_SMOOTH_END = 'nh35_smooth_end'
 L_ORDER = 'nh35_zone_order'  # stable creation order, persisted in source faces
 
 _COLOR_BLUE = (0.56, 0.714, 0.91, 1.0)  # #8FB6E8
@@ -255,6 +257,8 @@ def _prepare_bmesh(bm, result=None):
             for face in bm.faces: face[layer]=default
     if bm.loops.layers.int.get(L_CAP) is None:
         bm.loops.layers.int.new(L_CAP)
+    for name in (L_SMOOTH_START,L_SMOOTH_END):
+        if bm.loops.layers.float.get(name) is None:bm.loops.layers.float.new(name)
     bm.verts.index_update(); bm.faces.index_update()
     order_layer=bm.faces.layers.int[L_ORDER]
     next_order=max((int(f[order_layer]) for f in bm.faces),default=0)+1
@@ -377,7 +381,92 @@ def _set_zone(f,bm,field,value):
     f[layer]=int(value) if is_integer else float(value)
 
 
-def _capture(obj):
+def _directional_smoothing(bm,objects=False):
+    start=bm.loops.layers.float.get(L_SMOOTH_START)
+    end=bm.loops.layers.float.get(L_SMOOTH_END)
+    if start is None or end is None:return {}
+    order=bm.faces.layers.int.get(L_ORDER)
+    bm.verts.index_update();bm.faces.index_update()
+    output={}
+    for edge in bm.edges:
+        if not edge.link_loops:continue
+        def priority(loop):
+            value=int(loop.face[order]) if order else 0
+            return (0,value,loop.face.index) if value>0 else (1,loop.face.index,0)
+        loop=min(edge.link_loops,key=priority)
+        a=loop.vert;b=loop.link_loop_next.vert
+        for u,v,stored in ((a,b,loop[start]),(b,a,loop[end])):
+            if stored!=0:
+                strength=max(0.,min(1.,1.+float(stored)))
+                if strength<1.:output[(u,v) if objects else (u.index,v.index)]=strength
+    return output
+
+
+def _write_direction(bm,a,b,strength):
+    edge=bm.edges.get((a,b))
+    if edge is None:return
+    start=bm.loops.layers.float[L_SMOOTH_START];end=bm.loops.layers.float[L_SMOOTH_END]
+    value=max(0.,min(1.,strength))-1.
+    for loop in edge.link_loops:
+        loop[start if loop.vert==a else end]=value
+
+
+def _restore_directions(bm,records,split_edges=()):
+    start=bm.loops.layers.float[L_SMOOTH_START];end=bm.loops.layers.float[L_SMOOTH_END]
+    for face in bm.faces:
+        for loop in face.loops:loop[start]=0.;loop[end]=0.
+    for (a,b),strength in records.items():
+        if a.is_valid and b.is_valid:_write_direction(bm,a,b,strength)
+    for a,b,middle in split_edges:
+        if (a,b) in records:_write_direction(bm,a,middle,records[a,b])
+        if (b,a) in records:_write_direction(bm,b,middle,records[b,a])
+
+
+def _smooth_targets(bm,result):
+    active=bm.select_history.active
+    if not isinstance(active,bmesh.types.BMVert) or not active.is_valid or not active.select or result is None:return []
+    bm.verts.index_update()
+    rails={edge for paths in result.face_paths.values() for path in paths for edge in core.physical_edges(path)}
+    return [(active.index,edge.other_vert(active).index) for edge in active.link_edges
+            if edge.other_vert(active).select and core.edge_key(active.index,edge.other_vert(active).index) in rails]
+
+
+def _get_direction_smoothing(self):
+    obj=bpy.context.edit_object
+    if not is_guide(obj):return 1.
+    bm=bmesh.from_edit_mesh(obj.data)
+    result=_CACHE.get(obj.as_pointer(),{}).get('result')
+    targets=_smooth_targets(bm,result);values=_directional_smoothing(bm)
+    return sum(values.get(key,1.) for key in targets)/len(targets) if targets else 1.
+
+
+def _set_direction_smoothing(self,value):
+    if _SYNCING_UI:return
+    obj=bpy.context.edit_object
+    if is_guide(obj):bpy.ops.nyanw35.direction_smoothing('EXEC_DEFAULT',True,value=float(value))
+
+
+class NYANW35_OT_direction_smoothing(Operator):
+    bl_idname='nyanw35.direction_smoothing'
+    bl_label='Сглаживание выбранных направлений'
+    bl_options={'REGISTER','UNDO','UNDO_GROUPED'}
+    value: FloatProperty(name='Сглаживание конца',default=1.,min=0.,max=1.)
+    def execute(self,context):
+        obj=context.edit_object
+        if not is_guide(obj):return {'CANCELLED'}
+        bm=bmesh.from_edit_mesh(obj.data)
+        _prepare_bmesh(bm)
+        _rebuild(obj,False)
+        targets=_smooth_targets(bm,_CACHE.get(obj.as_pointer(),{}).get('result'))
+        if not targets:return {'CANCELLED'}
+        bm.verts.ensure_lookup_table()
+        for a,b in targets:_write_direction(bm,bm.verts[a],bm.verts[b],self.value)
+        bmesh.update_edit_mesh(obj.data,loop_triangles=False,destructive=False)
+        _rebuild(obj,True)
+        return {'FINISHED'}
+
+
+def _capture(obj,include_smoothing=False):
     bm,owned=_mesh_bm(obj)
     try:
         bm.verts.ensure_lookup_table(); bm.verts.index_update()
@@ -398,13 +487,14 @@ def _capture(obj):
         # Nothing is written on BMVert or BMEdge.
         selected=_active_face(bm,obj)
         active=selected.index if selected is not None else -1
-        return positions,zones,options,active,caps
+        snapshot=(positions,zones,options,active,caps)
+        return snapshot+(_directional_smoothing(bm),) if include_smoothing else snapshot
     finally:
         if owned: bm.free()
 
 
-def _signature(positions,zones,options,rows,caps,detail_length=0.):
-    return (int(rows),round(detail_length,8),
+def _signature(positions,zones,options,rows,caps,detail_length=0.,smoothing=None):
+    return (int(rows),round(detail_length,8),tuple(sorted((a,b,round(v,6)) for (a,b),v in (smoothing or {}).items())),
             tuple(tuple(round(x,6) for x in p) for p in positions),
             tuple(zones),tuple(caps),
             tuple((o.width,round(o.bulge,5),round(o.bias,5),o.flip,o.order) for o in options))
@@ -418,10 +508,10 @@ def _rebuild(obj,force=False):
     """
     if _UNDOING or not is_guide(obj): return False
     if obj.data.is_editmode and obj.mode != 'EDIT': return False
-    positions,zones,options,active,caps=_capture(obj)
+    positions,zones,options,active,caps,smoothing=_capture(obj,True)
     key=obj.as_pointer()
     rows=obj.nh35.rows
-    signature=_signature(positions,zones,options,rows,caps,obj.nh35.detail_length)
+    signature=_signature(positions,zones,options,rows,caps,obj.nh35.detail_length,smoothing)
     old=_CACHE.get(key)
     if old and old['signature']==signature and not force:
         if active>=0: old['active']=active
@@ -441,7 +531,7 @@ def _rebuild(obj,force=False):
     # coordinate-only changes reuse the same face plan and mesh row counts.
     previous=(old['result'] if old and old['topology']==topology else None)
     try:
-        result=core.generate(positions,zones,options,rows,previous=previous,caps=caps,reference_length=obj.nh35.detail_length)
+        result=core.generate(positions,zones,options,rows,previous=previous,caps=caps,reference_length=obj.nh35.detail_length,directional_smoothing=smoothing)
         warnings=result.warnings
         if warnings:
             status='; '.join('Зона %d: %s'%(i+1,msg)
@@ -526,6 +616,7 @@ class NHGuidedProperties(PropertyGroup):
 
 
 class NHGuidedUISettings(PropertyGroup):
+    direction_smoothing: FloatProperty(name='Сглаживание конца',min=0.,max=1.,get=_get_direction_smoothing,set=_set_direction_smoothing,description='1 — автоматическая плавная касательная; 0 — направление к соседней точке. Только активный конец выбранных направлений')
     width: IntProperty(name='Шаги по ширине',min=1,max=32,default=2,update=_on_ui_change('width'))
     bulge: FloatProperty(name='Выпуклость',default=_DEFAULT_BULGE,min=-3,max=3,step=5,precision=3,update=_on_ui_change('bulge'))
     bias: FloatProperty(name='Распределение',default=0.0,min=-2,max=2,step=5,precision=3,update=_on_ui_change('bias'))
@@ -861,7 +952,7 @@ def _pick_smooth_anchor(context,obj,mx,my,result):
     bm.edges.ensure_lookup_table(); bm.edges.index_update()
     points=[tuple(v.co) for v in bm.verts]
     plans=list(result.plans_by_loop.values())
-    evaluator=core.make_edge_evaluator(points,plans)
+    evaluator=core.make_edge_evaluator(points,plans,result.directional_smoothing)
     source_edges={core.edge_key(*tuple(v.index for v in e.verts)):e.index
                   for e in bm.edges}
     world=obj.matrix_world
@@ -934,6 +1025,7 @@ def _split_on_bmesh(bm, zone, t, result, select_result=False):
     bm.faces.index_update()
     if not 0 <= zone < len(bm.faces):
         raise ValueError('Зона больше не существует')
+    direction_records=_directional_smoothing(bm,objects=True)
     source = bm.faces[zone]
     plan = result.plans_by_loop.get(tuple(v.index for v in source.verts))
     if plan is None or core.cap_paths(plan.boundary, plan.start, plan.end) is None:
@@ -1093,6 +1185,8 @@ def _split_on_bmesh(bm, zone, t, result, select_result=False):
         left_child.select_set(True)
         bm.faces.active=left_child
         bm.select_history.add(left_child)
+    split_records=[(left,right,ends[i]) for i,(kind,left,right,edge) in enumerate(end_caps) if kind=='edge']
+    _restore_directions(bm,direction_records,split_records)
     return budget,left_width,right_width
 
 
@@ -1118,6 +1212,8 @@ def _insert_anchor_bmesh(bm,proposal,result,select_result=False):
     edge=bm.edges[idx]
     if not edge.is_valid or {v.index for v in edge.verts}!=set(proposal['ends']):
         raise ValueError('Исходное ребро изменилось')
+    direction_records=_directional_smoothing(bm,objects=True)
+    original_ends=tuple(edge.verts)
     original_faces=list(edge.link_faces)
     if not original_faces:
         raise ValueError('Выбранное ребро не принадлежит зоне')
@@ -1155,6 +1251,7 @@ def _insert_anchor_bmesh(bm,proposal,result,select_result=False):
         for vert in bm.verts:vert.select_set(False)
         new_vert.select_set(True)
         bm.select_history.add(new_vert)
+    _restore_directions(bm,direction_records,[(original_ends[0],original_ends[1],new_vert)])
     return new_vert
 
 
@@ -1276,7 +1373,7 @@ class NYANW35_OT_hair_loop(Operator):
 
 
 class NYANW35_PT_main(Panel):
-    bl_label='NyanwHair v0.35.13'
+    bl_label='NyanwHair v0.35.14'
     bl_idname='NYANW35_PT_main'
     bl_space_type='VIEW_3D'
     bl_region_type='UI'
@@ -1309,6 +1406,20 @@ class NYANW35_PT_main(Panel):
             box.prop(ui,'bulge')
             box.prop(ui,'bias')
             box.prop(ui,'flip')
+            smooth=box.box()
+            smooth.label(text='Сглаживание направлений',icon='CURVE_BEZCURVE')
+            mesh=bmesh.from_edit_mesh(obj.data)
+            targets=_smooth_targets(mesh,_CACHE.get(obj.as_pointer(),{}).get('result'))
+            controls=smooth.row(align=True);controls.enabled=bool(targets)
+            controls.prop(ui,'direction_smoothing',slider=True)
+            reset=controls.operator('nyanw35.direction_smoothing',text='Авто');reset.value=1.
+            if targets:
+                smooth.label(text='Выбрано направлений: %d'%len(targets))
+                weights=_directional_smoothing(mesh)
+                values=[weights.get(key,1.) for key in targets]
+                if max(values)-min(values)>1e-5:smooth.label(text='Разные значения',icon='INFO')
+            smooth.label(text='Нужную точку выдели последней')
+            smooth.label(text='Соседние выбранные точки задают направления')
             action=box.operator('nyanw35.hair_loop',text='Hair Loop (Ctrl+R)',icon='MOD_SUBSURF')
             action.mode='AUTO'
             box.label(text='Shift+колесо: ширина; Ctrl+колесо: выпуклость')
@@ -1370,14 +1481,18 @@ def _gpu_batches(cache,guide,shader):
     """
     result=cache['result']
     transform=tuple(float(x) for row in guide.matrix_world for x in row)
-    signature=(id(result),transform)
+    active=-1
+    if guide==bpy.context.edit_object and guide.nh35.show_tint and guide.nh35.opacity>0:
+        active=cache.get('active',-1)
+    tint=(active,tuple(guide.nh35.tint),float(guide.nh35.opacity))
+    signature=(id(result),transform,tint)
     if cache.get('gpu_signature')==signature: return cache['gpu_batches']
     matrix=guide.matrix_world
     coords=[tuple(matrix @ Vector(v)) for v in result.vertices]
     tris=[]; colors=[]; edges=set()
     guide_lines=[]
     rail_segments={}
-    evaluate=core.make_edge_evaluator(cache['positions'],list(result.plans_by_loop.values()))
+    evaluate=core.make_edge_evaluator(cache['positions'],list(result.plans_by_loop.values()),result.directional_smoothing)
     for paths in result.face_paths.values():
         for path in paths:
             for a,b in zip(path,path[1:]):
@@ -1389,14 +1504,18 @@ def _gpu_batches(cache,guide,shader):
                 guide_lines.extend(segments)
     cache['rail_segments']=rail_segments
     light=Vector((.31,-.43,.85)).normalized()
-    for poly in result.faces:
+    for poly,owner in zip(result.faces,result.owners):
         if len(poly)<3: continue
         a,b,c=(Vector(coords[poly[i]]) for i in (0,1,2))
         n=(b-a).cross(c-a)
         if n.length_squared>1.0e-15: n.normalize()
         else: n=Vector((0,0,1))
         intensity=.70+.26*abs(n.dot(light))
-        face_color=(.74*intensity,.79*intensity,.87*intensity,1.0)
+        base=(.74*intensity,.79*intensity,.87*intensity)
+        if owner==active:
+            alpha=guide.nh35.opacity
+            base=tuple(v*(1.-alpha)+color*alpha for v,color in zip(base,guide.nh35.tint))
+        face_color=(*base,1.0)
         for i in range(1,len(poly)-1):
             for v in (poly[0],poly[i],poly[i+1]):
                 tris.append(coords[v]); colors.append(face_color)
@@ -1520,33 +1639,6 @@ def _draw_preview():
                     selected.draw(selected_shader)
                     gpu.state.line_width_set(1.)
                     gpu.state.depth_test_set('LESS_EQUAL')
-            if obj==ctx.edit_object and obj.nh35.show_tint and obj.nh35.opacity>0:
-                face_idx=cached.get('active',-1)
-                try:
-                    bm=bmesh.from_edit_mesh(obj.data)
-                    f=_active_face(bm,obj)
-                    if f is not None: face_idx=f.index
-                except (ReferenceError,RuntimeError): pass
-                if face_idx>=0:
-                    alpha=obj.nh35.opacity
-                    r,g,b=obj.nh35.tint
-                    tint_shader=gpu.shader.from_builtin('UNIFORM_COLOR')
-                    triangles=[]
-                    coords=[tuple(obj.matrix_world @ Vector(v)) for v in result.vertices]
-                    toward=ctx.region_data.view_rotation @ Vector((0,0,1))
-                    shift=tuple(toward*max(0.0001,0.00025*obj.dimensions.length))
-                    for poly,owner in zip(result.faces,result.owners):
-                        if owner!=face_idx: continue
-                        for i in range(1,len(poly)-1):
-                            for k in (poly[0],poly[i],poly[i+1]):
-                                p=coords[k]
-                                triangles.append((p[0]+shift[0],p[1]+shift[1],p[2]+shift[2]))
-                    if triangles:
-                        batch=batch_for_shader(tint_shader,'TRIS',{'pos':triangles})
-                        tint_shader.bind()
-                        tint_shader.uniform_float('color',(r,g,b,alpha))
-                        gpu.state.depth_test_set('LESS_EQUAL')
-                        batch.draw(tint_shader)
         if _CUT_PREVIEW:
             preview=_CUT_PREVIEW
             coords=preview['line']
@@ -1698,7 +1790,7 @@ def _on_undo_post(_dummy):
     _UNDOING=False
 
 
-_CLASSES=(NHGuidedProperties,NHGuidedUISettings,
+_CLASSES=(NHGuidedProperties,NHGuidedUISettings,NYANW35_OT_direction_smoothing,
           NYANW35_OT_create_guide,NYANW35_OT_activate,NYANW35_OT_disable,
           NYANW35_OT_demo,NYANW35_OT_rebuild,NYANW35_OT_bake,
           NYANW35_OT_pin_rails, NYANW35_OT_adjust,NYANW35_OT_pick_zone,

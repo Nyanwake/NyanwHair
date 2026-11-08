@@ -1,11 +1,11 @@
-"""NyanwHair 0.35.13 Guided Surfaces (preview)."""
+"""NyanwHair 0.35.14 Guided Surfaces (preview)."""
 bl_info = {
     'name': 'NyanwHair - Guided Surfaces',
     'author': 'NyanWake',
-    'version': (0,35,13),
+    'version': (0,35,14),
     'blender': (5,1,0),
     'location': 'View3D > Sidebar > NyanwHair',
-    'description': 'Continuous hair splines, proportional ribbon detail and viewport X-ray',
+    'description': 'Quad-oriented hair ribbons with directed curve endpoint controls',
     'category': 'Mesh',
 }
 

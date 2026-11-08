@@ -1,6 +1,6 @@
 """Chord-parameterized cubic spline network, independent of mesh sampling."""
 from collections import defaultdict
-from .core import EPS,add,sub,mul,dot,length,norm,edge_key,_plan_priority
+from .core import EPS,add,sub,mul,dot,length,norm,edge_key,_plan_priority,mix
 
 
 def _tridiagonal(lower,diagonal,upper,rhs):
@@ -33,7 +33,8 @@ def _spline(points,start,end):
 
 
 class CurveNetwork:
-    def __init__(self,points,plans):
+    def __init__(self,points,plans,smoothing=None):
+        self.smoothing=dict(smoothing or {})
         self.points=points;self.edges=set();self.continuations={};self.paths=[]
         candidates=[];priorities={}
         for plan in sorted(plans,key=_plan_priority):
@@ -68,6 +69,14 @@ class CurveNetwork:
             for i in range(1,len(path)-1):self.through[path[i]].append((ci,i))
         self.coefficients={};self.derivatives={};self._solving=set()
         for ci in range(len(self.paths)):self._solve(ci)
+        # Apply directed edits AFTER solving the automatic network. A user
+        # adjustment cannot alter the opposite endpoint or another branch.
+        for (a,b),(p,q,ma,mb) in list(self.coefficients.items()):
+            chord=sub(q,p)
+            sa=max(0.,min(1.,self.smoothing.get((a,b),1.)))
+            sb=max(0.,min(1.,self.smoothing.get((b,a),1.)))
+            if sa<1. or sb<1.:
+                self.coefficients[a,b]=(p,q,mix(chord,ma,sa),mix(chord,mb,sb))
 
     def _boundary(self,ci,first):
         path=self.paths[ci];node=path[0 if first else -1]

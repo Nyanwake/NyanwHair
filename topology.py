@@ -5,7 +5,7 @@ source vertex or an oriented parameter on a source edge, never a position.
 """
 import bisect
 from collections import defaultdict
-from .core import EPS,CURVE_SUBDIVISIONS,sub,add,cross,length,norm,edge_key,newell
+from .core import EPS,CURVE_SUBDIVISIONS,sub,add,cross,length,norm,edge_key,newell,mix
 
 
 class CurvePath:
@@ -85,6 +85,7 @@ class RailRegistry:
         self.spacing=self.reference_length/rows
         mandatory={v for p in plans for rail in (p.left,p.right) for v in (rail[0],rail[-1])}
         mandatory.update(v for v,neighbors in evaluate.adjacency.items() if len(neighbors)!=2)
+        mandatory.update(a for (a,b),strength in getattr(evaluate,'smoothing',{}).items() if strength<1.)
         allocated=0
         for curve in chains:
             stops=[(0.,curve.path[0])]
@@ -95,7 +96,21 @@ class RailRegistry:
                 intervals=max(1,int((hi-lo)*curve.total/self.spacing+.5))
                 allocated+=intervals
                 if allocated>2*max_samples:raise ValueError('Превышен лимит точек детализации')
-                samples=curve.sample(lo+(hi-lo)*i/intervals for i in range(intervals+1))
+                fractions=[lo+(hi-lo)*i/intervals for i in range(intervals+1)]
+                # A small curvature safeguard at low detail, independent of
+                # support count. Straight parts keep their sparse spacing.
+                def refine(a,b,depth=0):
+                    middle=(a+b)*.5
+                    pa=curve.at(a)[1];pb=curve.at(b)[1];pm=curve.at(middle)[1]
+                    if depth<6 and length(sub(pm,mix(pa,pb,.5)))>self.spacing*.065:
+                        return refine(a,middle,depth+1)[:-1]+refine(middle,b,depth+1)
+                    return [a,b]
+                adaptive=[]
+                for a,b in zip(fractions,fractions[1:]):adaptive.extend(refine(a,b)[:-1])
+                adaptive.append(hi)
+                allocated+=len(adaptive)-len(fractions)
+                if allocated>2*max_samples:raise ValueError('Превышен лимит точек детализации')
+                samples=curve.sample(adaptive)
                 samples[0]=(('v',first),points[first]);samples[-1]=(('v',last),points[last])
                 for key,pos in samples:
                     if key[0]=='s':self.stations[(key[1],key[2])][key[3]]=(key,pos)
@@ -123,10 +138,19 @@ class RailRegistry:
         a=self.curve(left);b=self.curve(right)
         left_samples=self.boundary(a);right_samples=self.boundary(b)
         mapping=RibbonMap(a,b);self.maps[a.path,b.path]=mapping
-        count=max(1,int(mapping.total/self.spacing+.5))
-        fractions=[i/count for i in range(count+1)]
-        paired=[mapping.at(u) for u in fractions]
-        return a,b,left_samples,right_samples,[p[0] for p in paired],[p[1] for p in paired],fractions
+        fa=[mapping.fraction(a,key) for key,pos in left_samples]
+        fb=[mapping.fraction(b,key) for key,pos in right_samples]
+        count=max(1,int(((len(fa)-1)+(len(fb)-1))*.5+.5))
+        def station(values,u):
+            x=u*(len(values)-1);i=min(len(values)-2,int(x));t=x-i
+            return values[i]*(1.-t)+values[i+1]*t
+        fractions=[(station(fa,i/count)+station(fb,i/count))*.5 for i in range(count+1)]
+        fractions[0]=0.;fractions[-1]=1.
+        def body(curve,samples):
+            if len(samples)==count+1:return samples
+            arc=[curve.fraction(key) for key,pos in samples]
+            return [curve.at(station(arc,i/count)) for i in range(count+1)]
+        return a,b,left_samples,right_samples,body(a,left_samples),body(b,right_samples),fractions
 
     def flows(self,a,b,curve,samples):
         mapping=self.maps[a.path,b.path]

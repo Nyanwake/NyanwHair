@@ -82,14 +82,41 @@ class RibbonMap:
 
 
 def zipper_flows(a,b):
-    i=j=0;path=[(i,j)]
-    while i<len(a)-1 or j<len(b)-1:
-        if i==len(a)-1:j+=1
-        elif j==len(b)-1:i+=1
-        else:
-            step=min(a[i+1]-a[i],b[j+1]-b[j])
-            if abs(a[i+1]-b[j+1])<=.5*step+1e-9:i+=1;j+=1
-            elif a[i+1]<b[j+1]:i+=1
+    """Use the minimum possible triangles: exactly abs(interval counts).
+
+    Equal counts are always a quad strip. For unequal counts only the
+    longer side may advance alone; dynamic alignment places those necessary
+    transitions near their matching growth coordinate.
+    """
+    swap=len(a)<len(b)
+    long,short=(b,a) if swap else (a,b)
+    na=len(long)-1;nb=len(short)-1;extra=na-nb
+    if extra==0:return [(i,i) for i in range(na+1)]
+    if (nb+1)*(extra+1)>400000:
+        # Bounded-memory fallback for extreme detail or count imbalance.
+        j=k=0;path=[(0,0)]
+        while j<nb or k<extra:
+            i=j+k
+            if j==nb or k<extra and abs(long[i+1]-short[j])<abs(long[i+1]-short[j+1]):k+=1
             else:j+=1
-        path.append((i,j))
-    return path
+            path.append((j+k,j))
+    else:
+        width=extra+1;previous=bytearray((nb+1)*width)
+        before=[float('inf')]*width
+        for j in range(nb+1):
+            current=[float('inf')]*width
+            for k in range(width):
+                if j==k==0:current[k]=0.;continue
+                error=(long[j+k]-short[j])**2
+                diagonal=before[k] if j else float('inf')
+                triangle=current[k-1] if k else float('inf')
+                if diagonal<=triangle:current[k]=diagonal+error;previous[j*width+k]=1
+                else:current[k]=triangle+error;previous[j*width+k]=2
+            before=current
+        j=nb;k=extra;path=[(na,nb)]
+        while j or k:
+            if previous[j*width+k]==1:j-=1
+            else:k-=1
+            path.append((j+k,j))
+        path.reverse()
+    return [(j,i) for i,j in path] if swap else path

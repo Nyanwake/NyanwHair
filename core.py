@@ -1,4 +1,4 @@
-"""NyanwHair 0.35.13: continuous splines and proportional ribbon detail.
+"""NyanwHair 0.35.14: quad strips and directed endpoint smoothing.
 
 Pure Python, no Blender IDs or tags on vertices/edges. Blender face corners may
 store the user's chosen end caps; this module only consumes that choice.
@@ -75,6 +75,7 @@ class MeshResult:
     surface_sections: dict=field(default_factory=dict)
     rail_samples: dict=field(default_factory=dict)
     vertex_keys: list=field(default_factory=list)
+    directional_smoothing: dict=field(default_factory=dict)
 
 
 def _plan_priority(plan):
@@ -303,9 +304,9 @@ def recover_caps(previous, old_points, points, boundary):
 def physical_edges(path): return [edge_key(a,b) for a,b in zip(path,path[1:])]
 
 
-def make_edge_evaluator(points,plans):
+def make_edge_evaluator(points,plans,directional_smoothing=None):
     from .curves import CurveNetwork
-    return CurveNetwork(points,plans)
+    return CurveNetwork(points,plans,directional_smoothing)
 
 
 def sample_smooth(points,path,count,evaluate,ident):
@@ -375,7 +376,7 @@ def plan_widths(plans):
 
 
 def generate(points,boundaries,settings=None,rows=12,max_polygons=200000,
-             previous=None,caps=None,reference_length=0.):
+             previous=None,caps=None,reference_length=0.,directional_smoothing=None):
     points=[tuple(map(float,p)) for p in points]
     settings=list(settings or [ZoneSettings() for _ in boundaries])
     rows=max(2,min(256,int(rows)))
@@ -433,7 +434,8 @@ def generate(points,boundaries,settings=None,rows=12,max_polygons=200000,
     widths=plan_widths(plans)
     out.effective_widths=widths
     out.base_rows=rows
-    evaluate=make_edge_evaluator(points,plans)
+    out.directional_smoothing=dict(directional_smoothing or {})
+    evaluate=make_edge_evaluator(points,plans,out.directional_smoothing)
     cap_profiles=_cap_profiles(points,plans,widths,evaluate)
     registry=RailRegistry(points,evaluate,rows,plans,reference_length,max_polygons)
     out.reference_length=registry.reference_length
