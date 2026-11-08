@@ -11,6 +11,7 @@ from bpy.app.handlers import persistent
 from bpy.props import BoolProperty, FloatProperty, FloatVectorProperty, IntProperty, PointerProperty, EnumProperty
 from bpy.types import Operator, Panel, PropertyGroup
 from mathutils import Vector
+from mathutils.bvhtree import BVHTree
 from bpy_extras import view3d_utils
 
 from . import core
@@ -40,6 +41,7 @@ _DEFAULT_BULGE = 0.08
 _UNDOING = False
 _CUT_PREVIEW = None
 _KEYMAPS = []
+_PENDING_PICK = None
 
 
 def is_guide(obj):
@@ -58,13 +60,15 @@ def _active_face(bm, obj=None):
     bm.faces.ensure_lookup_table()
     bm.faces.index_update()
     history=bm.select_history.active
-    if isinstance(history, bmesh.types.BMFace) and history.is_valid:
+    if isinstance(history, bmesh.types.BMFace) and history.is_valid and history.select:
         return history
     candidates=[]
-    if isinstance(history, bmesh.types.BMVert) and history.is_valid:
+    if isinstance(history, bmesh.types.BMVert) and history.is_valid and history.select:
         candidates=list(history.link_faces)
-    elif isinstance(history, bmesh.types.BMEdge) and history.is_valid:
+    elif isinstance(history, bmesh.types.BMEdge) and history.is_valid and history.select:
         candidates=list(history.link_faces)
+    if isinstance(history,(bmesh.types.BMVert,bmesh.types.BMEdge)) and history.is_valid and history.select and not candidates:
+        return None
     if candidates:
         preferred = (_CACHE.get(obj.as_pointer(),{}).get('active',-1)
                      if obj is not None else -1)
@@ -96,6 +100,126 @@ def _get_zone(f,bm):
         bias=max(-2.0,min(2.0,float(f[bias]))) if bias else 0.0,
         flip=bool(f[flip]) if flip else False,
     )
+
+
+def _selection_zone(bm, hovered, preferred=-1):
+    """Cursor chooses among the owners of the actual native selection.
+
+    A point/edge belonging to another zone always wins over a surface behind
+    it. With no selected component, a surface click makes that zone active.
+    """
+    bm.faces.ensure_lookup_table(); bm.faces.index_update()
+    active=bm.select_history.active
+    candidates=[]
+    if active is not None and active.is_valid and active.select:
+        if isinstance(active,bmesh.types.BMFace):
+            return active.index
+        if isinstance(active,(bmesh.types.BMVert,bmesh.types.BMEdge)):
+            candidates=[f for f in active.link_faces if f.is_valid and not f.hide]
+            if not candidates:
+                return -1  # loose construction geometry has no segment
+    if candidates:
+        ids={f.index for f in candidates}
+        if hovered in ids: return hovered
+        if preferred in ids: return preferred
+        return max(candidates,key=lambda f:(sum(v.select for v in f.verts),-f.index)).index
+    if hovered is not None and 0<=hovered<len(bm.faces):
+        return hovered
+    return preferred if 0<=preferred<len(bm.faces) else -1
+
+
+def _ray_zone(cache,origin,direction):
+    """Pick actual preview polygons; source n-gons are not the visible surface."""
+    result=cache['result']
+    if not result.faces: return None
+    if cache.get('pick_result') is not result:
+        cache['pick_bvh']=BVHTree.FromPolygons(result.vertices,result.faces)
+        cache['pick_result']=result
+    _,_,index,_=cache['pick_bvh'].ray_cast(Vector(origin),Vector(direction))
+    return result.owners[index] if index is not None else None
+
+
+def _finish_zone_pick():
+    global _PENDING_PICK
+    pending=_PENDING_PICK
+    _PENDING_PICK=None
+    if pending is None or not _RUNNING or _UNDOING: return None
+    obj,hovered,topology,area=pending
+    try:
+        if bpy.context.edit_object!=obj or not is_guide(obj): return None
+        bm=bmesh.from_edit_mesh(obj.data)
+        bm.verts.index_update(); bm.faces.index_update()
+        if tuple(tuple(v.index for v in f.verts) for f in bm.faces)!=topology:
+            return None
+        cached=_CACHE.get(obj.as_pointer())
+        if cached is None: return None
+        zone=_selection_zone(bm,hovered,cached.get('active',-1))
+        cached['active']=zone
+        _sync_ui(obj)
+        area.tag_redraw()
+    except (ReferenceError,RuntimeError):
+        pass
+    return None
+
+
+def _clear_zone_pick():
+    global _PENDING_PICK
+    _PENDING_PICK=None
+    if bpy.app.timers.is_registered(_finish_zone_pick):
+        bpy.app.timers.unregister(_finish_zone_pick)
+
+
+class NYANW35_OT_pick_zone(Operator):
+    bl_idname='nyanw35.pick_zone'
+    bl_label='Активный сегмент под курсором'
+    bl_options={'INTERNAL'}
+
+    @classmethod
+    def poll(cls,context):
+        return bool(is_guide(context.edit_object) and context.area and
+                    context.area.type=='VIEW_3D' and context.region and
+                    context.region.type=='WINDOW' and context.region_data)
+
+    def invoke(self,context,event):
+        # Observe the click, then let Blender do native selection/toggle/drag.
+        # The deferred read sees its result; it never edits BMesh selection.
+        global _PENDING_PICK
+        if event.ctrl or event.alt or event.oskey: return {'PASS_THROUGH'}
+        obj=context.edit_object
+        if not obj.nh35.show_preview: return {'PASS_THROUGH'}
+        _rebuild(obj)
+        cached=_CACHE.get(obj.as_pointer())
+        if cached is None: return {'PASS_THROUGH'}
+        xy=(event.mouse_region_x,event.mouse_region_y)
+        origin=view3d_utils.region_2d_to_origin_3d(context.region,context.region_data,xy)
+        direction=view3d_utils.region_2d_to_vector_3d(context.region,context.region_data,xy)
+        inverse=obj.matrix_world.inverted_safe()
+        hovered=_ray_zone(cached,inverse@origin,(inverse.to_3x3()@direction).normalized())
+        _PENDING_PICK=(obj,hovered,cached['topology'],context.area)
+        if not bpy.app.timers.is_registered(_finish_zone_pick):
+            bpy.app.timers.register(_finish_zone_pick,first_interval=0.)
+        return {'PASS_THROUGH'}
+
+
+def _selected_guide_edges(bm,result,vertex_mode):
+    bm.verts.index_update()
+    rails={edge for paths in result.face_paths.values() for path in paths
+           for edge in core.physical_edges(path)}
+    return tuple(sorted(core.edge_key(e.verts[0].index,e.verts[1].index)
+                        for e in bm.edges if not e.hide and
+                        (e.select or vertex_mode and all(v.select for v in e.verts)) and
+                        core.edge_key(e.verts[0].index,e.verts[1].index) in rails))
+
+
+def _selected_guide_batch(cache,bm,vertex_mode):
+    keys=_selected_guide_edges(bm,cache['result'],vertex_mode)
+    signature=(cache.get('gpu_signature'),keys)
+    if cache.get('selected_signature')!=signature:
+        coords=[p for edge in keys for p in cache.get('rail_segments',{}).get(edge,())]
+        shader=gpu.shader.from_builtin('UNIFORM_COLOR')
+        cache['selected_batch']=batch_for_shader(shader,'LINES',{'pos':coords}) if coords else None
+        cache['selected_signature']=signature
+    return cache.get('selected_batch')
 
 
 def _read_caps(face, layer):
@@ -1123,7 +1247,7 @@ class NYANW35_OT_hair_loop(Operator):
 
 
 class NYANW35_PT_main(Panel):
-    bl_label='NyanwHair v0.35.9'
+    bl_label='NyanwHair v0.35.10'
     bl_idname='NYANW35_PT_main'
     bl_space_type='VIEW_3D'
     bl_region_type='UI'
@@ -1194,16 +1318,19 @@ def _gpu_batches(cache,guide,shader):
     matrix=guide.matrix_world
     coords=[tuple(matrix @ Vector(v)) for v in result.vertices]
     tris=[]; colors=[]; edges=set()
-    guide_lines=[]; seen_guides=set()
-    for i,(rail_a,rail_b) in result.guide_curves.items():
-        paths=result.face_paths.get(i)
-        if paths is None: continue
-        for src_path,curve in zip(paths,(rail_a,rail_b)):
-            tag=min(tuple(src_path),tuple(reversed(src_path)))
-            if tag in seen_guides: continue
-            seen_guides.add(tag)
-            world=[tuple(matrix @ Vector(p)) for p in curve]
-            guide_lines.extend(p for a,b in zip(world,world[1:]) for p in (a,b))
+    guide_lines=[]
+    rail_segments={}
+    evaluate=core.make_edge_evaluator(cache['positions'],list(result.plans_by_loop.values()))
+    for paths in result.face_paths.values():
+        for path in paths:
+            for a,b in zip(path,path[1:]):
+                key=core.edge_key(a,b)
+                if key in rail_segments: continue
+                curve=[tuple(matrix@Vector(evaluate(a,b,j/24.))) for j in range(25)]
+                segments=[p for pair in zip(curve,curve[1:]) for p in pair]
+                rail_segments[key]=segments
+                guide_lines.extend(segments)
+    cache['rail_segments']=rail_segments
     light=Vector((.31,-.43,.85)).normalized()
     for poly in result.faces:
         if len(poly)<3: continue
@@ -1277,6 +1404,18 @@ def _draw_preview():
                 rails.draw(guide_shader)
                 gpu.state.line_width_set(1.0)
                 gpu.state.depth_test_set('LESS_EQUAL')
+            if obj==ctx.edit_object:
+                bm=bmesh.from_edit_mesh(obj.data)
+                selected=_selected_guide_batch(cached,bm,ctx.tool_settings.mesh_select_mode[0])
+                if selected:
+                    selected_shader=gpu.shader.from_builtin('UNIFORM_COLOR')
+                    selected_shader.bind()
+                    selected_shader.uniform_float('color',(1.,.68,.30,1.))
+                    gpu.state.depth_test_set('NONE')
+                    gpu.state.line_width_set(3.4)
+                    selected.draw(selected_shader)
+                    gpu.state.line_width_set(1.)
+                    gpu.state.depth_test_set('LESS_EQUAL')
             if obj==ctx.edit_object and obj.nh35.show_tint and obj.nh35.opacity>0:
                 face_idx=cached.get('active',-1)
                 try:
@@ -1371,7 +1510,7 @@ def _draw_control_points():
             return triangles
         for coords, color, radius in zip(groups,
                 ((.89,.95,1.,1.),(1.,.79,.44,1.),(1.,1.,1.,1.)),
-                (2.5,3.6,4.2)):
+                (3.2,4.5,5.2)):
             if not coords:
                 continue
             outline = batch_for_shader(shader,'TRIS',{'pos':circles(coords,radius+1.1)})
@@ -1431,6 +1570,7 @@ def _ticker():
 
 @persistent
 def _on_load(_dummy):
+    _clear_zone_pick()
     global _CUT_PREVIEW
     _CACHE.clear()
     _CUT_PREVIEW=None
@@ -1438,6 +1578,7 @@ def _on_load(_dummy):
 
 @persistent
 def _on_undo_pre(_dummy):
+    _clear_zone_pick()
     global _UNDOING,_CUT_PREVIEW
     _UNDOING=True
     _CUT_PREVIEW=None
@@ -1454,7 +1595,7 @@ def _on_undo_post(_dummy):
 _CLASSES=(NHGuidedProperties,NHGuidedUISettings,
           NYANW35_OT_create_guide,NYANW35_OT_activate,NYANW35_OT_disable,
           NYANW35_OT_demo,NYANW35_OT_rebuild,NYANW35_OT_bake,
-          NYANW35_OT_pin_rails, NYANW35_OT_adjust,
+          NYANW35_OT_pin_rails, NYANW35_OT_adjust,NYANW35_OT_pick_zone,
           NYANW35_OT_hair_loop,NYANW35_PT_main)
 
 
@@ -1462,6 +1603,9 @@ def _register_keys():
     kc=bpy.context.window_manager.keyconfigs.addon
     if kc is None: return
     km=kc.keymaps.new(name='Mesh',space_type='EMPTY')
+    pick_map=kc.keymaps.new(name='3D View',space_type='VIEW_3D')
+    click=pick_map.keymap_items.new('nyanw35.pick_zone','LEFTMOUSE','CLICK',any=True)
+    _KEYMAPS.append((pick_map,click))
     # Add-on Mesh keymap takes precedence over Blender's default Mesh Ctrl+R
     # only when poll() accepts a NyanwHair guide. Shift+R is untouched.
     kmi=km.keymap_items.new('nyanw35.hair_loop','R','PRESS',ctrl=True)
@@ -1507,6 +1651,7 @@ def register():
 def unregister():
     global _RUNNING,_DRAW_HANDLER,_POINT_HANDLER,_CUT_PREVIEW
     _RUNNING=False
+    _clear_zone_pick()
     _CUT_PREVIEW=None
     _unregister_keys()
     if _DRAW_HANDLER is not None:
