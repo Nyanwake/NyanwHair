@@ -1,5 +1,9 @@
 """Flow-aligned columns for curled and locally refined ribbon patches."""
 import bisect,math
+try:
+    import numpy as np
+except ImportError:
+    np=None
 from .core import EPS,add,sub,mul,dot,cross,length,norm,mix,edge_key,bias_cross_position
 from .ribbon import zipper_flows
 
@@ -13,10 +17,16 @@ def _rotate(vector,old,new):
 
 class FlowSurface:
     def __init__(self,plan,width,mapping,cap_profiles):
-        self.plan=plan;self.width=width;self.mapping=mapping;self.caps=cap_profiles;self._samples={}
+        self.plan=plan;self.width=width;self.mapping=mapping;self.caps={};self._samples={}
+        for kind,i in (plan.start,plan.end):
+            if kind=='edge':
+                edge=edge_key(plan.boundary[i],plan.boundary[(i+1)%len(plan.boundary)]);self.caps[edge]=cap_profiles[edge]
         self.n=max(64,min(192,16*max(len(mapping.a.path),len(mapping.b.path))))
         self.u=[i/self.n for i in range(self.n+1)]
-        pairs=[mapping.at(u) for u in self.u]
+        if np is None:pairs=[mapping.at(u) for u in self.u]
+        else:
+            a=mapping.flow_to_u.many(self.u);b=mapping.u_to_v.many(a)
+            pairs=[((None,tuple(p)),(None,tuple(q))) for p,q in zip(mapping.a.positions(a).tolist(),mapping.b.positions(b).tolist())]
         centers=[mul(add(a[1],b[1]),.5) for a,b in pairs]
         tangents=[norm(sub(centers[min(self.n,i+1)],centers[max(0,i-1)])) for i in range(self.n+1)]
         self.normals=[]
@@ -27,6 +37,27 @@ class FlowSurface:
             if length(normal)<EPS:normal=transported
             if dot(normal,transported)<0:normal=mul(normal,-1.)
             self.normals.append(normal);previous=normal;old=tangents[i]
+
+    def prime(self,values,x):
+        values=list(dict.fromkeys(float(u) for u in values if (float(u),x) not in self._samples))
+        if not values:return
+        if np is None or x in (0,self.width) or len(values)<4:
+            for u in values:self.at(u,x)
+            return
+        interior=[u for u in values if 0.<u<1.]
+        for u in values:
+            if not 0.<u<1.:self.at(u,x)
+        if not interior:return
+        u=np.asarray(interior);a=self.mapping.flow_to_u.many(u);b=self.mapping.u_to_v.many(a)
+        pa=self.mapping.a.positions(a);pb=self.mapping.b.positions(b)
+        index=np.minimum(self.n-1,(u*self.n).astype(int));t=u*self.n-index;normals=np.asarray(self.normals)
+        normal=normals[index]*(1.-t[:,None])+normals[index+1]*t[:,None]
+        normal/=np.maximum(EPS,np.linalg.norm(normal,axis=1))[:,None]
+        v=bias_cross_position(x/self.width,self.plan.settings.bias)
+        amount=self.plan.settings.bulge*np.linalg.norm(pb-pa,axis=1)*math.sin(math.pi*v)
+        if self.plan.settings.flip:amount=-amount
+        positions=pa*(1.-v)+pb*v+normal*amount[:,None]
+        self._samples.update(((value,x),(None,tuple(pos))) for value,pos in zip(interior,positions.tolist()))
 
     def at(self,u,x):
         key=(u,x)
@@ -59,7 +90,7 @@ def _density(curve,fraction,values):
 
 
 def _column(surface,x,spacing,density):
-    us=surface.u;positions=[surface.at(u,x)[1] for u in us];arc=[0.]
+    us=surface.u;surface.prime(us,x);positions=[surface.at(u,x)[1] for u in us];arc=[0.]
     for a,b in zip(positions,positions[1:]):arc.append(arc[-1]+length(sub(b,a)))
     count=max(1,int(arc[-1]/spacing+.5))
     def inverse(distance):
@@ -72,6 +103,7 @@ def _column(surface,x,spacing,density):
             return refine(a,middle,depth+1)[:-1]+refine(middle,b,depth+1)
         return [a,b]
     base=[inverse(arc[-1]*i/count) for i in range(count+1)];base[0]=0.;base[-1]=1.
+    surface.prime(base+[(a+b)*.5 for a,b in zip(base,base[1:])],x)
     samples=[]
     for a,b in zip(base,base[1:]):samples.extend(refine(a,b)[:-1])
     samples.append(1.)
@@ -115,11 +147,14 @@ def geometry_path(a,b,fa,fb):
     # Additional triangles are justified only by a substantially skewed or
     # folded quad. The fixed penalty keeps regular strips predominantly quad.
     width=len(b);previous=bytearray(len(a)*width);before=[float('inf')]*width
-    largest_step=max([y-x for flow in (fa,fb) for x,y in zip(flow,flow[1:])],default=1.)
-    window=min(.35,max(.08,2.*largest_step)) if len(a)*len(b)>4096 else 1.
+    # A fixed station band also applies to small patches: the previous full
+    # product search was repeated for every curved strip on every edit.
+    corridor=[[] for _ in a]
+    for i,j in baseline:corridor[i].append(j)
     for i in range(len(a)):
         current=[float('inf')]*width
-        lo=max(0,bisect.bisect_left(fb,fa[i]-window));hi=min(width,bisect.bisect_right(fb,fa[i]+window))
+        center=min(width-1,bisect.bisect_left(fb,fa[i]))
+        lo=max(0,min(center,min(corridor[i]))-2);hi=min(width,max(center,max(corridor[i]))+3)
         for j in range(lo,hi):
             if i==j==0:current[j]=0.;continue
             local=skew(i,j)**2+.1*(fa[i]-fb[j])**2
@@ -141,10 +176,31 @@ def geometry_path(a,b,fa,fb):
     return path[::-1]
 
 
+class _SurfaceSections:
+    """Reference rows are needed by editing tools, not viewport generation."""
+    lazy=True
+    def __init__(self,surface,count):self.surface=surface;self.count=count;self.rows={}
+    def __len__(self):return self.count+1
+    def __getitem__(self,index):
+        if isinstance(index,slice):return tuple(self[i] for i in range(*index.indices(len(self))))
+        if index<0:index+=len(self)
+        if not 0<=index<len(self):raise IndexError(index)
+        if index not in self.rows:self.rows[index]=tuple(self.surface.at(index/self.count,x)[1] for x in range(self.surface.width+1))
+        return self.rows[index]
+    def __iter__(self):
+        for x in range(1,self.surface.width):self.surface.prime([i/self.count for i in range(len(self))],x)
+        for i in range(len(self)):yield self[i]
+
+
 def _build_patch(plan,width,registry,left_curve,right_curve,left,right,cap_profiles,put,emit,max_polygons):
     mapping=registry.maps[left_curve.path,right_curve.path]
     surface=FlowSurface(plan,width,mapping,cap_profiles)
     columns=[];flows=[];coords=[]
+    boundary_flows=[[mapping.fraction(curve,key) for key,pos in samples]
+                    for curve,samples in ((left_curve,left),(right_curve,right))]
+    def station(values,t):
+        offset=t*(len(values)-1);i=min(len(values)-2,int(offset));f=offset-i
+        return values[i]*(1.-f)+values[i+1]*f
     for x in range(width+1):
         if x in (0,width):
             curve,samples=(left_curve,left) if x==0 else (right_curve,right)
@@ -166,6 +222,11 @@ def _build_patch(plan,width,registry,left_curve,right_curve,left,right,cap_profi
                 knots=[mapping.u_to_flow(u) for u in registry.point_field.profile(left_curve)[1]]
                 knots.extend(mapping.u_to_flow(mapping.v_to_u(u)) for u in registry.point_field.profile(right_curve)[1])
                 us=redistribute(us,arc_at,factor,knots,2*max_polygons)
+            # Adjacent columns share a row phase. Independent arc resampling
+            # made each column invent a different transverse zigzag.
+            count=len(us)-1;v=bias_cross_position(x/width,plan.settings.bias)
+            us=[station(boundary_flows[0],k/count)*(1.-v)+station(boundary_flows[1],k/count)*v for k in range(count+1)]
+            surface.prime(us,x)
             pairs=[]
             for k,u in enumerate(us):
                 key,pos=surface.at(u,x)
@@ -176,7 +237,7 @@ def _build_patch(plan,width,registry,left_curve,right_curve,left,right,cap_profi
         path=geometry_path(coords[x],coords[x+1],flows[x],flows[x+1])
         for (i,j),(ni,nj) in zip(path,path[1:]):emit([columns[x][i],columns[x+1][j],columns[x+1][nj],columns[x][ni]])
     count=max(2,min(256,max(map(len,columns))-1))
-    sections=[tuple(surface.at(i/count,x)[1] for x in range(width+1)) for i in range(count+1)]
+    sections=_SurfaceSections(surface,count)
     return sections,columns
 
 
@@ -205,7 +266,7 @@ def build_patch(plan,width,registry,left_curve,right_curve,left,right,cap_profil
             return indices[key]
         def local_emit(face):faces.append(tuple(face))
         sections,columns=_build_patch(plan,width,registry,left_curve,right_curve,left,right,cap_profiles,local_put,local_emit,max_polygons)
-        recipe=(tuple(points),tuple(faces),tuple(sections),tuple(tuple(c) for c in columns))
+        recipe=(tuple(points),tuple(faces),sections,tuple(tuple(c) for c in columns))
     if cache is not None:cache[plan.boundary]=(signature,recipe)
     points,faces,sections,columns=recipe
     remap=[put(key,pos) for key,pos in points]

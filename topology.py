@@ -5,8 +5,12 @@ source vertex or an oriented parameter on a source edge, never a position.
 """
 import bisect
 import math
+try:
+    import numpy as np
+except ImportError:
+    np=None
 from collections import defaultdict
-from .core import EPS,CURVE_SUBDIVISIONS,sub,add,cross,length,norm,edge_key,newell,mix
+from .core import EPS,CURVE_SUBDIVISIONS,sub,add,cross,length,norm,edge_key,newell,mix,dot,mul
 
 
 class CurvePath:
@@ -17,6 +21,21 @@ class CurvePath:
         self.tables=[]; self.offsets=[0.]; self._samples={}
         if cached is not None:
             self.tables,self.offsets,self.total=cached
+            return
+        if np is not None and hasattr(evaluate,'coefficients'):
+            coefficients=[]
+            for a,b in zip(path,path[1:]):
+                data=evaluate.coefficients.get((a,b))
+                if data is None:
+                    q,p,mb,ma=evaluate.coefficients[b,a];data=(p,q,mul(ma,-1.),mul(mb,-1.))
+                coefficients.append(data)
+            t=np.linspace(0.,1.,CURVE_SUBDIVISIONS+1);tt=t*t;ttt=tt*t
+            basis=np.stack((2*ttt-3*tt+1,-2*ttt+3*tt,ttt-2*tt+t,ttt-tt),axis=1)
+            positions=np.einsum('si,eij->esj',basis,np.asarray(coefficients))
+            distances=np.linalg.norm(np.diff(positions,axis=1),axis=2)
+            arcs=np.concatenate((np.zeros((len(coefficients),1)),np.cumsum(distances,axis=1)),axis=1)
+            self.tables=arcs.tolist();self.offsets=np.concatenate(([0.],np.cumsum(arcs[:,-1]))).tolist();self.total=self.offsets[-1]
+            if self.total<EPS:raise ValueError('Нулевая длина направляющей')
             return
         subdivisions=CURVE_SUBDIVISIONS
         for a,b in zip(path,path[1:]):
@@ -72,6 +91,25 @@ class CurvePath:
         if t>=1.-1e-10:return ('v',hi),self.points[hi]
         return ('s',lo,hi,t),self.evaluate(lo,hi,t)
 
+    def positions(self,fractions):
+        if np is None:return [self.at(u)[1] for u in fractions]
+        if not hasattr(self.evaluate,'coefficients'):return np.asarray([self.at(u)[1] for u in fractions])
+        if not hasattr(self,'_vector_data'):
+            arcs=[];parameters=[];coefficients=[]
+            for i,(a,b) in enumerate(zip(self.path,self.path[1:])):
+                arcs.extend(self.offsets[i]+v for v in self.tables[i])
+                parameters.extend(i+j/CURVE_SUBDIVISIONS for j in range(CURVE_SUBDIVISIONS+1))
+                data=self.evaluate.coefficients.get((a,b))
+                if data is None:
+                    q,p,mb,ma=self.evaluate.coefficients[b,a];data=(p,q,mul(ma,-1.),mul(mb,-1.))
+                coefficients.append(data)
+            self._vector_data=(np.asarray(arcs),np.asarray(parameters),np.asarray(coefficients))
+        arcs,parameters,coefficients=self._vector_data
+        value=np.interp(np.clip(np.asarray(fractions),0.,1.)*self.total,arcs,parameters)
+        index=np.minimum(value.astype(int),len(self.tables)-1);t=value-index;tt=t*t;ttt=tt*t
+        basis=np.stack((2*ttt-3*tt+1,-2*ttt+3*tt,ttt-2*tt+t,ttt-tt),axis=1)
+        return np.einsum('ni,nij->nj',basis,coefficients[index])
+
     def sample(self,fractions):return [self.at(u) for u in fractions]
 
 
@@ -82,9 +120,9 @@ class RailRegistry:
     Logical junctions are mandatory anchors. Regular support vertices do
     not allocate rows. No RAM cache or per-zone length budget is involved.
     """
-    def __init__(self,points,evaluate,rows,plans,reference_length=0.,max_samples=200000,local_density=None,point_density=None,previous=None):
+    def __init__(self,points,evaluate,rows,plans,reference_length=0.,max_samples=200000,local_density=None,point_density=None,previous=None,layout_lengths=None):
         self.points=points;self.evaluate=evaluate;self.rows=rows
-        self.stations=defaultdict(dict);self.paths={};self.boundaries=[]
+        self.stations=defaultdict(dict);self.paths={};self.boundaries=[];self.complete_boundaries={};self.needs_stitch=False
         self.maps={};self.geometry_cache={};self.map_cache={}
         self.old_geometry=getattr(previous,'sampling_cache',{})
         self.old_maps=getattr(previous,'correspondence_cache',{})
@@ -93,6 +131,9 @@ class RailRegistry:
         for path in evaluate.paths:
             if sum(length(sub(points[b],points[a])) for a,b in zip(path,path[1:]))>EPS:
                 chains.append(self.curve(path))
+        self.layout_lengths={edge:float(value) for edge,value in (layout_lengths or {}).items() if float(value)>EPS}
+        for c in chains:
+            for edge,(i,a,b) in c.edges.items():self.layout_lengths.setdefault(edge,c.tables[i][-1])
         self.reference_length=reference_length if reference_length>EPS else max((c.total for c in chains),default=1.)
         self.spacing=self.reference_length/rows
         from .density import DensityField
@@ -100,17 +141,26 @@ class RailRegistry:
         mandatory={v for p in plans for rail in (p.left,p.right) for v in (rail[0],rail[-1])}
         mandatory.update(v for v,neighbors in evaluate.adjacency.items() if len(neighbors)!=2)
         mandatory.update(a for (a,b),strength in getattr(evaluate,'smoothing',{}).items() if strength<1.)
-        allocated=0
+        self.phases=self._phases(chains,plans,mandatory)
+        allocated=0;sections=[]
         for curve in chains:
             stops=[(0.,curve.path[0])]
             stops.extend((curve.fraction(('v',v)),v) for v in curve.path[1:-1] if v in mandatory)
             stops.append((1.,curve.path[-1]))
             stops.sort()
             for (lo,first),(hi,last) in zip(stops,stops[1:]):
-                intervals=max(1,int((hi-lo)*curve.total/self.spacing+.5))
+                phase,phase_difference,direction=self.phases[curve.path,first,last]
+                desired=direction*(hi-lo)*curve.total/self.spacing
+                span=phase_difference+math.floor(desired-phase_difference+.5)
+                if span*desired<=0. or abs(span)<.2:span=desired
+                ends=sorted((phase,phase+span))
+                lower=math.ceil(ends[0]);upper=math.floor(ends[1])
+                fractions=[lo+(k-phase)/span*(hi-lo) for k in range(lower,upper+1)]
+                margin=.28*self.spacing/curve.total
+                fractions=[lo]+sorted(u for u in fractions if lo+margin<u<hi-margin)+[hi]
+                intervals=len(fractions)-1
                 allocated+=intervals
                 if allocated>2*max_samples:raise ValueError('Превышен лимит точек детализации')
-                fractions=[lo+(hi-lo)*i/intervals for i in range(intervals+1)]
                 # A small curvature safeguard at low detail, independent of
                 # support count. Straight parts keep their sparse spacing.
                 def refine(a,b,depth=0):
@@ -124,43 +174,103 @@ class RailRegistry:
                 adaptive.append(hi)
                 allocated+=len(adaptive)-len(fractions)
                 if allocated>2*max_samples:raise ValueError('Превышен лимит точек детализации')
-                if any(self.density.get(edge,1.)>1. for edge in curve.edges):
-                    # Preserve every original sample. Insert only inside
-                    # selected source-edge intervals, sharing their identities.
-                    expanded=[]
-                    for start,end in zip(adaptive,adaptive[1:]):
-                        cuts=[start]
-                        for index in range(1,len(curve.path)-1):
-                            fraction=curve.offsets[index]/curve.total
-                            before=self.density.get(edge_key(curve.path[index-1],curve.path[index]),1.)
-                            after=self.density.get(edge_key(curve.path[index],curve.path[index+1]),1.)
-                            if start+1e-10<fraction<end-1e-10 and abs(before-after)>1e-8:cuts.append(fraction)
-                        cuts.append(end)
-                        for a,b in zip(cuts,cuts[1:]):
-                            edge_i=min(len(curve.path)-2,max(0,bisect.bisect_right(curve.offsets,(a+b)*.5*curve.total)-1))
-                            factor=self.density.get(edge_key(curve.path[edge_i],curve.path[edge_i+1]),1.)
-                            count=max(1,int(math.ceil(factor*(b-a)/(end-start)-1e-8)))
-                            if allocated+len(expanded)+count+1-len(adaptive)>2*max_samples:raise ValueError('Превышен лимит локального уплотнения')
-                            expanded.extend(a+(b-a)*i/count for i in range(count))
-                    expanded.append(adaptive[-1])
-                    allocated+=len(expanded)-len(adaptive)
-                    adaptive=expanded
-                    if allocated>2*max_samples:raise ValueError('Превышен лимит локального уплотнения')
-                if self.point_field.affected(curve):
-                    from .density import redistribute
-                    refined=redistribute(adaptive,lambda u:u*curve.total,
-                        lambda u:self.point_field.at(curve,u),self.point_field.profile(curve)[1],2*max_samples)
-                    allocated+=len(refined)-len(adaptive);adaptive=refined
-                    if allocated>2*max_samples:raise ValueError('Превышен лимит локального уплотнения')
-                samples=curve.sample(adaptive)
-                samples[0]=(('v',first),points[first]);samples[-1]=(('v',last),points[last])
-                for key,pos in samples:
-                    if key[0]=='s':self.stations[(key[1],key[2])][key[3]]=(key,pos)
-                    else:
-                        vertex=key[1]
-                        for adjacent in evaluate.adjacency[vertex]:
-                            edge=edge_key(vertex,adjacent);t=0. if vertex==edge[0] else 1.
-                            self.stations[edge][t]=(key,pos)
+                sections.append([curve,first,last,adaptive])
+                self._register_samples(curve,first,last,adaptive)
+        self.stations.clear()
+        for curve,first,last,adaptive in sections:
+            if any(self.density.get(edge,1.)>1. for edge in curve.edges):
+                # Preserve every original sample. Insert only inside
+                # selected source-edge intervals, sharing their identities.
+                expanded=[]
+                for start,end in zip(adaptive,adaptive[1:]):
+                    cuts=[start]
+                    for index in range(1,len(curve.path)-1):
+                        fraction=curve.offsets[index]/curve.total
+                        before=self.density.get(edge_key(curve.path[index-1],curve.path[index]),1.)
+                        after=self.density.get(edge_key(curve.path[index],curve.path[index+1]),1.)
+                        if start+1e-10<fraction<end-1e-10 and abs(before-after)>1e-8:cuts.append(fraction)
+                    cuts.append(end)
+                    for a,b in zip(cuts,cuts[1:]):
+                        edge_i=min(len(curve.path)-2,max(0,bisect.bisect_right(curve.offsets,(a+b)*.5*curve.total)-1))
+                        factor=self.density.get(edge_key(curve.path[edge_i],curve.path[edge_i+1]),1.)
+                        count=max(1,int(math.ceil(factor*(b-a)/(end-start)-1e-8)))
+                        if allocated+len(expanded)+count+1-len(adaptive)>2*max_samples:raise ValueError('Превышен лимит локального уплотнения')
+                        expanded.extend(a+(b-a)*i/count for i in range(count))
+                expanded.append(adaptive[-1])
+                allocated+=len(expanded)-len(adaptive)
+                adaptive=expanded
+                if allocated>2*max_samples:raise ValueError('Превышен лимит локального уплотнения')
+            if self.point_field.affected(curve):
+                from .density import redistribute
+                refined=redistribute(adaptive,lambda u:u*curve.total,
+                    lambda u:self.point_field.at(curve,u),self.point_field.profile(curve)[1],2*max_samples)
+                allocated+=len(refined)-len(adaptive);adaptive=refined
+                if allocated>2*max_samples:raise ValueError('Превышен лимит локального уплотнения')
+            self._register_samples(curve,first,last,adaptive)
+
+    def _register_samples(self,curve,first,last,fractions):
+        samples=curve.sample(fractions)
+        samples[0]=(('v',first),self.points[first]);samples[-1]=(('v',last),self.points[last])
+        for key,pos in samples:
+            if key[0]=='s':self.stations[(key[1],key[2])][key[3]]=(key,pos)
+            else:
+                vertex=key[1]
+                for adjacent in self.evaluate.adjacency[vertex]:
+                    edge=edge_key(vertex,adjacent);t=0. if vertex==edge[0] else 1.
+                    self.stations[edge][t]=(key,pos)
+
+    def _phases(self,chains,plans,mandatory):
+        """Synchronize row phase modulo one, preserving unequal row counts.
+
+        Longitudinal constraints follow physical length; transverse caps
+        favor the same row phase. Junctions do not reset every chain to zero.
+        """
+        sections=[];edges=[];signs={}
+        ordered=sorted(plans,key=lambda p:(p.settings.order<=0,p.settings.order,p.index))
+        for c in chains:
+            sign=1.
+            for p in ordered:
+                found=False
+                for rail in (p.left,p.right):
+                    for a,b in zip(rail,rail[1:]):
+                        entry=c.edges.get(edge_key(a,b))
+                        if entry:sign=1. if entry[1]==a else -1.;found=True;break
+                    if found:break
+                if found:break
+            stops=[(0.,c.path[0])]+[(c.fraction(('v',v)),v) for v in c.path[1:-1] if v in mandatory]+[(1.,c.path[-1])]
+            for (lo,a),(hi,b) in zip(stops,stops[1:]):
+                i=c.vertices[a];j=c.vertices[b]
+                size=sum(self.layout_lengths[edge_key(c.path[k],c.path[k+1])] for k in range(i,j))/self.spacing
+                desired=sign*size
+                sections.append((c.path,a,b,desired))
+                edges.append((a,b,desired,1./max(.5,size)))
+        pins=set()
+        for p in plans:
+            for end,(kind,i) in enumerate((p.start,p.end)):
+                if kind=='edge':
+                    a,b=p.boundary[i],p.boundary[(i+1)%len(p.boundary)];edges.append((a,b,0.,4.))
+                    if end==0 and all(len(self.evaluate.adjacency[v])==1 for v in (a,b)):pins.update((a,b))
+        vertices=sorted({v for a,b,d,w in edges for v in (a,b)});ids={v:i for i,v in enumerate(vertices)}
+        phases={v:0. for v in vertices}
+        if np is not None and edges:
+            src=[];dst=[];rotation=[];weight=[]
+            for a,b,desired,w in edges:
+                r=complex(math.cos(2*math.pi*desired),math.sin(2*math.pi*desired))
+                src.extend((ids[a],ids[b]));dst.extend((ids[b],ids[a]));rotation.extend((r.conjugate(),r));weight.extend((w,w))
+            src=np.asarray(src);dst=np.asarray(dst);rotation=np.asarray(rotation);weight=np.asarray(weight)
+            z=np.ones(len(vertices),dtype=complex);denom=np.maximum(EPS,np.bincount(src,weights=weight,minlength=len(vertices)))
+            pinned=[ids[v] for v in pins]
+            if not pinned:pinned=[0]
+            for _ in range(32):
+                value=z[dst]*rotation*weight
+                mean=(np.bincount(src,weights=value.real,minlength=len(vertices))+1j*np.bincount(src,weights=value.imag,minlength=len(vertices)))/denom
+                z=.35*z+.65*mean;z/=np.maximum(EPS,np.abs(z));z[pinned]=1.
+            phases={v:float(np.angle(z[ids[v]])/(2*math.pi)) for v in vertices}
+        result={}
+        for path,a,b,desired in sections:
+            start=phases[a];difference=phases[b]-start
+            result[path,a,b]=(start,difference,1. if desired>=0 else -1.)
+        return result
 
     def curve(self,path):
         path=tuple(path)
@@ -177,25 +287,30 @@ class RailRegistry:
         return self.paths[path]
 
     def boundary(self,curve):
+        if curve.path in self.complete_boundaries:return self.complete_boundaries[curve.path]
         samples={('v',curve.path[0]):self.points[curve.path[0]],
                  ('v',curve.path[-1]):self.points[curve.path[-1]]}
         for edge in curve.edges:
             for key,pos in self.stations[edge].values():
                 if curve.parameter(key) is not None:samples[key]=pos
-        return sorted(samples.items(),key=lambda item:curve.parameter(item[0]))
+        ordered=sorted(samples.items(),key=lambda item:curve.parameter(item[0]))
+        self.complete_boundaries[curve.path]=ordered
+        return ordered
 
-    def pair(self,left,right):
+    def pair(self,left,right,reference=True):
         from .ribbon import RibbonMap
         a=self.curve(left);b=self.curve(right)
         left_samples=self.boundary(a);right_samples=self.boundary(b)
         key=(a.path,b.path);signature=(a.geometry_signature,b.geometry_signature)
         old=self.old_maps.get(key)
-        if old and old[0]==signature:
+        if key in self.maps:mapping=self.maps[key]
+        elif old and old[0]==signature:
             mapping=RibbonMap.__new__(RibbonMap)
             mapping.__dict__.update(old[1]);mapping.a=a;mapping.b=b;mapping._samples={}
         else:mapping=RibbonMap(a,b)
         self.maps[key]=mapping
         self.map_cache[key]=(signature,{k:v for k,v in mapping.__dict__.items() if k not in ('a','b','_samples')})
+        if not reference:return a,b,left_samples,right_samples,(),(),()
         fa=[mapping.fraction(a,key) for key,pos in left_samples]
         fb=[mapping.fraction(b,key) for key,pos in right_samples]
         count=max(1,int(((len(fa)-1)+(len(fb)-1))*.5+.5))
@@ -215,6 +330,9 @@ class RailRegistry:
         return [mapping.fraction(curve,key) for key,pos in samples]
 
     def register(self,curve,samples):
+        complete=self.complete_boundaries.get(curve.path)
+        if complete is not samples and (complete is None or tuple(k for k,p in complete)!=tuple(k for k,p in samples)):
+            self.needs_stitch=True
         self.boundaries.append((curve,samples))
 
     def normal(self,a,b,u,left,right):
@@ -222,6 +340,7 @@ class RailRegistry:
 
     def stitch(self,vertices,faces,owners,index):
         """Insert missing samples only into cells bordering the changed seam."""
+        if not self.needs_stitch:return faces,owners
         used={v for face in faces for v in face}
         insertions={}
         for curve,samples in self.boundaries:

@@ -1,6 +1,10 @@
 """Monotone transverse correspondence between two curved ribbon boundaries."""
 import bisect
 import math
+try:
+    import numpy as np
+except ImportError:
+    np=None
 from .core import EPS,add,sub,mul,dot,length,norm,cross
 
 
@@ -24,42 +28,84 @@ class MonotoneMap:
         return ((2*u3-3*u2+1)*self.y[i]+(u3-2*u2+u)*h*self.d[i]+
                 (-2*u3+3*u2)*self.y[i+1]+(u3-u2)*h*self.d[i+1])
 
+    def many(self,t):
+        if np is None:return [self(value) for value in t]
+        t=np.clip(np.asarray(t),self.x[0],self.x[-1]);x=np.asarray(self.x);y=np.asarray(self.y);d=np.asarray(self.d)
+        i=np.clip(np.searchsorted(x,t,side='right')-1,0,len(x)-2);h=x[i+1]-x[i];u=(t-x[i])/h
+        u2=u*u;u3=u2*u
+        return (2*u3-3*u2+1)*y[i]+(u3-2*u2+u)*h*d[i]+(-2*u3+3*u2)*y[i+1]+(u3-u2)*h*d[i+1]
+
+def _projected_match(a,b,us,aa,ta):
+    if np is None:return None
+    u=np.asarray(us);v=u.copy();pa=np.asarray(aa);ta=np.asarray(ta)
+    for _ in range(8):
+        pb=b.positions(v);derivative=(b.positions(np.minimum(1.,v+1e-4))-b.positions(np.maximum(0.,v-1e-4)))/2e-4
+        tangent=ta+derivative/np.maximum(EPS,np.linalg.norm(derivative,axis=1))[:,None]
+        tangent/=np.maximum(EPS,np.linalg.norm(tangent,axis=1))[:,None]
+        residual=np.einsum('ij,ij->i',pb-pa,tangent)
+        denominator=np.einsum('ij,ij->i',derivative,tangent)
+        step=-residual/np.maximum(EPS,denominator)
+        v=np.clip(v+.7*np.clip(step,-.08,.08),0.,1.)
+        v[0]=0.;v[-1]=1.
+        # Bounded monotone projection, independent of output row counts.
+        for i in range(1,len(v)-1):v[i]=max(v[i],v[i-1]+1e-6)
+        for i in range(len(v)-2,0,-1):v[i]=min(v[i],v[i+1]-1e-6)
+    pb=b.positions(v);width=pb-pa
+    derivative=(b.positions(np.minimum(1.,v+1e-4))-b.positions(np.maximum(0.,v-1e-4)))/2e-4
+    tangent=ta+derivative/np.maximum(EPS,np.linalg.norm(derivative,axis=1))[:,None]
+    cosine=np.abs(np.einsum('ij,ij->i',width,tangent))/np.maximum(EPS,np.linalg.norm(width,axis=1)*np.linalg.norm(tangent,axis=1))
+    if np.any(np.diff(v)<1e-5) or np.mean(cosine[1:-1]**2)>.18:return None
+    return v.tolist()
+
 
 class RibbonMap:
     def __init__(self,a,b):
         self.a=a;self.b=b;self._samples={}
         n=max(24,min(64,8*max(len(a.path),len(b.path))))
         us=[i/n for i in range(n+1)]
-        aa=[a.at(u)[1] for u in us];bb=[b.at(u)[1] for u in us]
+        if np is None:aa=[a.at(u)[1] for u in us];bb=[b.at(u)[1] for u in us]
+        else:aa=a.positions(us).tolist();bb=b.positions(us).tolist()
         ta=[norm(sub(aa[min(n,i+1)],aa[max(0,i-1)])) for i in range(n+1)]
         tb=[norm(sub(bb[min(n,i+1)],bb[max(0,i-1)])) for i in range(n+1)]
         # Dynamic monotone matching favors short, transverse cross-sections.
         # This map is independent of the requested output polygon count.
-        size=n+1;cost=[float('inf')]*(size*size);previous=bytearray(size*size)
-        cost[0]=0.
-        for i in range(size):
-            for j in range(size):
-                if i==j==0:continue
-                # Squared projection needs no normalized temporary vector
-                # or square root at every cell of the correspondence table.
-                dx=bb[j][0]-aa[i][0];dy=bb[j][1]-aa[i][1];dz=bb[j][2]-aa[i][2]
-                tx=ta[i][0]+tb[j][0];ty=ta[i][1]+tb[j][1];tz=ta[i][2]+tb[j][2]
-                square=tx*tx+ty*ty+tz*tz
-                projection=dx*tx+dy*ty+dz*tz
-                local=dx*dx+dy*dy+dz*dz+(4*projection*projection/square if square>EPS*EPS else 0.)
-                candidates=[]
-                if i and j:candidates.append((cost[(i-1)*size+j-1]+local,1))
-                if i:candidates.append((cost[(i-1)*size+j]+local*.55,2))
-                if j:candidates.append((cost[i*size+j-1]+local*.55,3))
-                value,step=min(candidates);cost[i*size+j]=value;previous[i*size+j]=step
-        matches=[[] for _ in us];i=j=n
-        while True:
-            matches[i].append(j/n)
-            if i==j==0:break
-            step=previous[i*size+j]
-            if step in (1,2):i-=1
-            if step in (1,3):j-=1
-        vs=[sum(group)/len(group) for group in matches];vs[0]=0.;vs[-1]=1.
+        vs=_projected_match(a,b,us,aa,ta)
+        self.match_method='projection' if vs is not None else 'dynamic'
+        if vs is None:
+            local_cost=None
+            if np is not None:
+                differences=np.asarray(bb)[None,:,:]-np.asarray(aa)[:,None,:]
+                tangents=np.asarray(ta)[:,None,:]+np.asarray(tb)[None,:,:]
+                square=np.einsum('ijk,ijk->ij',tangents,tangents)
+                projection=np.einsum('ijk,ijk->ij',differences,tangents)
+                local_cost=(np.einsum('ijk,ijk->ij',differences,differences)+4*projection**2/np.maximum(EPS*EPS,square)).tolist()
+            size=n+1;cost=[float('inf')]*(size*size);previous=bytearray(size*size)
+            cost[0]=0.
+            for i in range(size):
+                for j in range(size):
+                    if i==j==0:continue
+                    # Squared projection needs no normalized temporary vector
+                    # or square root at every cell of the correspondence table.
+                    if local_cost is not None:local=local_cost[i][j]
+                    else:
+                        dx=bb[j][0]-aa[i][0];dy=bb[j][1]-aa[i][1];dz=bb[j][2]-aa[i][2]
+                        tx=ta[i][0]+tb[j][0];ty=ta[i][1]+tb[j][1];tz=ta[i][2]+tb[j][2]
+                        square=tx*tx+ty*ty+tz*tz
+                        projection=dx*tx+dy*ty+dz*tz
+                        local=dx*dx+dy*dy+dz*dz+(4*projection*projection/square if square>EPS*EPS else 0.)
+                    candidates=[]
+                    if i and j:candidates.append((cost[(i-1)*size+j-1]+local,1))
+                    if i:candidates.append((cost[(i-1)*size+j]+local*.55,2))
+                    if j:candidates.append((cost[i*size+j-1]+local*.55,3))
+                    value,step=min(candidates);cost[i*size+j]=value;previous[i*size+j]=step
+            matches=[[] for _ in us];i=j=n
+            while True:
+                matches[i].append(j/n)
+                if i==j==0:break
+                step=previous[i*size+j]
+                if step in (1,2):i-=1
+                if step in (1,3):j-=1
+            vs=[sum(group)/len(group) for group in matches];vs[0]=0.;vs[-1]=1.
         # Remove staircase noise before using the match to construct geometry.
         for _ in range(5):vs=[0.]+[(vs[k-1]+2*vs[k]+vs[k+1])/4 for k in range(1,n)]+[1.]
         for k in range(1,n):vs[k]=max(vs[k],vs[k-1]+1e-7)

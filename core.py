@@ -1,4 +1,4 @@
-"""NyanwHair 0.35.16: smooth point density and cached flow-aligned patches.
+"""NyanwHair 0.35.17: smooth point density and cached flow-aligned patches.
 
 Pure Python, no Blender IDs or tags on vertices/edges. Blender face corners may
 store the user's chosen end caps; this module only consumes that choice.
@@ -78,6 +78,7 @@ class MeshResult:
     directional_smoothing: dict=field(default_factory=dict)
     local_density: dict=field(default_factory=dict)
     point_density: dict=field(default_factory=dict)
+    layout_lengths: dict=field(default_factory=dict)
     surface_columns: dict=field(default_factory=dict)
     sampling_cache: dict=field(default_factory=dict,repr=False)
     correspondence_cache: dict=field(default_factory=dict,repr=False)
@@ -383,7 +384,7 @@ def plan_widths(plans):
 
 
 def generate(points,boundaries,settings=None,rows=12,max_polygons=200000,
-             previous=None,caps=None,reference_length=0.,directional_smoothing=None,local_density=None,point_density=None):
+             previous=None,caps=None,reference_length=0.,directional_smoothing=None,local_density=None,point_density=None,layout_lengths=None):
     points=[tuple(map(float,p)) for p in points]
     settings=list(settings or [ZoneSettings() for _ in boundaries])
     rows=max(2,min(256,int(rows)))
@@ -446,7 +447,8 @@ def generate(points,boundaries,settings=None,rows=12,max_polygons=200000,
     cap_profiles=_cap_profiles(points,plans,widths,evaluate)
     out.local_density=dict(local_density or {})
     out.point_density=dict(point_density or {})
-    registry=RailRegistry(points,evaluate,rows,plans,reference_length,max_polygons,out.local_density,out.point_density,previous)
+    registry=RailRegistry(points,evaluate,rows,plans,reference_length,max_polygons,out.local_density,out.point_density,previous,layout_lengths)
+    out.layout_lengths=dict(registry.layout_lengths)
     out.reference_length=registry.reference_length
     out.target_spacing=registry.spacing
     vertex_index={}
@@ -458,7 +460,7 @@ def generate(points,boundaries,settings=None,rows=12,max_polygons=200000,
         return vertex_index[key]
     for p in sorted(plans,key=_plan_priority):
         try:
-            ca,cb,left,right,body_left,body_right,fractions=registry.pair(p.left,p.right)
+            ca,cb,left,right,body_left,body_right,fractions=registry.pair(p.left,p.right,False)
             actual_a=[put(key,pos) for key,pos in left]
             actual_b=[put(key,pos) for key,pos in right]
             out.guide_curves[p.index]=(tuple(pos for key,pos in left),tuple(pos for key,pos in right))
@@ -486,6 +488,7 @@ def generate(points,boundaries,settings=None,rows=12,max_polygons=200000,
                 out.reused_patches+=reused
                 grid=[]
             else:
+                ca,cb,left,right,body_left,body_right,fractions=registry.pair(p.left,p.right)
                 normals=[]
                 for u,(_,a),(_,b) in zip(fractions,body_left,body_right):
                     n=registry.normal(ca,cb,u,a,b)
@@ -536,7 +539,7 @@ def generate(points,boundaries,settings=None,rows=12,max_polygons=200000,
             produced.update(local_keys)
             out.faces.extend(local);out.owners.extend([p.index]*len(local))
             out.surface_grids[p.index]=tuple(tuple(row) for row in grid)
-            out.surface_sections[p.index]=tuple(sections)
+            out.surface_sections[p.index]=sections if getattr(sections,'lazy',False) else tuple(sections)
             out.rail_samples[p.index]=(tuple(left),tuple(right))
             registry.register(ca,left);registry.register(cb,right)
         except (ValueError,IndexError,ZeroDivisionError) as exc:
@@ -607,4 +610,5 @@ def sample_cut_guide(result, zone, t, count=20):
         k=min(len(line)-1,max(1,bisect.bisect_left(distances,target)))
         u=(target-distances[k-1])/max(EPS,distances[k]-distances[k-1])
         output.append(mix(line[k-1],line[k],u))
+    output[0]=line[0];output[-1]=line[-1]
     return output
