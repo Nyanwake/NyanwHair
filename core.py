@@ -1,4 +1,4 @@
-"""NyanwHair 0.35.22: grouped ownership, local detail and shared boundary contracts.
+"""NyanwHair 0.35.23: shared curve contracts and independent reverse-sheet widths.
 
 Pure Python, no Blender IDs or tags on vertices/edges. Blender face corners may
 store the user's chosen end caps; this module only consumes that choice.
@@ -42,6 +42,8 @@ class ZoneSettings:
     detail: int=0
     back: float=0.
     back_simple: bool=False
+    back_width: int=0
+    back_enabled: bool|None=None
 
 @dataclass(frozen=True)
 class FacePlan:
@@ -56,6 +58,8 @@ class FacePlan:
 
 @dataclass
 class MeshResult:
+    source_points: tuple=()
+    regular_rows: bool=False
     vertices: list=field(default_factory=list)
     faces: list=field(default_factory=list)
     owners: list=field(default_factory=list)
@@ -397,7 +401,7 @@ def plan_widths(plans,fixed=None,warnings=None):
     widths={}
     for p in plans:
         k=root(p.index)
-        widths[k]=max(widths.get(k,1),max(2 if p.settings.back>0 else 1,min(32,int(p.settings.width))))
+        widths[k]=max(widths.get(k,1),max(1,min(32,int(p.settings.width))))
     constraints=defaultdict(set)
     for owner,value in (fixed or {}).items():constraints[root(owner)].add(value)
     for key,values in constraints.items():
@@ -417,6 +421,7 @@ def generate(points,boundaries,settings=None,rows=12,max_polygons=200000,
     settings=list(settings or [ZoneSettings() for _ in boundaries])
     rows=max(2,min(256,int(rows)))
     out=MeshResult()
+    out.source_points=tuple(points);out.regular_rows=bool(regular_rows)
     plans=[]
     for i,boundary in enumerate(boundaries):
         try:
@@ -468,7 +473,7 @@ def generate(points,boundaries,settings=None,rows=12,max_polygons=200000,
                 queue.append(j)
     plans=[replace(p,normal=mul(p.normal,signs[p.index])) for p in plans]
     from .topology import RailRegistry
-    widths={p.index:max(2 if p.settings.back>0 else 1,min(32,int(p.settings.width))) for p in plans}
+    widths={p.index:max(1,min(32,int(p.settings.width))) for p in plans}
     out.effective_widths=widths
     out.base_rows=rows
     out.directional_smoothing=dict(directional_smoothing or {})

@@ -30,6 +30,8 @@ L_VERTEX_GROUP = 'nh35_vertex_group'
 L_DETAIL = 'nh35_detail'
 L_BACK_SIMPLE = 'nh35_back_simple'
 L_BACK = 'nh35_back'
+L_BACK_WIDTH = 'nh35_back_width'
+L_BACK_ENABLED = 'nh35_back_enabled'
 L_WIDTH = 'nh35_width'
 L_BULGE = 'nh35_bulge'
 L_BIAS = 'nh35_bias'
@@ -123,6 +125,8 @@ def _get_zone(f,bm):
         detail=int(f[ints[L_DETAIL]]) if ints.get(L_DETAIL) else 0,
         back=float(f[floats[L_BACK]]) if floats.get(L_BACK) else 0.,
         back_simple=bool(f[ints[L_BACK_SIMPLE]]) if ints.get(L_BACK_SIMPLE) else False,
+        back_width=int(f[ints[L_BACK_WIDTH]]) if ints.get(L_BACK_WIDTH) else 0,
+        back_enabled=bool(f[ints[L_BACK_ENABLED]]) if ints.get(L_BACK_ENABLED) else None,
     )
 
 
@@ -194,7 +198,7 @@ def _native_selection_stamp(bm):
 
 
 def _update_zone_selection(bm,cache,hovered,extend=False,component=None):
-    zone=hovered if component is False and hovered is not None else _selection_zone(bm,hovered,cache.get('active',-1))
+    zone=(hovered if hovered is not None else -1) if component is False else _selection_zone(bm,hovered,cache.get('active',-1))
     if hovered is None and not any(v.select for v in bm.verts):zone=-1
     lookup=_zone_lookup(cache['result']);by_index={v:k for k,v in lookup.items()}
     selected=set(cache.get('zone_selection',())) if cache.get('zone_selection_explicit') else {by_index[i] for i in _selected_zone_indices(cache) if i in by_index}
@@ -218,6 +222,16 @@ def _zone_ui_faces(bm,obj):
         previous=cache.get('native_selection_stamp')
         if previous is not None and previous!=stamp:cache['zone_selection_explicit']=False
         cache['native_selection_stamp']=stamp
+        if bpy.context.tool_settings.mesh_select_mode[2]:
+            uid=groups.active_id(obj)
+            faces=[f for f in bm.faces if not f.hide and groups.face_group(f,bm,uid)==uid and all(v.select for v in f.verts)]
+            lookup=_zone_lookup(cache['result']) if cache.get('result') else {}
+            keys={i:key for key,i in lookup.items()}
+            cache['zone_selection']=frozenset(keys[f.index] for f in faces if f.index in keys)
+            cache['zone_selection_explicit']=True
+            indices={f.index for f in faces}
+            if cache.get('active',-1) not in indices:cache['active']=min(indices,default=-1)
+            return faces
     if cache.get('zone_selection_explicit'):
         bm.faces.ensure_lookup_table();bm.faces.index_update()
         return [bm.faces[i] for i in sorted(_selected_zone_indices(cache)) if 0<=i<len(bm.faces)]
@@ -274,6 +288,23 @@ def _finish_zone_pick():
         if cached is None: return None
         component=bool(modifiers[1]) if len(modifiers)>1 else None
         _update_zone_selection(bm,cached,hovered,extend,component)
+        if bpy.context.tool_settings.mesh_select_mode[2] and component is False:
+            # A generated surface can curve away from its native cage face.
+            # Keep face-mode selection in agreement with the picked segment.
+            selected=_selected_zone_indices(cached)
+            uid=groups.active_id(obj)
+            for face in bm.faces:
+                if groups.face_group(face,bm,uid)==uid:face.select_set(False)
+            for edge in bm.edges:
+                if not edge.hide:edge.select_set(False)
+            for vertex in bm.verts:
+                if not vertex.hide:vertex.select_set(False)
+            bm.select_history.clear();bm.faces.ensure_lookup_table()
+            for index in sorted(selected):bm.faces[index].select_set(True)
+            active=cached.get('active',-1)
+            if active in selected:bm.faces.active=bm.faces[active];bm.select_history.add(bm.faces[active])
+            bmesh.update_edit_mesh(obj.data,loop_triangles=False,destructive=False)
+            cached['native_selection_stamp']=_native_selection_stamp(bm)
         _sync_ui(obj)
         area.tag_redraw()
     except (ReferenceError,RuntimeError):
@@ -300,7 +331,8 @@ class NYANW35_OT_pick_zone(Operator):
                     context.region.type=='WINDOW' and context.region_data)
 
     def invoke(self,context,event):
-        # Snapshot preview selection on PRESS, before native selection changes.
+        # Observe CLICK, the same event used by Blender's Select Box keymap.
+        # Reading on PRESS raced the native selection committed on release.
         # The deferred read sees its result; it never edits BMesh selection.
         global _PENDING_PICK
         if event.ctrl or event.alt or event.oskey: return {'PASS_THROUGH'}
@@ -480,7 +512,8 @@ def _prepare_bmesh(bm, result=None, group_id=None):
     """
     context_obj=bpy.context.edit_object or bpy.context.object
     current_group=group_id or (groups.active_id(context_obj) if is_guide(context_obj) else 1)
-    for name in (L_GROUP,L_DETAIL,L_BACK_SIMPLE):
+    migrate_back=bm.faces.layers.int.get(L_BACK_ENABLED) is None
+    for name in (L_GROUP,L_DETAIL,L_BACK_SIMPLE,L_BACK_WIDTH,L_BACK_ENABLED):
         if bm.faces.layers.int.get(name) is None:bm.faces.layers.int.new(name)
     if bm.faces.layers.float.get(L_BACK) is None:bm.faces.layers.float.new(L_BACK)
     if bm.verts.layers.int.get(L_VERTEX_GROUP) is None:bm.verts.layers.int.new(L_VERTEX_GROUP)
@@ -503,6 +536,7 @@ def _prepare_bmesh(bm, result=None, group_id=None):
     bm.verts.index_update(); bm.faces.index_update()
     group_layer=bm.faces.layers.int[L_GROUP]
     for face in bm.faces:
+        if migrate_back:face[bm.faces.layers.int[L_BACK_ENABLED]]=int(face[bm.faces.layers.float[L_BACK]]>0.)
         if face[group_layer]<=0:face[group_layer]=current_group
     for vertex in bm.verts:
         if vertex[bm.verts.layers.int[L_VERTEX_GROUP]]<=0:
@@ -651,6 +685,8 @@ def _set_zone(f,bm,field,value):
         'detail': (L_DETAIL,True),
         'back': (L_BACK,False),
         'back_simple': (L_BACK_SIMPLE,True),
+        'back_width': (L_BACK_WIDTH,True),
+        'back_enabled': (L_BACK_ENABLED,True),
     }[field]
     layers=bm.faces.layers.int if is_integer else bm.faces.layers.float
     layer=layers.get(name)
@@ -812,9 +848,12 @@ def _point_density_target(bm,result):
 
 
 def _point_density_targets(bm,result):
-    if result is None:return []
-    bm.verts.index_update();rails={v for paths in result.face_paths.values() for path in paths for v in path}
-    return [v for v in bm.verts if v.select and not v.hide and v.index in rails]
+    bm.verts.index_update()
+    rails=({v for paths in result.face_paths.values() for path in paths for v in path} if result is not None
+           else {v.index for v in bm.verts if v.link_faces})
+    obj=bpy.context.edit_object;uid=groups.active_id(obj) if is_guide(obj) else None
+    return [v for v in bm.verts if v.select and not v.hide and v.index in rails and
+            (uid is None or groups.vertex_group(v,bm,uid)==uid)]
 
 
 def _get_point_radius(self):
@@ -869,7 +908,7 @@ def _get_local_density(self):
 
 
 def _set_local_density(self,value):
-    if not _SYNCING_UI and is_guide(bpy.context.edit_object):bpy.ops.nyanw35.point_density('EXEC_DEFAULT',True,value=float(value))
+    if not _SYNCING_UI and is_guide(bpy.context.edit_object):bpy.ops.nyanw35.point_density('EXEC_DEFAULT',True,field='FACTOR',value=float(value))
 
 
 def _on_back_change(self,context):
@@ -877,10 +916,11 @@ def _on_back_change(self,context):
     obj=context.edit_object
     if not is_guide(obj):return
     bm=bmesh.from_edit_mesh(obj.data);_prepare_bmesh(bm)
-    for face in _zone_ui_faces(bm,obj):_set_zone(face,bm,'back',self.back_depth if self.volume else 0.)
+    for face in _zone_ui_faces(bm,obj):
+        _set_zone(face,bm,'back_enabled',self.volume);_set_zone(face,bm,'back',self.back_depth)
     bmesh.update_edit_mesh(obj.data,loop_triangles=False,destructive=False)
     cached=_CACHE.get(obj.as_pointer())
-    if cached:cached['signature']=None
+    if cached:cached['source_dirty']=True
 
 class NYANW35_OT_local_density(Operator):
     bl_idname='nyanw35.local_density'
@@ -938,7 +978,7 @@ def _signature(positions,zones,options,rows,caps,detail_length=0.,smoothing=None
     return (bool(regular_rows),tuple(sorted((a,b,round(v,8)) for (a,b),v in (layout_lengths or {}).items())),tuple(sorted((i,round(f,6),round(r,6)) for i,(f,r) in (point_density or {}).items())),int(rows),round(detail_length,8),tuple(sorted((a,b,round(v,6)) for (a,b),v in (density or {}).items())),tuple(sorted((a,b,round(v,6)) for (a,b),v in (smoothing or {}).items())),
             tuple(tuple(round(x,6) for x in p) for p in positions),
             tuple(zones),tuple(caps),
-            tuple((o.width,round(o.bulge,5),round(o.bias,5),o.flip,o.order,o.group,o.detail,round(o.back,5),o.back_simple) for o in options))
+            tuple((o.width,round(o.bulge,5),round(o.bias,5),o.flip,o.order,o.group,o.detail,round(o.back,5),o.back_enabled,o.back_width) for o in options))
 
 
 def _rebuild(obj,force=False,lazy=False,group_id=None,_background=False):
@@ -972,14 +1012,21 @@ def _rebuild(obj,force=False,lazy=False,group_id=None,_background=False):
             except ValueError:pass
     previous=old['result'] if old and old.get('group_zones')==tuple(zones) and old.get('face_indices')==tuple(indices) else None
     try:
-        result=core.generate(positions,zones,options,rows,previous=previous,caps=[core.neutral_caps(loop,c) for loop,c in zip(zones,caps)],reference_length=reference,directional_smoothing=smoothing,local_density=density,point_density=point_density,layout_lengths=layout_lengths,regular_rows=obj.nh35.regular_rows,face_indices=indices)
+        prior_signature=old.get('signature') if old else None
+        if prior_signature and prior_signature!=signature and prior_signature[:-1]==signature[:-1] and tuple(v[:7] for v in prior_signature[-1])==tuple(v[:7] for v in signature[-1]):
+            # Back-only edits change metadata, not front geometry or curves.
+            from copy import copy
+            result=copy(old['result']);current=dict(zip(indices,options))
+            result.plans_by_loop={loop:replace(plan,settings=current[plan.index]) for loop,plan in result.plans_by_loop.items()}
+        else:
+            result=core.generate(positions,zones,options,rows,previous=previous,caps=[core.neutral_caps(loop,c) for loop,c in zip(zones,caps)],reference_length=reference,directional_smoothing=smoothing,local_density=density,point_density=point_density,layout_lengths=layout_lengths,regular_rows=obj.nh35.regular_rows,face_indices=indices)
         warnings=result.warnings;selection={}
         if old and old.get('zone_selection_explicit'):
             lookup=_zone_lookup(result);keys=frozenset(k for k in old.get('zone_selection',()) if k in lookup)
             selected=next((_zone_key(p) for p in old['result'].plans_by_loop.values() if p.index==old.get('active',-1)),None)
             active=lookup.get(selected,min((lookup[k] for k in keys),default=-1));selection={'zone_selection':keys,'zone_selection_explicit':True}
         if active not in indices:active=indices[0] if indices else -1
-        reuse={k:old[k] for k in ('gpu_chunks','gpu_rails','gpu_rail_records','gpu_rail_signature','native_selection_stamp') if old and k in old}
+        reuse={k:old[k] for k in ('gpu_chunks','gpu_rails','gpu_rail_records','gpu_rail_signature','native_selection_stamp','back_result') if old and k in old}
         cached=dict(selection,**reuse,signature=signature,topology=tuple(full_zones),face_indices=tuple(indices),group_zones=tuple(zones),group_id=uid,object_pointer=key,
                     rows=rows,revision=_SOURCE_REVISION,source_state=state,source_dirty=False,data_pointer=obj.data.as_pointer(),positions=tuple(positions),zones=tuple(full_zones),
                     result=result,active=active,status='; '.join('Зона %d: %s'%(i+1,v) for i,v in list(sorted(warnings.items()))[:3]) if warnings else '%d зон, %d полигонов'%(len(zones),len(result.faces)),
@@ -1014,9 +1061,10 @@ def _sync_ui(obj):
             if ui.width!=data.width: ui.width=data.width
             detail=data.detail or obj.nh35.rows
             if ui.detail!=detail:ui.detail=detail
-            if ui.volume!=(data.back>0):ui.volume=data.back>0
-            if ui.back_simple!=data.back_simple:ui.back_simple=data.back_simple
-            if data.back>0 and abs(ui.back_depth-data.back)>1e-6:ui.back_depth=data.back
+            enabled=data.back_enabled if data.back_enabled is not None else data.back>0
+            if ui.volume!=enabled:ui.volume=enabled
+            if ui.back_width!=(data.back_width or data.width):ui.back_width=data.back_width or data.width
+            if enabled and abs(ui.back_depth-data.back)>1e-6:ui.back_depth=data.back
             if abs(ui.bulge-data.bulge)>1e-6: ui.bulge=data.bulge
             if abs(ui.bias-data.bias)>1e-6: ui.bias=data.bias
             if ui.flip!=data.flip: ui.flip=data.flip
@@ -1040,7 +1088,9 @@ def _on_ui_change(field):
             return
         bmesh.update_edit_mesh(obj.data,loop_triangles=False,destructive=False)
         cached=_CACHE.get(obj.as_pointer())
-        if cached is not None: cached['signature']=None
+        if cached is not None:
+            if field=='back_width':cached['source_dirty']=True
+            else:cached['signature']=None
         # The edit BMesh is changed only by this explicit user action.
         # Timer-driven Live never modifies a Blender datablock.
     return update
@@ -1048,6 +1098,7 @@ def _on_ui_change(field):
 
 class NHGuidedProperties(PropertyGroup):
     groups: CollectionProperty(type=groups.NH35HairGroup)
+    group_index: IntProperty(get=groups.get_index,set=groups.set_index)
     active_group: IntProperty(default=1,min=1)
     brightness: FloatProperty(name="Яркость",default=.8,min=.1,max=2.)
     enabled: BoolProperty(default=False)
@@ -1068,8 +1119,8 @@ class NHGuidedProperties(PropertyGroup):
 class NHGuidedUISettings(PropertyGroup):
     detail:IntProperty(name='Детализация',default=12,min=2,max=160,update=_on_ui_change('detail'))
     volume:BoolProperty(name='Вторая сторона',default=False,update=_on_back_change)
-    back_simple:BoolProperty(name='Упростить спинку',default=False,update=_on_ui_change('back_simple'),description='Сохраняет контур; почти плоские участки спинки могут становиться n-gon')
-    back_depth:FloatProperty(name='Объём спинки',default=.08,min=.001,max=1.,update=_on_back_change)
+    back_width:IntProperty(name='Ширина спинки',default=2,min=2,max=32,update=_on_ui_change('back_width'))
+    back_depth:FloatProperty(name='Выпуклость спинки',default=.08,min=0.,max=3.,update=_on_back_change)
     density_mode: EnumProperty(name='Центр уплотнения',items=[('POINT','Точка','Плавное уплотнение вокруг активной точки'),('EDGE','Рёбра','Прежний множитель на выбранных рёбрах')],default='POINT')
     point_radius: FloatProperty(name='Радиус, % длины',min=.1,max=200.,get=_get_point_radius,set=_set_point_radius,description='Расстояние вдоль направляющих в процентах от опорной длины детализации; плавное затухание до обычной сетки')
     local_density: FloatProperty(name='Множитель плотности',min=1.,max=8.,get=_get_local_density,set=_set_local_density,description='Плотность вокруг всех выбранных точек; форма кривых сохраняется')
@@ -1880,8 +1931,25 @@ class NYANW35_OT_hair_loop(Operator):
         return {'RUNNING_MODAL'}
 
 
+def _draw_extra_panels(layout,context,obj,cached,edit):
+    props=obj.nh35
+    header,body=layout.panel('nyanw_appearance',default_closed=True);header.label(text='Внешний вид',icon='SHADING_SOLID')
+    if body is not None:
+        body.prop(props,'smooth_preview',text='Smooth + Sharp');body.prop(props,'follow_matcap',text='MatCap из вида');body.prop(props,'brightness',text='Яркость',slider=True)
+        row=body.row(align=True);row.prop(props,'show_wire',text='Сетка');column=row.column();column.enabled=props.show_wire;column.prop(props,'wire_opacity',text='',slider=True)
+        if edit:body.prop(props,'show_tint',text='Подсветка сегмента')
+        if edit and props.show_tint:
+            row=body.row(align=True);row.prop(props,'tint',text='');row.prop(props,'opacity',text='Сила',slider=True)
+        if cached.get('appearance_status'):body.label(text=cached['appearance_status'],icon='INFO')
+    header,body=layout.panel('nyanw_tools',default_closed=True);header.label(text='Дополнительно',icon='PREFERENCES')
+    if body is not None:
+        if edit:
+            body.prop(context.window_manager.nh35_ui,'flip',text='Перевернуть профиль');body.prop(props,'regular_rows',text='Ровные квадовые полосы');body.operator('nyanw35.refresh_layout',text='Обновить раскладку рядов',icon='FILE_REFRESH')
+        body.operator('nyanw35.disable',text='Отключить на объекте',icon='X')
+
+
 class NYANW35_PT_main(Panel):
-    bl_label='NyanwHair v0.35.22'
+    bl_label='NyanwHair v0.35.23'
     bl_idname='NYANW35_PT_main'
     bl_space_type='VIEW_3D'
     bl_region_type='UI'
@@ -1890,67 +1958,49 @@ class NYANW35_PT_main(Panel):
     def draw(self,context):
         layout=self.layout;obj=context.object
         if not is_guide(obj):
-            layout.operator('nyanw35.create_guide',icon='MESH_GRID')
+            layout.operator('nyanw35.create_guide',text='Создать новый локон',icon='CURVE_BEZCURVE')
             if obj and obj.type=='MESH' and obj.mode=='OBJECT':layout.operator('nyanw35.activate',text='Использовать выбранный Mesh',icon='CHECKMARK')
             return
         props=obj.nh35;cached=_CACHE.get(obj.as_pointer(),{});result=cached.get('result');ui=context.window_manager.nh35_ui
-        row=layout.row(align=True);row.prop(props,'live',text='Live',toggle=True,icon='PLAY');row.prop(props,'show_preview',text='',icon='HIDE_OFF');row.operator('nyanw35.rebuild',text='',icon='FILE_REFRESH')
-        header,body=layout.panel('nyanw_groups',default_closed=True);header.label(text='Группы волос')
+        if obj.mode!='EDIT':
+            layout.operator('nyanw35.bake',text='Создать Mesh',icon='OUTLINER_OB_MESH')
+            layout.operator('nyanw35.create_guide',text='Создать новый локон',icon='CURVE_BEZCURVE')
+            _draw_extra_panels(layout,context,obj,cached,False)
+            return
+        row=layout.row(align=True);row.prop(props,'live',text='Live',toggle=True,icon='PLAY');row.prop(props,'show_preview',text='',icon='HIDE_OFF');row.prop(context.space_data.overlay,'show_overlays',text='',icon='OVERLAY');row.operator('nyanw35.rebuild',text='',icon='FILE_REFRESH')
+        header,body=layout.panel('nyanw_groups',default_closed=True);header.label(text='Группы волос',icon='OUTLINER_COLLECTION')
         if body is not None:
-            for group in props.groups:
-                row=body.row(align=True);op=row.operator('nyanw35.group',text=group.name,depress=group.uid==props.active_group);op.action='SELECT';op.uid=group.uid
-                row.prop(group,'color',text='')
-                if group.uid!=props.active_group:
-                    move=row.row(align=True);move.enabled=obj.mode=='EDIT';op=move.operator('nyanw35.group',text='',icon='FORWARD');op.action='MOVE';op.uid=group.uid
-            row=body.row(align=True);row.operator('nyanw35.group',text='',icon='ADD').action='ADD';remove=row.row(align=True);remove.enabled=len(props.groups)>1 and obj.mode=='EDIT';remove.operator('nyanw35.group',text='',icon='REMOVE').action='REMOVE'
+            body.template_list('NYANW35_UL_groups','',props,'groups',props,'group_index',rows=max(2,min(4,len(props.groups))))
+            row=body.row(align=True);row.operator('nyanw35.group',text='',icon='ADD').action='ADD';remove=row.row(align=True);remove.enabled=len(props.groups)>1;remove.operator('nyanw35.group',text='',icon='REMOVE').action='REMOVE'
             active=groups.settings(obj)
             if active is not None:
-                body.prop(active,'name',text='Имя')
-                row=body.row(align=True);row.label(text='Mirror')
+                row=body.row(align=True);label=row.row(align=True);label.ui_units_x=3.7;label.label(text='Mirror',icon='MOD_MIRROR')
                 for axis in 'xyz':row.prop(active,'mirror_'+axis,text=axis.upper(),toggle=True)
             else:body.label(text='Нажмите ↻ для подготовки групп')
-        bm=bmesh.from_edit_mesh(obj.data) if obj.mode=='EDIT' else None
+        bm=bmesh.from_edit_mesh(obj.data)
         layout.separator();layout.label(text='Настройки сегмента',icon='FACESEL')
-        parameters=layout.column(align=True);parameters.enabled=bm is not None and bool(_zone_ui_faces(bm,obj))
+        parameters=layout.column(align=True);parameters.enabled=bool(_zone_ui_faces(bm,obj))
         parameters.prop(ui,'detail',text='Детализация');parameters.prop(ui,'width',text='Ширина');parameters.prop(ui,'bulge',text='Выпуклость');parameters.prop(ui,'bias',text='Распределение')
-        row=parameters.row(align=True);row.prop(ui,'volume',text='Вторая сторона')
+        parameters.separator();parameters.prop(ui,'volume',text='Спинка',icon='MOD_SOLIDIFY')
         if ui.volume:
-            parameters.prop(ui,'back_depth',text='Объём спинки');parameters.prop(ui,'back_simple',text='Упростить спинку')
-        if bm is not None:
-            if not cached.get('zone_count',0):layout.operator('nyanw35.group_starter',text='Создать локон в группе',icon='ADD')
-            primary=_zone_ui_primary(bm,obj);transition=result.width_transitions.get(primary.index) if primary is not None and result else None
-            if transition and (transition[0]!=transition[1] or transition[2]!=transition[1]):layout.label(text='Ширина: %d → %d → %d'%transition)
-            row=layout.row(align=True);row.operator_context='INVOKE_REGION_WIN';row.operator('nyanw35.extrude',text='Extrude · E');row.operator('nyanw35.hair_loop',text='Loop · Ctrl R').mode='AUTO'
-        else:
-            layout.label(text='Tab — редактировать группу',icon='EDITMODE_HLT');layout.operator('nyanw35.bake',text='Создать Mesh',icon='OUTLINER_OB_MESH')
-        layout.separator();layout.label(text='Края сегмента')
-        ends=layout.column(align=True);ends.enabled=bm is not None and bool(_zone_ui_faces(bm,obj))
+            parameters.prop(ui,'back_width',text='Ширина спинки');parameters.prop(ui,'back_depth',text='Выпуклость спинки')
+        if not cached.get('zone_count',0):layout.operator('nyanw35.group_starter',text='Создать локон в группе',icon='ADD')
+        layout.separator();layout.label(text='Края сегмента',icon='EDGESEL')
+        ends=layout.column(align=True);ends.enabled=bool(_zone_ui_faces(bm,obj))
         for slot,label in [('FIRST','Начало'),('SECOND','Конец')]:
             row=ends.row(align=True);op=row.operator('nyanw35.boundary',text=label);op.slot=slot;op.clear=False
             op=row.operator('nyanw35.boundary',text='',icon='X');op.slot=slot;op.clear=True
-        layout.separator();layout.label(text='Точки')
-        targets=_smooth_targets(bm,result) if bm is not None else []
-        row=layout.row(align=True);row.enabled=bool(targets);row.prop(ui,'direction_smoothing',text='Сглаживание',slider=True)
-        row.operator('nyanw35.direction_smoothing',text='',icon='LOOP_BACK').value=1.
-        layout.label(text='Плотность')
-        vertices=_point_density_targets(bm,result) if bm is not None else []
+        layout.separator();layout.label(text='Точки',icon='VERTEXSEL')
+        row=layout.row(align=True);row.enabled=bool(_smooth_targets(bm,result));row.prop(ui,'direction_smoothing',text='Сглаживание',slider=True);row.operator('nyanw35.direction_smoothing',text='',icon='LOOP_BACK').value=1.
+        layout.label(text='Плотность',icon='MOD_SUBSURF')
+        vertices=_point_density_targets(bm,result)
         column=layout.column(align=True);column.enabled=bool(vertices);column.prop(ui,'local_density',text='Плотность');column.prop(ui,'point_radius',text='Радиус, %')
         row=layout.row(align=True);selected=row.row(align=True);selected.enabled=bool(vertices);selected.operator('nyanw35.density_reset',text='Сброс').all_points=False
-        all_points=row.row(align=True);all_points.enabled=bm is not None;all_points.operator('nyanw35.density_reset',text='Сброс все').all_points=True
-        header,body=layout.panel('nyanw_appearance',default_closed=True);header.label(text='Внешний вид')
-        if body is not None:
-            body.prop(props,'smooth_preview',text='Smooth + Sharp');body.prop(props,'follow_matcap',text='MatCap из вида');body.prop(props,'brightness',text='Яркость',slider=True)
-            row=body.row(align=True);row.prop(props,'show_wire',text='Сетка');column=row.column();column.enabled=props.show_wire;column.prop(props,'wire_opacity',text='',slider=True)
-            body.prop(props,'show_tint',text='Подсветка сегмента')
-            if props.show_tint:
-                row=body.row(align=True);row.prop(props,'tint',text='');row.prop(props,'opacity',text='Сила',slider=True)
-            if cached.get('appearance_status'):body.label(text=cached['appearance_status'],icon='INFO')
-        header,body=layout.panel('nyanw_tools',default_closed=True);header.label(text='Дополнительно')
-        if body is not None:
-            body.prop(ui,'flip',text='Перевернуть профиль');body.prop(props,'regular_rows',text='Ровные квадовые полосы');body.operator('nyanw35.refresh_layout',text='Обновить раскладку рядов');body.operator('nyanw35.disable',text='Отключить на объекте',icon='X')
+        row.operator('nyanw35.density_reset',text='Сброс все').all_points=True
+        _draw_extra_panels(layout,context,obj,cached,True)
         errors=cached.get('error_count',0)
         if errors:layout.label(text='Ошибок зон: %d'%errors,icon='ERROR');layout.label(text=cached.get('status','')[:100])
-        elif result:layout.label(text='%d зон · %d полигонов'%(cached.get('zone_count',0),len(cached.get('display_result',result).faces)))
+        elif result:layout.label(text='%d / %d сегм. · %d полигонов'%(len(_zone_ui_faces(bm,obj)),cached.get('zone_count',0),len(cached.get('display_result',result).faces)))
 
 
 _CIRCLE_OFFSETS=tuple(p for i in range(12) for p in ((0.,0.),(math.cos(2*math.pi*i/12),math.sin(2*math.pi*i/12)),(math.cos(2*math.pi*(i+1)/12),math.sin(2*math.pi*(i+1)/12))))
@@ -1984,6 +2034,7 @@ def _stroke_shader():
 
 class _BatchGroup:
     def __init__(self,batches):self.batches=tuple(b for b in batches if b is not None)
+    def __bool__(self):return bool(self.batches)
     def draw(self,shader):
         for batch in self.batches:batch.draw(shader)
 
@@ -1993,11 +2044,11 @@ def _gpu_batches(cache,guide,shader):
     from . import decorations
     result=decorations.display(cache,guide);matrix=guide.matrix_world
     transform=tuple(float(x) for row in matrix for x in row)
-    selected=(_selected_zone_indices(cache) if guide==bpy.context.edit_object and cache.get('group_id',1)==groups.active_id(guide) and guide.nh35.show_tint and guide.nh35.opacity>0 else set())
+    selected=(_selected_zone_indices(cache) if guide==bpy.context.edit_object and cache.get('group_id',1)==groups.active_id(guide) and _helpers_visible(bpy.context) and guide.nh35.show_tint and guide.nh35.opacity>0 else set())
     active=cache.get('active',-1)
     tint=(tuple(sorted(selected)),active,tuple(guide.nh35.tint),float(guide.nh35.opacity))
     base_color=groups.color(guide,cache.get('group_id',1))
-    overlays=cache.get('group_id',1)==groups.active_id(guide)
+    overlays=cache.get('group_id',1)==groups.active_id(guide) and _helpers_visible(bpy.context)
     signature=(id(result),transform,tint,bool(guide.nh35.smooth_preview),base_color,overlays)
     if cache.get('gpu_signature')==signature:return cache['gpu_batches']
     old=cache.get('gpu_chunks',{});current={};chunk_groups={};coords={};edge_groups={}
@@ -2066,6 +2117,10 @@ def _gpu_batches(cache,guide,shader):
     cache.update(gpu_signature=signature,gpu_batches=(solid,wire,rails),gpu_chunks=current,
         gpu_rails=rails,gpu_rail_records=rail_records,gpu_rail_signature=rail_signature,rail_segments=rail_segments)
     return solid,wire,rails
+
+
+def _helpers_visible(ctx):
+    return not ctx.space_data or ctx.space_data.type!='VIEW_3D' or ctx.space_data.overlay.show_overlays
 
 
 def _xray_enabled(ctx):
@@ -2152,7 +2207,7 @@ def _draw_preview():
                     cached['appearance_status']=status
                     solid.draw(shader)
                 gpu.state.depth_mask_set(False)
-                overlays=cached.get('group_id',1)==groups.active_id(obj)
+                overlays=cached.get('group_id',1)==groups.active_id(obj) and _helpers_visible(ctx)
                 if overlays and wire and obj.nh35.show_wire and obj.nh35.wire_opacity>0:
                     # Mesh strokes obey the viewport's X-ray toggle.
                     gpu.state.depth_test_set(overlay_depth)
@@ -2191,7 +2246,7 @@ def _draw_preview():
                         gpu.state.depth_test_set(overlay_depth);gpu.state.line_width_set(3.2)
                         batch_for_shader(endpoint_shader,'LINE_STRIP',{'pos':coords}).draw(endpoint_shader)
                     gpu.state.line_width_set(1.);gpu.state.depth_test_set('LESS_EQUAL')
-        if _CUT_PREVIEW:
+        if _CUT_PREVIEW and _helpers_visible(ctx):
             preview=_CUT_PREVIEW
             for coords in preview.get('lines',(preview['line'],)):
                 if not coords:continue
@@ -2221,6 +2276,7 @@ def _draw_control_points():
         return
     ctx = bpy.context
     obj = ctx.edit_object
+    if not _helpers_visible(ctx):return
     if not is_guide(obj) or ctx.region_data is None or ctx.region is None:
         return
     try:
@@ -2299,9 +2355,13 @@ def _ticker():
     try:
         scene=bpy.context.scene
         if scene is None: return 0.05
-        obj=bpy.context.edit_object
-        if is_guide(obj): _sync_ui(obj)
         changed=False
+        obj=bpy.context.edit_object
+        if is_guide(obj):
+            cache=_CACHE.get(obj.as_pointer(),{})
+            before=(cache.get('active'),cache.get('zone_selection'),cache.get('zone_selection_explicit'))
+            _sync_ui(obj)
+            changed=before!=(cache.get('active'),cache.get('zone_selection'),cache.get('zone_selection_explicit'))
         for guide in scene.objects:
             if is_guide(guide) and guide.nh35.live:
                 changed=_rebuild(guide,lazy=True) or changed
@@ -2375,7 +2435,7 @@ def _register_keys():
     kc=bpy.context.window_manager.keyconfigs.addon
     if kc is None: return
     km=kc.keymaps.new(name='Mesh',space_type='EMPTY')
-    click=km.keymap_items.new('nyanw35.pick_zone','LEFTMOUSE','PRESS',any=True)
+    click=km.keymap_items.new('nyanw35.pick_zone','LEFTMOUSE','CLICK',any=True)
     _KEYMAPS.append((km,click))
     for name,key in [('nyanw35.extrude','E'),('nyanw35.merge_menu','M')]:
         item=km.keymap_items.new(name,key,'PRESS');_KEYMAPS.append((km,item))

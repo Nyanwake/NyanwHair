@@ -1,11 +1,11 @@
-"""NyanwHair 0.35.22 Guided Surfaces (preview)."""
+"""NyanwHair 0.35.23 Guided Surfaces (preview)."""
 bl_info = {
     'name': 'NyanwHair - Guided Surfaces',
     'author': 'NyanWake',
-    'version': (0,35,22),
+    'version': (0,35,23),
     'blender': (5,1,0),
     'location': 'View3D > Sidebar > NyanwHair',
-    'description': 'Independent hair groups, linked mirrors, convex closed backs and guided surfaces',
+    'description': 'Guided hair with independent reverse sheets, fair transitions and stable multi-selection',
     'category': 'Mesh',
 }
 

@@ -1,6 +1,6 @@
 """Face-owned hair groups; explicit isolation, cached background surfaces."""
 import bpy,bmesh,json
-from bpy.types import PropertyGroup,Operator
+from bpy.types import PropertyGroup,Operator,UIList
 from bpy.props import StringProperty,IntProperty,FloatProperty,FloatVectorProperty,BoolProperty
 
 CACHE={}
@@ -11,6 +11,10 @@ _JOURNAL='nh35_groups_'
 def active_id(obj):return max(1,int(obj.nh35.active_group))
 def settings(obj,uid=None):return next((g for g in obj.nh35.groups if g.uid==(uid or active_id(obj))),None)
 def ids(obj):return [g.uid for g in obj.nh35.groups] or [1]
+def get_index(self):return next((i for i,g in enumerate(self.groups) if g.uid==self.active_group),0)
+def set_index(self,value):
+    if not _RESTORING and 0<=value<len(self.groups) and self.groups[value].uid!=self.active_group:
+        bpy.ops.nyanw35.group('EXEC_DEFAULT',True,action='SELECT',uid=self.groups[value].uid)
 def color(obj,uid):
     group=settings(obj,uid);return tuple(group.color) if group else DEFAULT_COLOR
 
@@ -36,8 +40,13 @@ def ensure(obj):
     global _RESTORING
     if not obj.nh35.groups:
         _RESTORING=True
-        try:group=obj.nh35.groups.add();group.uid=1;group.name='Основная';group.reference_length=obj.nh35.detail_length
+        try:group=obj.nh35.groups.add();group.uid=1;group.name='Группа 1';group.reference_length=obj.nh35.detail_length
         finally:_RESTORING=False
+    for group in obj.nh35.groups:
+        if group.uid==1 and group.name=='Основная':
+            _RESTORING=True
+            try:group.name='Группа 1'
+            finally:_RESTORING=False
     if active_id(obj) not in ids(obj):obj.nh35.active_group=obj.nh35.groups[0].uid
 
 
@@ -234,4 +243,12 @@ class NYANW35_OT_group_starter(Operator):
         a._edit_transaction(obj,operation);a._prepare_object(obj);a._rebuild(obj,True)
         return {'FINISHED'}
 
-CLASSES=(NH35HairGroup,NYANW35_OT_group,NYANW35_OT_group_starter)
+class NYANW35_UL_groups(UIList):
+    def draw_item(self,context,layout,data,item,icon,active_data,active_propname,index,flt_flag=0):
+        row=layout.row(align=True)
+        row.prop(item,'name',text='',emboss=False,icon='GROUP')
+        color=row.row(align=True);color.ui_units_x=1.2;color.prop(item,'color',text='')
+        if item.uid!=data.active_group:
+            op=row.operator('nyanw35.group',text='',icon='FORWARD');op.action='MOVE';op.uid=item.uid
+
+CLASSES=(NH35HairGroup,NYANW35_UL_groups,NYANW35_OT_group,NYANW35_OT_group_starter)
