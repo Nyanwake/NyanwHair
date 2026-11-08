@@ -1772,7 +1772,7 @@ class NYANW35_OT_hair_loop(Operator):
 
 
 class NYANW35_PT_main(Panel):
-    bl_label='NyanwHair v0.35.19'
+    bl_label='NyanwHair v0.35.20'
     bl_idname='NYANW35_PT_main'
     bl_space_type='VIEW_3D'
     bl_region_type='UI'
@@ -1813,7 +1813,8 @@ class NYANW35_PT_main(Panel):
             primary=_zone_ui_primary(bm,obj)
             result=_CACHE.get(obj.as_pointer(),{}).get('result')
             effective=result.effective_widths.get(primary.index) if primary is not None and result else None
-            if effective is not None and effective!=ui.width:parameters.label(text='По общему краю: %d колонок'%effective)
+            transition=result.width_transitions.get(primary.index) if primary is not None and result else None
+            if transition and (transition[0]!=transition[1] or transition[2]!=transition[1]):parameters.label(text='Переход ширины: %d → %d → %d'%transition)
             parameters.prop(ui,'bulge')
             parameters.prop(ui,'bias')
             parameters.prop(ui,'flip')

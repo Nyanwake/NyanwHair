@@ -130,10 +130,11 @@ def merge_stage(bm,mode,distance,cursor):
 
 class NYANW35_OT_merge(Operator):
     bl_idname='nyanw35.merge'
-    bl_label='Слияние с сохранением краёв'
+    bl_label='Merge'
+    bl_description='Merge selected vertices while preserving NyanwHair boundaries and settings'
     bl_options={'REGISTER','UNDO'}
-    mode:EnumProperty(items=[('CENTER','В центре',''),('ACTIVE','В активной точке',''),('FIRST','В первой',''),('LAST','В последней',''),('CURSOR','У курсора',''),('DISTANCE','По расстоянию','')],default='CENTER')
-    distance:FloatProperty(name='Расстояние',default=.001,min=0.,subtype='DISTANCE')
+    mode:EnumProperty(items=[('CENTER','At Center',''),('ACTIVE','At Active',''),('FIRST','At First',''),('LAST','At Last',''),('CURSOR','At Cursor',''),('DISTANCE','By Distance','')],default='CENTER')
+    distance:FloatProperty(name='Distance',default=.001,min=0.,subtype='DISTANCE')
     @classmethod
     def poll(cls,context):return bool(a.is_guide(context.edit_object))
     def invoke(self,context,event):
@@ -146,22 +147,24 @@ class NYANW35_OT_merge(Operator):
 
 
 class NYANW35_MT_merge(Menu):
-    bl_label='Объединить точки NyanwHair'
+    bl_label='Merge'
     def draw(self,context):
         self.layout.operator_context='INVOKE_DEFAULT'
-        for mode,label in [('CENTER','В центре'),('ACTIVE','В активной точке'),('FIRST','В первой'),('LAST','В последней'),('CURSOR','У курсора'),('DISTANCE','По расстоянию')]:
-            row=self.layout.row();row.enabled=mode not in ('ACTIVE','FIRST','LAST') or bool([v for v in bmesh.from_edit_mesh(context.edit_object.data).select_history if isinstance(v,bmesh.types.BMVert) and v.select])
+        bm=bmesh.from_edit_mesh(context.edit_object.data)
+        has_history=any(isinstance(v,bmesh.types.BMVert) and v.select for v in bm.select_history)
+        for mode,label in [('CENTER','At Center'),('ACTIVE','At Active'),('FIRST','At First'),('LAST','At Last'),('CURSOR','At Cursor'),('DISTANCE','By Distance')]:
+            row=self.layout.row();row.enabled=mode not in ('ACTIVE','FIRST','LAST') or has_history
             op=row.operator('nyanw35.merge',text=label);op.mode=mode
 
 
 class NYANW35_OT_merge_menu(Operator):
-    bl_idname='nyanw35.merge_menu';bl_label='Объединить точки'
+    bl_idname='nyanw35.merge_menu';bl_label='Merge'
     @classmethod
     def poll(cls,context):return bool(a.is_guide(context.edit_object))
     def invoke(self,context,event):bpy.ops.wm.call_menu(name='NYANW35_MT_merge');return {'FINISHED'}
 
 
-def extrude_stage(bm,result,offset):
+def single_extrude_stage(bm,result,offset):
     a._prepare_bmesh(bm,result);bm.verts.index_update();bm.faces.index_update()
     selected=[v for v in bm.verts if v.select]
     if len(selected) not in (1,2):
@@ -231,6 +234,11 @@ def extrude_stage(bm,result,offset):
     return dict(mode=mode,indices=(one.index,two.index),bases=(tuple(one.co-offset),tuple(two.co-offset)),anchor=tuple(origin),direction=tuple(default_direction.normalized() if default_direction.length else Vector((0,0,1))))
 
 
+def extrude_stage(bm,result,offset):
+    from .extrusion import extrude
+    return extrude(bm,result,offset)
+
+
 def restore_backup(obj,backup,selection):
     mesh=bpy.data.meshes.new('.NyanwHair_Cancel')
     try:
@@ -278,6 +286,7 @@ class NYANW35_OT_extrude(Operator):
         obj=context.edit_object;self._obj=obj;self._backup=bmesh.from_edit_mesh(obj.data).copy();self._selection=a._selection_state(bmesh.from_edit_mesh(obj.data))
         self._mouse=Vector((event.mouse_region_x,event.mouse_region_y));self._axis=None;self._number='';self._delta=Vector();self._precision=False;self._motion_offset=Vector();self._raw=Vector()
         a._rebuild(obj)
+        self._zone_state={key:a._CACHE[obj.as_pointer()][key] for key in ('active','zone_selection','zone_selection_explicit') if key in a._CACHE[obj.as_pointer()]}
         try:self._data=a._edit_transaction(obj,lambda bm:extrude_stage(bm,a._CACHE[obj.as_pointer()]['result'],Vector()))
         except (ValueError,RuntimeError,ReferenceError) as exc:
             self._backup.free();self._backup=None;self.report({'WARNING'},str(exc));return {'CANCELLED'}
@@ -287,7 +296,8 @@ class NYANW35_OT_extrude(Operator):
         _ACTIVE.add(self);context.window_manager.modal_handler_add(self);self._status(context)
         return {'RUNNING_MODAL'}
     def _status(self,context):
-        label='Удлинение' if self._data['mode']=='EXTEND' else 'Ответвление'
+        label={'EXTEND':'Удлинение','BRANCH':'Ответвление','VOLUME':'E-Face'}.get(self._data['mode'],'Вытягивание')
+        if self._data.get('count',1)>1:label+=' ×%d'%self._data['count']
         context.area.header_text_set(label+' · мышь / X Y Z / число · Enter: принять · Esc: отменить')
     def _move(self,context,event):
         mouse=Vector((event.mouse_region_x,event.mouse_region_y));delta=view3d_utils.region_2d_to_location_3d(context.region,context.region_data,mouse,self._anchor)-self._start
@@ -319,6 +329,8 @@ class NYANW35_OT_extrude(Operator):
             if restore and self._obj.mode=='EDIT':
                 restore_backup(self._obj,self._backup,self._selection)
             a._CACHE.pop(self._obj.as_pointer(),None);a._rebuild(self._obj,True)
+            if restore and self._obj.as_pointer() in a._CACHE:
+                a._CACHE[self._obj.as_pointer()].update(getattr(self,'_zone_state',{}));a._sync_ui(self._obj)
         except ReferenceError:pass
         finally:
             if self._backup is not None:self._backup.free();self._backup=None

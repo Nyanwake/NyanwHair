@@ -1,4 +1,4 @@
-"""NyanwHair 0.35.18: shared boundary contracts and cached regular strips.
+"""NyanwHair 0.35.20: independent body widths and shared boundary contracts.
 
 Pure Python, no Blender IDs or tags on vertices/edges. Blender face corners may
 store the user's chosen end caps; this module only consumes that choice.
@@ -63,6 +63,8 @@ class MeshResult:
     # screen positions or the transverse edges of a quad.
     cut_lines: dict=field(default_factory=dict)
     effective_widths: dict=field(default_factory=dict)
+    cap_widths: dict=field(default_factory=dict)
+    width_transitions: dict=field(default_factory=dict)
     samples_per_edge: dict=field(default_factory=dict)
     plans_by_loop: dict=field(default_factory=dict)
     # Lightweight diagnostics for explicit transitions.
@@ -97,7 +99,7 @@ def _boundary_key(boundary):
     return min(seq[i:]+seq[:i] for seq in (loop,loop[::-1]) for i in range(len(seq)))
 
 
-def _cap_profiles(points,plans,widths,evaluate):
+def _cap_profiles(points,plans,widths,evaluate,cap_widths=None):
     """One geometric definition per cross-cap, shared by ALL its owners.
 
     Equal-weight mean signed bulge/bias is symmetric. The local reference
@@ -127,7 +129,7 @@ def _cap_profiles(points,plans,widths,evaluate):
         if length(n)<EPS: n=group[0][1]
         bias=math.fsum(p.settings.bias for p,_ in group)/len(group)
         bulge=math.fsum(p.settings.bulge*(-1 if p.settings.flip else 1) for p,_ in group)/len(group)
-        w=widths[group[0][0].index]
+        w=(cap_widths or {}).get((lo,hi),widths[group[0][0].index])
         size=length(sub(points[hi],points[lo]))
         positions=[]
         for j in range(w+1):
@@ -461,7 +463,7 @@ def generate(points,boundaries,settings=None,rows=12,max_polygons=200000,
                 queue.append(j)
     plans=[replace(p,normal=mul(p.normal,signs[p.index])) for p in plans]
     from .topology import RailRegistry
-    widths=plan_widths(plans)
+    widths={p.index:max(1,min(32,int(p.settings.width))) for p in plans}
     out.effective_widths=widths
     out.base_rows=rows
     out.directional_smoothing=dict(directional_smoothing or {})
@@ -470,29 +472,25 @@ def generate(points,boundaries,settings=None,rows=12,max_polygons=200000,
     out.point_density=dict(point_density or {})
     registry=RailRegistry(points,evaluate,rows,plans,reference_length,max_polygons,out.local_density,out.point_density,previous,layout_lengths)
     rail_edges={edge for p in plans for rail in (p.left,p.right) for edge in physical_edges(rail)}
-    interfaces={};fixed={};incompatible=set()
+    interfaces={};cap_widths={}
     for p in plans:
         for kind,i in (p.start,p.end):
             if kind!='edge':continue
             edge=edge_key(p.boundary[i],p.boundary[(i+1)%len(p.boundary)])
-            if edge in rail_edges:
-                samples=registry.boundary(registry.curve(edge));interfaces[edge]=samples
-                if p.index in fixed and fixed[p.index]!=len(samples)-1:
-                    incompatible.add(p.index);out.warnings[p.index]='Края полосы требуют разного числа колонок; нужен переход ширины'
-                fixed[p.index]=len(samples)-1
-    plans=[p for p in plans if p.index not in incompatible];fixed={i:v for i,v in fixed.items() if i not in incompatible}
-    widths=plan_widths(plans,fixed,out.warnings)
-    plans=[p for p in plans if p.index not in out.warnings];widths={p.index:widths[p.index] for p in plans};out.effective_widths=widths
-    cap_profiles=_cap_profiles(points,plans,widths,evaluate)
+            cap_widths[edge]=max(cap_widths.get(edge,1),widths[p.index])
+            if edge in rail_edges:interfaces[edge]=registry.boundary(registry.curve(edge))
+    for edge,samples in interfaces.items():cap_widths[edge]=len(samples)-1
+    out.cap_widths=cap_widths
+    cap_profiles=_cap_profiles(points,plans,widths,evaluate,cap_widths)
     registry.cap_keys={}
+    for edge,w in cap_widths.items():
+        if edge in interfaces:
+            registry.cap_keys[edge]=[key for key,pos in interfaces[edge]]
+            cap_profiles[edge]=[pos for key,pos in interfaces[edge]]
+        else:registry.cap_keys[edge]=[('v',edge[0])]+[('cap',*edge,x,w) for x in range(1,w)]+[('v',edge[1])]
     for p in plans:
-        for kind,i in (p.start,p.end):
-            if kind!='edge':continue
-            edge=edge_key(p.boundary[i],p.boundary[(i+1)%len(p.boundary)]);w=widths[p.index]
-            if edge in interfaces:
-                registry.cap_keys[edge]=[key for key,pos in interfaces[edge]]
-                cap_profiles[edge]=[pos for key,pos in interfaces[edge]]
-            else:registry.cap_keys[edge]=[('v',edge[0])]+[('cap',*edge,x,w) for x in range(1,w)]+[('v',edge[1])]
+        ends=[cap_widths[edge_key(p.boundary[i],p.boundary[(i+1)%len(p.boundary)])] if kind=='edge' else widths[p.index] for kind,i in (p.start,p.end)]
+        out.width_transitions[p.index]=(ends[0],widths[p.index],ends[1])
     out.layout_lengths=dict(registry.layout_lengths)
     out.reference_length=registry.reference_length
     out.target_spacing=registry.spacing
@@ -529,7 +527,13 @@ def generate(points,boundaries,settings=None,rows=12,max_polygons=200000,
                 local_keys.add(signature);local.append(tuple(face))
             mapping=registry.maps.get((ca.path,cb.path))
             density_here=any(registry.density.get(edge,1.)>1. for curve in (ca,cb) for edge in curve.edges)
-            if not regular_rows and (mapping.strong_turn or density_here or registry.point_field.affected(ca) or registry.point_field.affected(cb)):
+            start_width,body_width,end_width=out.width_transitions[p.index]
+            if start_width!=w or end_width!=w:
+                from .width import build_transition
+                sections,columns,grid,reused=build_transition(p,w,registry,ca,cb,left,right,cap_profiles,put,emit,max_polygons,
+                    out.patch_cache,getattr(previous,'patch_cache',{}),mapping)
+                out.reused_patches+=reused
+            elif not regular_rows and (mapping.strong_turn or density_here or registry.point_field.affected(ca) or registry.point_field.affected(cb)):
                 from .surface import build_patch
                 sections,columns,reused=build_patch(p,w,registry,ca,cb,left,right,cap_profiles,put,emit,max_polygons,
                     out.patch_cache,getattr(previous,'patch_cache',{}))
