@@ -29,6 +29,7 @@ L_WIDTH = 'nh35_width'
 L_BULGE = 'nh35_bulge'
 L_BIAS = 'nh35_bias'
 L_FLIP = 'nh35_flip'
+L_BOUNDARY = 'nh35_boundary_corners'
 L_CAP = 'nh35_cap_corner'  # BMLOOP, per-face direction, never a vertex/edge tag
 L_DENSITY = 'nh35_density'
 L_POINT_DENSITY = 'nh35_point_density'
@@ -312,7 +313,7 @@ def _selected_guide_batch(cache,bm,vertex_mode):
     return cache.get('selected_batch')
 
 
-def _read_caps(face, layer):
+def _read_legacy_caps(face, layer):
     """Only unique, topologically valid corner markers are authoritative."""
     if layer is None:
         return None
@@ -327,6 +328,34 @@ def _read_caps(face, layer):
     return caps if core.cap_paths(tuple(v.index for v in face.verts),*caps) else None
 
 
+def _boundary_layer(bm):
+    return bm.loops.layers.int.get(L_BOUNDARY) or bm.loops.layers.int.get(L_CAP)
+
+
+def _read_caps(face,layer):
+    if layer is None or layer.name!=L_BOUNDARY:return _read_legacy_caps(face,layer)
+    loops=list(face.loops);n=len(loops);caps=[]
+    for bit in (1,2):
+        marked=[i for i,loop in enumerate(loops) if int(loop[layer])&bit]
+        if not marked:caps.append(None)
+        elif len(marked)==1:caps.append(('point',marked[0]))
+        elif len(marked)==2:
+            first=next((i for i in marked if (i+1)%n in marked),None)
+            caps.append(('edge',first) if first is not None else ('invalid',0))
+        else:caps.append(('invalid',0))
+    return tuple(caps) if any(c is not None for c in caps) or any(int(loop[layer])&4 for loop in loops) else None
+
+
+def _write_boundary_pair(face,bm,caps):
+    _write_caps(face,bm.loops.layers.int[L_BOUNDARY],caps)
+    _write_caps(face,bm.loops.layers.int[L_CAP],caps)
+
+
+def _sync_legacy_face(face,bm):
+    caps=_read_legacy_caps(face,bm.loops.layers.int.get(L_CAP))
+    if caps is not None:_write_caps(face,bm.loops.layers.int[L_BOUNDARY],caps)
+
+
 def _selected_cap(face):
     vertices=[v for v in face.verts if v.select]
     boundary=tuple(v for v in face.verts)
@@ -339,8 +368,14 @@ def _selected_cap(face):
 
 def _write_caps(face,layer,caps):
     loops=list(face.loops)
-    for loop in loops:loop[layer]=0
-    for side,(kind,i) in enumerate(caps):loops[i][layer]=((1 if kind=='edge' else 3) if side==0 else (2 if kind=='edge' else 4))
+    for loop in loops:loop[layer]=4 if layer.name==L_BOUNDARY else 0
+    for side,cap in enumerate(caps):
+        if cap is None or cap[0] not in ('point','edge'):continue
+        kind,i=cap
+        if layer.name==L_BOUNDARY:
+            loops[i][layer]|=1<<side
+            if kind=='edge':loops[(i+1)%len(loops)][layer]|=1<<side
+        else:loops[i][layer]=((1 if kind=='edge' else 3) if side==0 else (2 if kind=='edge' else 4))
 
 
 class NYANW35_OT_refresh_layout(Operator):
@@ -366,7 +401,7 @@ class NYANW35_OT_refresh_layout(Operator):
 class NYANW35_OT_set_cap(Operator):
     bl_idname='nyanw35.set_cap'
     bl_label='Назначить торец сегмента'
-    bl_options={'REGISTER','UNDO'}
+    bl_options={'REGISTER','UNDO','INTERNAL'}
     side: EnumProperty(items=[('END','Конец','Выбранная точка или ребро — конец сегмента'),('START','Начало','Выбранная точка или ребро — начало сегмента'),('AUTO','Автоматически','Заново определить оба торца по форме')],default='END')
     @classmethod
     def poll(cls,context):return bool(is_guide(context.edit_object))
@@ -384,7 +419,7 @@ class NYANW35_OT_set_cap(Operator):
             if self.side=='AUTO':caps=core.auto_caps(points,boundary)
             else:
                 selected=_selected_cap(face);index=1 if self.side=='END' else 0
-                old=_read_caps(face,stage.loops.layers.int[L_CAP])
+                old=_read_caps(face,_boundary_layer(stage))
                 opposite=old[1-index] if old else None
                 if opposite is None or core.cap_paths(boundary,opposite,selected) is None:
                     try:candidates=core.auto_caps(points,boundary)
@@ -396,7 +431,7 @@ class NYANW35_OT_set_cap(Operator):
                     opposite=max(valid,key=lambda c:core.length(core.sub(core.cap_location(points,boundary,c),core.cap_location(points,boundary,selected))))
                 caps=(opposite,selected) if index else (selected,opposite)
             if not core.cap_paths(boundary,*caps):raise ValueError('Не удалось задать два независимых торца')
-            _write_caps(face,stage.loops.layers.int[L_CAP],caps)
+            _write_boundary_pair(face,stage,caps)
         try:_edit_transaction(obj,apply)
         except (ValueError,RuntimeError) as exc:self.report({'WARNING'},str(exc));return {'CANCELLED'}
         _rebuild(obj,True)
@@ -417,6 +452,8 @@ def _prepare_bmesh(bm, result=None):
             for face in bm.faces: face[layer]=default
     if bm.loops.layers.int.get(L_CAP) is None:
         bm.loops.layers.int.new(L_CAP)
+    migrate=bm.loops.layers.int.get(L_BOUNDARY) is None
+    if migrate:bm.loops.layers.int.new(L_BOUNDARY)
     for name in (L_DENSITY,L_LAYOUT_LENGTH):
         if bm.edges.layers.float.get(name) is None:bm.edges.layers.float.new(name)
     for name in (L_POINT_DENSITY,L_POINT_RADIUS):
@@ -431,11 +468,24 @@ def _prepare_bmesh(bm, result=None):
         order=int(face[order_layer])
         if order<=0 or order in seen:
             order=next_order;next_order+=1;face[order_layer]=order
+            if not migrate:
+                mask=bm.loops.layers.int[L_BOUNDARY]
+                for loop in face.loops:loop[mask]=0
         seen.add(order)
-    layer=bm.loops.layers.int[L_CAP]
+    layer=bm.loops.layers.int[L_BOUNDARY]
+    if migrate:
+        legacy=bm.loops.layers.int[L_CAP]
+        for face in bm.faces:
+            loops=list(face.loops);caps=[]
+            for flags in ((1,3),(2,4)):
+                found=[('edge' if int(loop[legacy]) in (1,2) else 'point',i) for i,loop in enumerate(loops) if int(loop[legacy]) in flags]
+                caps.append(found[0] if len(found)==1 else None)
+            if any(c is not None for c in caps) or any(int(loop[legacy]) for loop in loops):_write_caps(face,layer,caps)
     points=[tuple(v.co) for v in bm.verts]
     for face in bm.faces:
-        if _read_caps(face,layer) is not None:
+        existing=_read_caps(face,layer)
+        if existing is not None:
+            _write_caps(face,bm.loops.layers.int[L_CAP],existing)
             continue
         boundary=tuple(v.index for v in face.verts)
         hint=result.plans_by_loop.get(boundary) if result else None
@@ -443,10 +493,7 @@ def _prepare_bmesh(bm, result=None):
             plan=core.plan_face(points,boundary,face.index,_get_zone(face,bm),hint=hint)
         except ValueError:
             continue
-        for loop in face.loops: loop[layer]=0
-        loops=list(face.loops)
-        for side,(kind,index) in enumerate((plan.start,plan.end)):
-            loops[index][layer]=(1 if kind=='edge' else 3) if side==0 else (2 if kind=='edge' else 4)
+        _write_boundary_pair(face,bm,(plan.start,plan.end))
 
 
 def _prepare_object(obj):
@@ -628,7 +675,7 @@ class NYANW35_OT_direction_smoothing(Operator):
     bl_idname='nyanw35.direction_smoothing'
     bl_label='Сглаживание выбранных направлений'
     bl_options={'REGISTER','UNDO','UNDO_GROUPED'}
-    value: FloatProperty(name='Сглаживание конца',default=1.,min=0.,max=1.)
+    value: FloatProperty(name='Сглаживание в точке',default=1.,min=0.,max=1.)
     def execute(self,context):
         obj=context.edit_object
         if not is_guide(obj):return {'CANCELLED'}
@@ -796,8 +843,8 @@ def _capture(obj,include_smoothing=False,include_detail=False,include_points=Fal
             if option.order>0:
                 if option.order in seen_orders:options[i]=replace(option,order=0)
                 seen_orders.add(option.order)
-        cap_layer=bm.loops.layers.int.get(L_CAP)
-        caps=[_read_caps(face,cap_layer) for face in bm.faces]
+        cap_layer=_boundary_layer(bm)
+        caps=[None if cap_layer is not None and cap_layer.name==L_BOUNDARY and option.order<=0 else _read_caps(face,cap_layer) for face,option in zip(bm.faces,options)]
         # BMesh indices are only temporary array offsets within this snapshot.
         # Capture never writes to source elements.
         selected=_active_face(bm,obj)
@@ -812,8 +859,8 @@ def _capture(obj,include_smoothing=False,include_detail=False,include_points=Fal
         if owned: bm.free()
 
 
-def _signature(positions,zones,options,rows,caps,detail_length=0.,smoothing=None,density=None,point_density=None,layout_lengths=None):
-    return (tuple(sorted((a,b,round(v,8)) for (a,b),v in (layout_lengths or {}).items())),tuple(sorted((i,round(f,6),round(r,6)) for i,(f,r) in (point_density or {}).items())),int(rows),round(detail_length,8),tuple(sorted((a,b,round(v,6)) for (a,b),v in (density or {}).items())),tuple(sorted((a,b,round(v,6)) for (a,b),v in (smoothing or {}).items())),
+def _signature(positions,zones,options,rows,caps,detail_length=0.,smoothing=None,density=None,point_density=None,layout_lengths=None,regular_rows=False):
+    return (bool(regular_rows),tuple(sorted((a,b,round(v,8)) for (a,b),v in (layout_lengths or {}).items())),tuple(sorted((i,round(f,6),round(r,6)) for i,(f,r) in (point_density or {}).items())),int(rows),round(detail_length,8),tuple(sorted((a,b,round(v,6)) for (a,b),v in (density or {}).items())),tuple(sorted((a,b,round(v,6)) for (a,b),v in (smoothing or {}).items())),
             tuple(tuple(round(x,6) for x in p) for p in positions),
             tuple(zones),tuple(caps),
             tuple((o.width,round(o.bulge,5),round(o.bias,5),o.flip,o.order) for o in options))
@@ -828,13 +875,13 @@ def _rebuild(obj,force=False,lazy=False):
     if _UNDOING or not is_guide(obj): return False
     if obj.data.is_editmode and obj.mode != 'EDIT': return False
     old=_CACHE.get(obj.as_pointer())
-    state=(obj.mode,int(obj.nh35.rows),float(obj.nh35.detail_length))
+    state=(obj.mode,int(obj.nh35.rows),float(obj.nh35.detail_length),bool(obj.nh35.regular_rows))
     if lazy and not force and old and old.get('signature') is not None and not old.get('source_dirty',True) and old.get('source_state')==state:
         return False
     positions,zones,options,active,caps,smoothing,density,point_density,layout_lengths=_capture(obj,True,True,True,True)
     key=obj.as_pointer()
     rows=obj.nh35.rows
-    signature=_signature(positions,zones,options,rows,caps,obj.nh35.detail_length,smoothing,density,point_density,layout_lengths)
+    signature=_signature(positions,zones,options,rows,caps,obj.nh35.detail_length,smoothing,density,point_density,layout_lengths,obj.nh35.regular_rows)
     old=_CACHE.get(key)
     if old and old['signature']==signature and not force:
         old['revision']=_SOURCE_REVISION;old['source_state']=state;old['source_dirty']=False
@@ -855,7 +902,7 @@ def _rebuild(obj,force=False,lazy=False):
     # coordinate-only changes reuse the same face plan and mesh row counts.
     previous=(old['result'] if old and old['topology']==topology else None)
     try:
-        result=core.generate(positions,zones,options,rows,previous=previous,caps=caps,reference_length=obj.nh35.detail_length,directional_smoothing=smoothing,local_density=density,point_density=point_density,layout_lengths=layout_lengths)
+        result=core.generate(positions,zones,options,rows,previous=previous,caps=[core.neutral_caps(loop,ends) for loop,ends in zip(zones,caps)],reference_length=obj.nh35.detail_length,directional_smoothing=smoothing,local_density=density,point_density=point_density,layout_lengths=layout_lengths,regular_rows=obj.nh35.regular_rows)
         warnings=result.warnings
         if warnings:
             status='; '.join('Зона %d: %s'%(i+1,msg)
@@ -939,6 +986,7 @@ class NHGuidedProperties(PropertyGroup):
     enabled: BoolProperty(default=False)
     live: BoolProperty(name='Live',default=True)
     show_preview: BoolProperty(name='GPU-предпросмотр',default=True)
+    regular_rows: BoolProperty(name='Ровные квадовые полосы',default=True,description='Общие ряды между направляющими; отключение включает прежнюю адаптацию колонок')
     rows: IntProperty(name='Детализация по длине',default=12,min=2,max=160,description='Общая плотность рядов: короткие пряди получают меньше шагов, длинные больше')
     detail_length: FloatProperty(default=0.,min=0.,options={'HIDDEN'})
     show_tint: BoolProperty(name='Подсветка зоны',default=True)
@@ -950,7 +998,7 @@ class NHGuidedUISettings(PropertyGroup):
     density_mode: EnumProperty(name='Центр уплотнения',items=[('POINT','Точка','Плавное уплотнение вокруг активной точки'),('EDGE','Рёбра','Прежний множитель на выбранных рёбрах')],default='POINT')
     point_radius: FloatProperty(name='Радиус, % длины',min=.1,max=200.,get=_get_point_radius,set=_set_point_radius,description='Расстояние вдоль направляющих в процентах от опорной длины детализации; плавное затухание до обычной сетки')
     local_density: FloatProperty(name='Множитель плотности',min=1.,max=8.,get=_get_local_density,set=_set_local_density,description='Плотность вокруг активной точки или на выбранных рёбрах; форма кривой сохраняется')
-    direction_smoothing: FloatProperty(name='Сглаживание конца',min=0.,max=1.,get=_get_direction_smoothing,set=_set_direction_smoothing,description='1 — автоматическая плавная касательная; 0 — направление к соседней точке. Только активный конец выбранных направлений')
+    direction_smoothing: FloatProperty(name='Сглаживание в точке',min=0.,max=1.,get=_get_direction_smoothing,set=_set_direction_smoothing,description='1 — автоматическая плавная касательная; 0 — направление к соседней точке. Только активный конец выбранных направлений')
     width: IntProperty(name='Шаги по ширине',min=1,max=32,default=2,update=_on_ui_change('width'))
     bulge: FloatProperty(name='Выпуклость',default=_DEFAULT_BULGE,min=-3,max=3,step=5,precision=3,update=_on_ui_change('bulge'))
     bias: FloatProperty(name='Распределение',default=0.0,min=-2,max=2,step=5,precision=3,update=_on_ui_change('bias'))
@@ -1184,6 +1232,7 @@ class NYANW35_OT_pin_rails(Operator):
         for loop in loops: loop[layer]=0
         for which,(kind,index) in enumerate(choices):
             loops[index][layer]=(1 if kind=='edge' else 3) if which==0 else (2 if kind=='edge' else 4)
+        _sync_legacy_face(f,bm)
         bmesh.update_edit_mesh(obj.data,loop_triangles=False,destructive=False)
         _CACHE.pop(obj.as_pointer(),None)
         self.report({'INFO'},'Направление сохранено в грани. Перемещение точек его не изменяет.')
@@ -1225,7 +1274,7 @@ def _cap_records(bm,faces,result):
         if plan is None: continue
         loops=list(face.loops)
         caps=[]
-        for kind,index in (plan.start,plan.end):
+        for kind,index in (_read_caps(face,_boundary_layer(bm)) or (plan.start,plan.end)):
             one=loops[index].vert
             two=loops[(index+1)%len(loops)].vert if kind=='edge' else None
             caps.append((kind,one,two))
@@ -1271,6 +1320,7 @@ def _restore_cap_records(bm,records,modified_vertex=None,exclude=()):
         for loop in loops: loop[layer]=0
         for side,((kind,_,_),index) in enumerate(zip(caps,positions)):
             loops[index][layer]=(1 if kind=='edge' else 3) if side==0 else (2 if kind=='edge' else 4)
+        _sync_legacy_face(face,bm)
         used.add(face)
 
 
@@ -1370,6 +1420,8 @@ def _split_on_bmesh(bm, zone, t, result, select_result=False):
     if not 0.001 < t < 0.999:
         raise ValueError('Разрез слишком близко к границе')
     settings = _get_zone(source, bm)
+    raw_caps=_read_caps(source,_boundary_layer(bm))
+    cap_slots=[raw_caps.index(cap) for cap in (plan.start,plan.end)] if raw_caps else [0,1]
     side_b = {plan.right[0],plan.right[-1]}
     side_index = next((vid for vid in plan.left if vid not in side_b),None)
     if side_index is None:
@@ -1485,17 +1537,18 @@ def _split_on_bmesh(bm, zone, t, result, select_result=False):
         for loop in child.loops:
             loop[layer]=0
         for k,(kind,lv,rv,_) in enumerate(end_caps):
-            endpoint=ends[k]
+            endpoint=ends[k];slot=cap_slots[k]
             if kind=='point':
                 marker=next((l for l in child.loops if l.vert==endpoint),None)
-                flag=3 if k==0 else 4
+                flag=3 if slot==0 else 4
             else:
                 marker=next((l for l in child.loops if endpoint in l.edge.verts and
                              (lv in l.edge.verts or rv in l.edge.verts)),None)
-                flag=1 if k==0 else 2
+                flag=1 if slot==0 else 2
             if marker is None:
                 raise ValueError('Не удалось перенести торец дочерней зоны')
             marker[layer]=flag
+        _sync_legacy_face(child,bm)
         _set_zone(child,bm,'width',left_width if child==left_child else right_width)
         _set_zone(child,bm,'bulge',settings.bulge*gains[0 if child==left_child else 1])
         _set_zone(child,bm,'bias',settings.bias)
@@ -1719,7 +1772,7 @@ class NYANW35_OT_hair_loop(Operator):
 
 
 class NYANW35_PT_main(Panel):
-    bl_label='NyanwHair v0.35.17'
+    bl_label='NyanwHair v0.35.18'
     bl_idname='NYANW35_PT_main'
     bl_space_type='VIEW_3D'
     bl_region_type='UI'
@@ -1742,6 +1795,7 @@ class NYANW35_PT_main(Panel):
         row.prop(props,'live',text='Live',toggle=True,icon='PLAY')
         row.operator('nyanw35.rebuild',text='',icon='FILE_REFRESH')
         layout.prop(props,'rows')
+        layout.prop(props,'regular_rows')
         layout.prop(props,'show_preview')
         box=layout.box()
         box.label(text='Зона F + две рабочие кривые',icon='FACESEL')
@@ -1753,16 +1807,35 @@ class NYANW35_PT_main(Panel):
             parameters=box.column()
             parameters.enabled=bool(_zone_ui_faces(bmesh.from_edit_mesh(obj.data),obj))
             parameters.prop(ui,'width')
+            primary=_zone_ui_primary(bmesh.from_edit_mesh(obj.data),obj)
+            result=_CACHE.get(obj.as_pointer(),{}).get('result')
+            effective=result.effective_widths.get(primary.index) if primary is not None and result else None
+            if effective is not None and effective!=ui.width:parameters.label(text='По общему краю: %d колонок'%effective)
             parameters.prop(ui,'bulge')
             parameters.prop(ui,'bias')
             parameters.prop(ui,'flip')
-            caps_box=box.box();caps_box.label(text='Торцы активного сегмента')
+            caps_box=box.box();caps_box.label(text='Края активного сегмента')
+            face=_zone_ui_primary(bmesh.from_edit_mesh(obj.data),obj) or _active_face(bmesh.from_edit_mesh(obj.data),obj)
+            state=_read_caps(face,_boundary_layer(bmesh.from_edit_mesh(obj.data))) if face else None
+            caps_box.label(text='Указано краёв: %d / 2'%sum(c is not None and c[0] in ('edge','point') for c in (state or (None,None))))
+            if face and state:
+                loops=list(face.loops);selected={v for v in face.verts if v.select}
+                matched=[]
+                for i,cap in enumerate(state):
+                    if cap is None or cap[0] not in ('point','edge'):continue
+                    vertices={loops[cap[1]].vert}
+                    if cap[0]=='edge':vertices.add(loops[(cap[1]+1)%len(loops)].vert)
+                    if selected and selected<=vertices:matched.append(str(i+1))
+                if matched:caps_box.label(text='Выбран край '+', '.join(matched))
+            op=caps_box.operator('nyanw35.boundary',text='Отметить выбранную точку / ребро');op.clear=False;op.slot='AUTO'
             row=caps_box.row(align=True)
-            op=row.operator('nyanw35.set_cap',text='Задать начало');op.side='START'
-            op=row.operator('nyanw35.set_cap',text='Задать конец');op.side='END'
-            caps_box.label(text='Выдели одну точку или одно ребро')
+            for slot,label in [('FIRST','Край 1'),('SECOND','Край 2')]:
+                op=row.operator('nyanw35.boundary',text=label);op.slot=slot;op.clear=False
+            row=caps_box.row(align=True)
+            for slot,label in [('FIRST','Снять 1'),('SECOND','Снять 2')]:
+                op=row.operator('nyanw35.boundary',text=label);op.slot=slot;op.clear=True
             caps_box.operator('nyanw35.refresh_layout')
-            op=caps_box.operator('nyanw35.set_cap',text='Определить торцы автоматически');op.side='AUTO'
+            extrude_row=box.row();extrude_row.operator_context='INVOKE_REGION_WIN';extrude_row.operator('nyanw35.extrude',text='Умное вытягивание (E)')
             smooth=box.box()
             smooth.label(text='Сглаживание направлений',icon='CURVE_BEZCURVE')
             mesh=bmesh.from_edit_mesh(obj.data)
@@ -1793,7 +1866,7 @@ class NYANW35_PT_main(Panel):
             action.mode='AUTO'
             box.label(text='Shift+колесо: ширина; Ctrl+колесо: выпуклость')
             box.label(text='Параметры принадлежат управляющей грани')
-            box.operator('nyanw35.pin_rails',text='Закрепить направление кривых',icon='CURVE_BEZCURVE')
+
         box=layout.box()
         box.label(text='Подсветка',icon='SHADING_SOLID')
         box.prop(props,'show_tint')
@@ -1812,7 +1885,7 @@ class NYANW35_PT_main(Panel):
         elif error_count<0:
             layout.label(text='Ошибка генератора',icon='ERROR')
         layout.label(text=cached.get('status','Ожидание первого расчёта')[:120],icon='INFO')
-        layout.label(text='Два выбранных торцевых ребра: задать направление',icon='DOT')
+
 
 
 _CIRCLE_OFFSETS=tuple(p for i in range(12) for p in ((0.,0.),(math.cos(2*math.pi*i/12),math.sin(2*math.pi*i/12)),(math.cos(2*math.pi*(i+1)/12),math.sin(2*math.pi*(i+1)/12))))
@@ -2179,6 +2252,7 @@ def _on_scene_update(_scene,_depsgraph):
 
 @persistent
 def _on_load(_dummy):
+    editing.cancel_all(False)
     _clear_zone_pick()
     global _CUT_PREVIEW
     _CACHE.clear()
@@ -2187,6 +2261,7 @@ def _on_load(_dummy):
 
 @persistent
 def _on_undo_pre(_dummy):
+    editing.cancel_all(False)
     _clear_zone_pick()
     global _UNDOING,_CUT_PREVIEW
     _UNDOING=True
@@ -2201,11 +2276,13 @@ def _on_undo_post(_dummy):
     _UNDOING=False
 
 
+from . import editing
+
 _CLASSES=(NHGuidedProperties,NHGuidedUISettings,NYANW35_OT_direction_smoothing,NYANW35_OT_local_density,NYANW35_OT_point_density,NYANW35_OT_set_cap,NYANW35_OT_refresh_layout,
           NYANW35_OT_create_guide,NYANW35_OT_activate,NYANW35_OT_disable,
           NYANW35_OT_demo,NYANW35_OT_rebuild,NYANW35_OT_bake,
           NYANW35_OT_pin_rails, NYANW35_OT_adjust,NYANW35_OT_pick_zone,
-          NYANW35_OT_hair_loop,NYANW35_PT_main)
+          NYANW35_OT_hair_loop,NYANW35_PT_main)+editing.CLASSES
 
 
 def _register_keys():
@@ -2214,6 +2291,8 @@ def _register_keys():
     km=kc.keymaps.new(name='Mesh',space_type='EMPTY')
     click=km.keymap_items.new('nyanw35.pick_zone','LEFTMOUSE','PRESS',any=True)
     _KEYMAPS.append((km,click))
+    for name,key in [('nyanw35.extrude','E'),('nyanw35.merge_menu','M')]:
+        item=km.keymap_items.new(name,key,'PRESS');_KEYMAPS.append((km,item))
     # Add-on Mesh keymap takes precedence over Blender's default Mesh Ctrl+R
     # only when poll() accepts a NyanwHair guide. Shift+R is untouched.
     kmi=km.keymap_items.new('nyanw35.hair_loop','R','PRESS',ctrl=True)
@@ -2258,6 +2337,7 @@ def register():
 
 def unregister():
     global _RUNNING,_DRAW_HANDLER,_POINT_HANDLER,_CUT_PREVIEW,_STROKE_SHADER
+    editing.cancel_all()
     _STROKE_SHADER=None
     _RUNNING=False
     _clear_zone_pick()

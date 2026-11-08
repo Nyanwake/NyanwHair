@@ -16,8 +16,8 @@ def _rotate(vector,old,new):
 
 
 class FlowSurface:
-    def __init__(self,plan,width,mapping,cap_profiles):
-        self.plan=plan;self.width=width;self.mapping=mapping;self.caps={};self._samples={}
+    def __init__(self,plan,width,mapping,cap_profiles,cap_keys=None):
+        self.plan=plan;self.width=width;self.mapping=mapping;self.caps={};self._samples={};self.cap_keys=cap_keys or {}
         for kind,i in (plan.start,plan.end):
             if kind=='edge':
                 edge=edge_key(plan.boundary[i],plan.boundary[(i+1)%len(plan.boundary)]);self.caps[edge]=cap_profiles[edge]
@@ -80,7 +80,8 @@ class FlowSurface:
             if cap[0]=='edge':
                 i=cap[1];lo,hi=edge_key(self.plan.boundary[i],self.plan.boundary[(i+1)%len(self.plan.boundary)])
                 a_v=self.plan.left[-1 if end else 0];aligned=x if a_v==lo else self.width-x
-                return ('cap',lo,hi,aligned,self.width),self.caps[lo,hi][aligned]
+                keys=self.cap_keys.get((lo,hi))
+                return (keys[aligned] if keys is not None else ('cap',lo,hi,aligned,self.width)),self.caps[lo,hi][aligned]
         return None,pos
 
 
@@ -194,7 +195,7 @@ class _SurfaceSections:
 
 def _build_patch(plan,width,registry,left_curve,right_curve,left,right,cap_profiles,put,emit,max_polygons):
     mapping=registry.maps[left_curve.path,right_curve.path]
-    surface=FlowSurface(plan,width,mapping,cap_profiles)
+    surface=FlowSurface(plan,width,mapping,cap_profiles,registry.cap_keys)
     columns=[];flows=[];coords=[]
     boundary_flows=[[mapping.fraction(curve,key) for key,pos in samples]
                     for curve,samples in ((left_curve,left),(right_curve,right))]
@@ -251,9 +252,9 @@ def build_patch(plan,width,registry,left_curve,right_curve,left,right,cap_profil
     for kind,i in (plan.start,plan.end):
         if kind=='edge':
             edge=edge_key(plan.boundary[i],plan.boundary[(i+1)%len(plan.boundary)])
-            caps.append((edge,tuple(cap_profiles[edge])))
+            caps.append((edge,tuple(cap_profiles[edge]),tuple(registry.cap_keys.get(edge,()))))
     edges=set(left_curve.edges)|set(right_curve.edges)
-    signature=(plan,width,registry.spacing,left_curve.geometry_signature,right_curve.geometry_signature,
+    signature=('adaptive',plan,width,registry.spacing,left_curve.geometry_signature,right_curve.geometry_signature,
         tuple(left),tuple(right),tuple(caps),tuple(sorted((e,registry.density[e]) for e in edges if e in registry.density)),
         tuple(registry.point_field.profile(left_curve)[0]),tuple(registry.point_field.profile(right_curve)[0]))
     old=(previous or {}).get(plan.boundary)

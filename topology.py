@@ -225,7 +225,7 @@ class RailRegistry:
         Longitudinal constraints follow physical length; transverse caps
         favor the same row phase. Junctions do not reset every chain to zero.
         """
-        sections=[];edges=[];signs={}
+        sections=[];edges=[];signs={};chain_for_edge={edge:c.path for c in chains for edge in c.edges}
         ordered=sorted(plans,key=lambda p:(p.settings.order<=0,p.settings.order,p.index))
         for c in chains:
             sign=1.
@@ -243,13 +243,28 @@ class RailRegistry:
                 size=sum(self.layout_lengths[edge_key(c.path[k],c.path[k+1])] for k in range(i,j))/self.spacing
                 desired=sign*size
                 sections.append((c.path,a,b,desired))
-                edges.append((a,b,desired,1./max(.5,size)))
+                edges.append(((c.path,a),(c.path,b),desired,1./max(.5,size)))
         pins=set()
         for p in plans:
-            for end,(kind,i) in enumerate((p.start,p.end)):
-                if kind=='edge':
-                    a,b=p.boundary[i],p.boundary[(i+1)%len(p.boundary)];edges.append((a,b,0.,4.))
-                    if end==0 and all(len(self.evaluate.adjacency[v])==1 for v in (a,b)):pins.update((a,b))
+            for end,cap in enumerate((p.start,p.end)):
+                left,right=p.left,p.right
+                la,lb=(left[0],left[1]) if not end else (left[-1],left[-2])
+                ra,rb=(right[0],right[1]) if not end else (right[-1],right[-2])
+                one=(chain_for_edge[edge_key(la,lb)],la);two=(chain_for_edge[edge_key(ra,rb)],ra)
+                if one!=two:edges.append((one,two,0.,4.))
+                if end==0 and all(len(self.evaluate.adjacency[v])==1 for v in (la,ra)):pins.update((one,two))
+        # A branch owns a separate growth coordinate at its attachment. Sharing
+        # a source position does not force orthogonal strands into one phase.
+        adjacency=defaultdict(set)
+        for one,two,delta,weight in edges:adjacency[one].add(two);adjacency[two].add(one)
+        seen=set()
+        for seed in sorted(adjacency):
+            if seed in seen:continue
+            component={seed};queue=[seed];seen.add(seed)
+            for node in queue:
+                for neighbor in adjacency[node]:
+                    if neighbor not in seen:seen.add(neighbor);component.add(neighbor);queue.append(neighbor)
+            if not component.intersection(pins):pins.add(min(component))
         vertices=sorted({v for a,b,d,w in edges for v in (a,b)});ids={v:i for i,v in enumerate(vertices)}
         phases={v:0. for v in vertices}
         if np is not None and edges:
@@ -268,7 +283,7 @@ class RailRegistry:
             phases={v:float(np.angle(z[ids[v]])/(2*math.pi)) for v in vertices}
         result={}
         for path,a,b,desired in sections:
-            start=phases[a];difference=phases[b]-start
+            start=phases[path,a];difference=phases[path,b]-start
             result[path,a,b]=(start,difference,1. if desired>=0 else -1.)
         return result
 

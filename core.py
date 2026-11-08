@@ -1,4 +1,4 @@
-"""NyanwHair 0.35.17: smooth point density and cached flow-aligned patches.
+"""NyanwHair 0.35.18: shared boundary contracts and cached regular strips.
 
 Pure Python, no Blender IDs or tags on vertices/edges. Blender face corners may
 store the user's chosen end caps; this module only consumes that choice.
@@ -154,6 +154,7 @@ def cap_paths(loop,c0,c1):
     Caps reference face CORNERS, not persistent BMVert/BMEdge identifiers.
     """
     n=len(loop)
+    if any(c is None or c[0] not in ('edge','point') or not 0<=c[1]<n for c in (c0,c1)):return None
     blocked={c[1] for c in (c0,c1) if c[0]=='edge'}
     ends=lambda c: (c[1],) if c[0]=='point' else (c[1],(c[1]+1)%n)
     possibilities=[]
@@ -235,6 +236,16 @@ def auto_caps(points,loop):
     return best[1],best[2]
 
 
+def neutral_caps(boundary,caps):
+    """Choose an internal parameter direction independent of UI slot order."""
+    if caps is None or len(caps)!=2 or any(c is None or c[0] not in ('point','edge') for c in caps):return caps
+    def key(cap):
+        i=cap[1]
+        vertices=(boundary[i],) if cap[0]=='point' else (boundary[i],boundary[(i+1)%len(boundary)])
+        return tuple(sorted(vertices))
+    return tuple(sorted(caps,key=key))
+
+
 def plan_face(points,boundary,index,settings,hint=None,caps=None):
     loop=tuple(boundary)
     if len(loop)<3 or len(set(loop))!=len(loop):
@@ -242,6 +253,8 @@ def plan_face(points,boundary,index,settings,hint=None,caps=None):
     normal=newell(points,loop)
     if length(normal)<EPS: raise ValueError('Площадь управляющей грани равна нулю')
     if caps is not None:
+        if len(caps)!=2 or any(c is None for c in caps):raise ValueError('Укажи недостающий край сегмента')
+        if any(c[0] not in ('point','edge') for c in caps):raise ValueError('Край сегмента требует уточнения после изменения каркаса')
         c0,c1=caps
         paths=cap_paths(loop,c0,c1)
         if not paths: raise ValueError('Сохранённые торцы больше не образуют две кривые')
@@ -359,7 +372,7 @@ def bias_cross_position(u,bias):
     return .5+math.copysign(.5*(abs(2.*u-1.)**exponent),u-.5) if u!=.5 else .5
 
 
-def plan_widths(plans):
+def plan_widths(plans,fixed=None,warnings=None):
     """Matching cross-cap width is necessary for manifold stacked zones."""
     parent={p.index:p.index for p in plans}
     def root(x):
@@ -379,12 +392,21 @@ def plan_widths(plans):
     for p in plans:
         k=root(p.index)
         widths[k]=max(widths.get(k,1),max(1,min(32,int(p.settings.width))))
+    constraints=defaultdict(set)
+    for owner,value in (fixed or {}).items():constraints[root(owner)].add(value)
+    for key,values in constraints.items():
+        if len(values)>1:
+            message='Два унаследованных края имеют разную ширину; нужен переход'
+            if warnings is None:raise ValueError(message)
+            for p in plans:
+                if root(p.index)==key:warnings[p.index]=message
+        else:widths[key]=next(iter(values))
     return {p.index:widths[root(p.index)] for p in plans}
 
 
 
 def generate(points,boundaries,settings=None,rows=12,max_polygons=200000,
-             previous=None,caps=None,reference_length=0.,directional_smoothing=None,local_density=None,point_density=None,layout_lengths=None):
+             previous=None,caps=None,reference_length=0.,directional_smoothing=None,local_density=None,point_density=None,layout_lengths=None,regular_rows=False):
     points=[tuple(map(float,p)) for p in points]
     settings=list(settings or [ZoneSettings() for _ in boundaries])
     rows=max(2,min(256,int(rows)))
@@ -444,10 +466,33 @@ def generate(points,boundaries,settings=None,rows=12,max_polygons=200000,
     out.base_rows=rows
     out.directional_smoothing=dict(directional_smoothing or {})
     evaluate=make_edge_evaluator(points,plans,out.directional_smoothing)
-    cap_profiles=_cap_profiles(points,plans,widths,evaluate)
     out.local_density=dict(local_density or {})
     out.point_density=dict(point_density or {})
     registry=RailRegistry(points,evaluate,rows,plans,reference_length,max_polygons,out.local_density,out.point_density,previous,layout_lengths)
+    rail_edges={edge for p in plans for rail in (p.left,p.right) for edge in physical_edges(rail)}
+    interfaces={};fixed={};incompatible=set()
+    for p in plans:
+        for kind,i in (p.start,p.end):
+            if kind!='edge':continue
+            edge=edge_key(p.boundary[i],p.boundary[(i+1)%len(p.boundary)])
+            if edge in rail_edges:
+                samples=registry.boundary(registry.curve(edge));interfaces[edge]=samples
+                if p.index in fixed and fixed[p.index]!=len(samples)-1:
+                    incompatible.add(p.index);out.warnings[p.index]='Края полосы требуют разного числа колонок; нужен переход ширины'
+                fixed[p.index]=len(samples)-1
+    plans=[p for p in plans if p.index not in incompatible];fixed={i:v for i,v in fixed.items() if i not in incompatible}
+    widths=plan_widths(plans,fixed,out.warnings)
+    plans=[p for p in plans if p.index not in out.warnings];widths={p.index:widths[p.index] for p in plans};out.effective_widths=widths
+    cap_profiles=_cap_profiles(points,plans,widths,evaluate)
+    registry.cap_keys={}
+    for p in plans:
+        for kind,i in (p.start,p.end):
+            if kind!='edge':continue
+            edge=edge_key(p.boundary[i],p.boundary[(i+1)%len(p.boundary)]);w=widths[p.index]
+            if edge in interfaces:
+                registry.cap_keys[edge]=[key for key,pos in interfaces[edge]]
+                cap_profiles[edge]=[pos for key,pos in interfaces[edge]]
+            else:registry.cap_keys[edge]=[('v',edge[0])]+[('cap',*edge,x,w) for x in range(1,w)]+[('v',edge[1])]
     out.layout_lengths=dict(registry.layout_lengths)
     out.reference_length=registry.reference_length
     out.target_spacing=registry.spacing
@@ -460,7 +505,10 @@ def generate(points,boundaries,settings=None,rows=12,max_polygons=200000,
         return vertex_index[key]
     for p in sorted(plans,key=_plan_priority):
         try:
-            ca,cb,left,right,body_left,body_right,fractions=registry.pair(p.left,p.right,False)
+            if regular_rows:
+                ca=registry.curve(p.left);cb=registry.curve(p.right)
+                left=registry.boundary(ca);right=registry.boundary(cb)
+            else:ca,cb,left,right,body_left,body_right,fractions=registry.pair(p.left,p.right,False)
             actual_a=[put(key,pos) for key,pos in left]
             actual_b=[put(key,pos) for key,pos in right]
             out.guide_curves[p.index]=(tuple(pos for key,pos in left),tuple(pos for key,pos in right))
@@ -479,61 +527,19 @@ def generate(points,boundaries,settings=None,rows=12,max_polygons=200000,
                 signature=tuple(sorted(face))
                 if signature in produced or signature in local_keys:return
                 local_keys.add(signature);local.append(tuple(face))
-            mapping=registry.maps[ca.path,cb.path]
+            mapping=registry.maps.get((ca.path,cb.path))
             density_here=any(registry.density.get(edge,1.)>1. for curve in (ca,cb) for edge in curve.edges)
-            if mapping.strong_turn or density_here or registry.point_field.affected(ca) or registry.point_field.affected(cb):
+            if not regular_rows and (mapping.strong_turn or density_here or registry.point_field.affected(ca) or registry.point_field.affected(cb)):
                 from .surface import build_patch
                 sections,columns,reused=build_patch(p,w,registry,ca,cb,left,right,cap_profiles,put,emit,max_polygons,
                     out.patch_cache,getattr(previous,'patch_cache',{}))
                 out.reused_patches+=reused
                 grid=[]
             else:
-                ca,cb,left,right,body_left,body_right,fractions=registry.pair(p.left,p.right)
-                normals=[]
-                for u,(_,a),(_,b) in zip(fractions,body_left,body_right):
-                    n=registry.normal(ca,cb,u,a,b)
-                    if length(n)<EPS:n=normals[-1] if normals else p.normal
-                    reference=normals[-1] if normals else p.normal
-                    if dot(n,reference)<0:n=mul(n,-1.)
-                    normals.append(n)
-                grid=[];sections=[]
-                for k,((akey,a),(bkey,b)) in enumerate(zip(body_left,body_right)):
-                    row=[];coords=[]
-                    for x in range(w+1):
-                        if x==0:key=akey;pos=a
-                        elif x==w:key=bkey;pos=b
-                        elif akey==bkey:key=akey;pos=a
-                        else:
-                            v=bias_cross_position(x/w,p.settings.bias)
-                            pos=mix(a,b,v)
-                            amplitude=p.settings.bulge*length(sub(b,a))*math.sin(math.pi*v)
-                            if p.settings.flip:amplitude=-amplitude
-                            pos=add(pos,mul(normals[k],amplitude))
-                            if k==0 and p.start[0]=='edge' or k==len(body_left)-1 and p.end[0]=='edge':
-                                cap=p.start if k==0 else p.end
-                                lo,hi=edge_key(p.boundary[cap[1]],p.boundary[(cap[1]+1)%len(p.boundary)])
-                                a_v=p.left[0 if k==0 else -1]
-                                aligned=x if a_v==lo else w-x
-                                key=('cap',lo,hi,aligned,w);pos=cap_profiles[(lo,hi)][aligned]
-                            else:key=('inside',p.index,k,x)
-                        # Resampled boundaries shape the interior only.
-                        # Real seam points are shared by all owners.
-                        row.append(vertex_index.get(key) if x in (0,w) else put(key,pos))
-                        coords.append(pos)
-                    grid.append(row);sections.append(tuple(coords))
-                def band(a,b,fa,fb):
-                    from .ribbon import zipper_flows
-                    path=zipper_flows(fa,fb)
-                    for (i,j),(ni,nj) in zip(path,path[1:]):emit([a[i],b[j],b[nj],a[ni]])
-                flows_a=registry.flows(ca,cb,ca,left)
-                flows_b=registry.flows(ca,cb,cb,right)
-                if w==1:band(actual_a,actual_b,flows_a,flows_b)
-                else:
-                    band(actual_a,[row[1] for row in grid],flows_a,fractions)
-                    for x in range(1,w-1):
-                        band([row[x] for row in grid],[row[x+1] for row in grid],fractions,fractions)
-                    band([row[w-1] for row in grid],actual_b,fractions,flows_b)
-                columns=[actual_a]+[[row[x] for row in grid] for x in range(1,w)]+[actual_b]
+                from .strip import build_strip
+                sections,columns,grid,reused=build_strip(p,w,registry,ca,cb,left,right,cap_profiles,put,emit,max_polygons,
+                    out.patch_cache,getattr(previous,'patch_cache',{}))
+                out.reused_patches+=reused
             out.surface_columns[p.index]=tuple(tuple(column) for column in columns)
             if len(local)+len(out.faces)>max_polygons:raise ValueError('Превышен лимит полигонов')
             produced.update(local_keys)
