@@ -985,7 +985,11 @@ def _on_ui_change(field):
 class NHGuidedProperties(PropertyGroup):
     enabled: BoolProperty(default=False)
     live: BoolProperty(name='Live',default=True)
-    show_preview: BoolProperty(name='GPU-предпросмотр',default=True)
+    show_preview: BoolProperty(name='Поверхность',default=True)
+    show_wire: BoolProperty(name='Сетка',default=True,description='Показать рёбра результата; направляющие остаются видимыми')
+    wire_opacity: FloatProperty(name='Непрозрачность сетки',default=.22,min=0.,max=1.,subtype='FACTOR')
+    smooth_preview: BoolProperty(name='Smooth + Sharp по направляющим',default=True,description='Плавное освещение внутри прядей с резкими границами по направляющим; сохраняется в независимом Mesh')
+    follow_matcap: BoolProperty(name='MatCap из вида',default=True,description='В режиме Solid использовать MatCap, выбранный в настройках освещения 3D-вида')
     regular_rows: BoolProperty(name='Ровные квадовые полосы',default=True,description='Общие ряды между направляющими; отключение включает прежнюю адаптацию колонок')
     rows: IntProperty(name='Детализация по длине',default=12,min=2,max=160,description='Общая плотность рядов: короткие пряди получают меньше шагов, длинные больше')
     detail_length: FloatProperty(default=0.,min=0.,options={'HIDDEN'})
@@ -1170,6 +1174,12 @@ class NYANW35_OT_bake(Operator):
         me=bpy.data.meshes.new(src.name+'_BakedMesh')
         me.from_pydata(result.vertices,[],result.faces)
         me.update(calc_edges=True)
+        from . import appearance
+        sharp=appearance.sharp_edges(result)
+        me.polygons.foreach_set('use_smooth',[bool(src.nh35.smooth_preview)]*len(me.polygons))
+        attribute=me.attributes.new(name='sharp_edge',type='BOOLEAN',domain='EDGE')
+        attribute.data.foreach_set('value',[core.edge_key(*edge.vertices) in sharp for edge in me.edges])
+        me.update()
         if len(me.polygons)==len(result.owners):
             attr=me.attributes.new(name='NyanwHair Zone',type='INT',domain='FACE')
             attr.data.foreach_set('value',result.owners)
@@ -1386,10 +1396,16 @@ def _pick_cut_line(context,obj,mx,my,result):
                     best=(distance,depth,(zone,station,coords))
     if best[2] is None:return None
     zone,station,coords=best[2]
-    return {'kind':'split','zone':zone,'t':station,'line':coords, 'screen_distance':best[0]}
+    from . import cuts
+    lines=[coords]
+    try:
+        for other,line in cuts.preview(result,zone,station).items():
+            if other!=zone:lines.append([matrix@Vector(p) for p in line])
+    except ValueError:pass
+    return {'kind':'split','zone':zone,'t':station,'line':coords,'lines':lines,'screen_distance':best[0]}
 
 
-def _split_on_bmesh(bm, zone, t, result, select_result=False):
+def _split_single_bmesh(bm, zone, t, result, select_result=False):
     """Split one face-zone using *native* BMesh topology operations.
 
     1. Subdivide its two transverse end caps (or use a pointed tip).
@@ -1459,7 +1475,7 @@ def _split_on_bmesh(bm, zone, t, result, select_result=False):
                             if desc[0]=='edge':
                                 i=desc[1]; boundary=their.boundary
                                 if {boundary[i],boundary[(i+1)%len(boundary)]} == {lv.index,rv.index}:
-                                    raise ValueError('Разрез торца соседней зоны пока не поддерживается')
+                                    raise ValueError('Общий торец требует согласованного разреза соседних зон')
         end_caps.append((cap[0],lv,rv,edge))
     if end_caps[0][3] is not None and end_caps[0][3]==end_caps[1][3]:
         raise ValueError('Два торца совпадают')
@@ -1586,6 +1602,12 @@ def _split_on_bmesh(bm, zone, t, result, select_result=False):
     _restore_density(bm,density_records,split_records)
     _restore_layout(bm,layout_records,split_records)
     return budget,left_width,right_width
+
+
+def _split_on_bmesh(bm,zone,t,result,select_result=False):
+    from . import cuts
+    if len(cuts.network(result,zone,t))>1:return cuts.split(bm,zone,t,result,select_result)
+    return _split_single_bmesh(bm,zone,t,result,select_result)
 
 
 def _split_control_face(obj, zone, t, result):
@@ -1758,7 +1780,9 @@ class NYANW35_OT_hair_loop(Operator):
                 else:
                     result=_CACHE[self._obj.as_pointer()]['result']
                     budget,a,b=_split_control_face(self._obj,proposal['zone'],proposal['t'],result)
-                    self.report({'INFO'},'Разделены две зоны: %d → %d + %d шагов по ширине'%(budget,a,b))
+                    from . import cuts
+                    count=len(cuts.network(result,proposal['zone'],proposal['t']))
+                    self.report({'INFO'},'Hair Loop: %d сегм., ширина %d → %d + %d'%(count,budget,a,b))
             except Exception as exc:
                 # Keep the full traceback for genuine BMesh/API regressions.
                 # A short operator message alone hides the failing callsite.
@@ -1772,124 +1796,76 @@ class NYANW35_OT_hair_loop(Operator):
 
 
 class NYANW35_PT_main(Panel):
-    bl_label='NyanwHair v0.35.20'
+    bl_label='NyanwHair v0.35.21'
     bl_idname='NYANW35_PT_main'
     bl_space_type='VIEW_3D'
     bl_region_type='UI'
     bl_category='NyanwHair'
 
     def draw(self,context):
-        layout=self.layout
-        obj=context.object
+        layout=self.layout;obj=context.object
         if not is_guide(obj):
             layout.operator('nyanw35.create_guide',icon='MESH_GRID')
-            layout.operator('nyanw35.demo',icon='DUPLICATE')
-            if obj and obj.type=='MESH' and obj.mode=='OBJECT':
-                layout.operator('nyanw35.activate',icon='CHECKMARK')
-            layout.label(text='F задаёт зону; две кривые задают форму',icon='INFO')
+            if obj and obj.type=='MESH' and obj.mode=='OBJECT':layout.operator('nyanw35.activate',text='Использовать выбранный Mesh',icon='CHECKMARK')
             return
-        props=obj.nh35
-        selected_count=len(_selected_zone_indices(_CACHE.get(obj.as_pointer(),{})))
-        if selected_count>1:layout.label(text='Выбрано сегментов: %d'%selected_count,icon='FACESEL')
-        row=layout.row(align=True)
-        row.prop(props,'live',text='Live',toggle=True,icon='PLAY')
-        row.operator('nyanw35.rebuild',text='',icon='FILE_REFRESH')
-        layout.prop(props,'rows')
-        layout.prop(props,'regular_rows')
-        layout.prop(props,'show_preview')
-        box=layout.box()
-        box.label(text='Зона F + две рабочие кривые',icon='FACESEL')
-        if obj.mode!='EDIT':
-            box.label(text='Tab: Edit Mode, F: создать грань')
-        else:
-            box.label(text='F / M / V / Shift+D: обычный Blender')
-            # Keep the wrapped BMesh alive while any BMFace/BMLoop is read.
-            # Temporary from_edit_mesh() owners invalidate returned wrappers.
-            bm=bmesh.from_edit_mesh(obj.data)
-            ui=context.window_manager.nh35_ui
-            parameters=box.column()
-            parameters.enabled=bool(_zone_ui_faces(bm,obj))
-            parameters.prop(ui,'width')
+        props=obj.nh35;cached=_CACHE.get(obj.as_pointer(),{});result=cached.get('result')
+        row=layout.row(align=True);row.prop(props,'live',text='Live',toggle=True,icon='PLAY');row.prop(props,'show_preview',text='',icon='HIDE_OFF');row.operator('nyanw35.rebuild',text='',icon='FILE_REFRESH')
+        layout.prop(props,'rows',text='Детализация')
+        count=len(_selected_zone_indices(cached))
+        bm=None
+        if obj.mode=='EDIT':
+            # Every BMesh wrapper used below belongs to this live local owner.
+            bm=bmesh.from_edit_mesh(obj.data);ui=context.window_manager.nh35_ui
+            column=layout.column(align=True);column.enabled=bool(_zone_ui_faces(bm,obj))
+            column.prop(ui,'width',text='Шаги по ширине');column.prop(ui,'bulge',text='Выпуклость')
+            if count>1:layout.label(text='Выбрано сегментов: %d'%count,icon='FACESEL')
             primary=_zone_ui_primary(bm,obj)
-            result=_CACHE.get(obj.as_pointer(),{}).get('result')
-            effective=result.effective_widths.get(primary.index) if primary is not None and result else None
             transition=result.width_transitions.get(primary.index) if primary is not None and result else None
-            if transition and (transition[0]!=transition[1] or transition[2]!=transition[1]):parameters.label(text='Переход ширины: %d → %d → %d'%transition)
-            parameters.prop(ui,'bulge')
-            parameters.prop(ui,'bias')
-            parameters.prop(ui,'flip')
-            caps_box=box.box();caps_box.label(text='Края активного сегмента')
-            face=_zone_ui_primary(bm,obj) or _active_face(bm,obj)
-            state=_read_caps(face,_boundary_layer(bm)) if face else None
-            caps_box.label(text='Указано краёв: %d / 2'%sum(c is not None and c[0] in ('edge','point') for c in (state or (None,None))))
-            if face and state:
-                loops=list(face.loops);selected={v for v in face.verts if v.select}
-                matched=[]
-                for i,cap in enumerate(state):
-                    if cap is None or cap[0] not in ('point','edge'):continue
-                    vertices={loops[cap[1]].vert}
-                    if cap[0]=='edge':vertices.add(loops[(cap[1]+1)%len(loops)].vert)
-                    if selected and selected<=vertices:matched.append(str(i+1))
-                if matched:caps_box.label(text='Выбран край '+', '.join(matched))
-            op=caps_box.operator('nyanw35.boundary',text='Отметить выбранную точку / ребро');op.clear=False;op.slot='AUTO'
-            row=caps_box.row(align=True)
-            for slot,label in [('FIRST','Край 1'),('SECOND','Край 2')]:
-                op=row.operator('nyanw35.boundary',text=label);op.slot=slot;op.clear=False
-            row=caps_box.row(align=True)
-            for slot,label in [('FIRST','Снять 1'),('SECOND','Снять 2')]:
-                op=row.operator('nyanw35.boundary',text=label);op.slot=slot;op.clear=True
-            caps_box.operator('nyanw35.refresh_layout')
-            extrude_row=box.row();extrude_row.operator_context='INVOKE_REGION_WIN';extrude_row.operator('nyanw35.extrude',text='Умное вытягивание (E)')
-            smooth=box.box()
-            smooth.label(text='Сглаживание направлений',icon='CURVE_BEZCURVE')
-            mesh=bm
-            targets=_smooth_targets(mesh,_CACHE.get(obj.as_pointer(),{}).get('result'))
-            controls=smooth.row(align=True);controls.enabled=bool(targets)
-            controls.prop(ui,'direction_smoothing',slider=True)
-            reset=controls.operator('nyanw35.direction_smoothing',text='Авто');reset.value=1.
-            if targets:
-                smooth.label(text='Выбрано направлений: %d'%len(targets))
-                weights=_directional_smoothing(mesh)
-                values=[weights.get(key,1.) for key in targets]
-                if max(values)-min(values)>1e-5:smooth.label(text='Разные значения',icon='INFO')
-            smooth.label(text='Нужную точку выдели последней')
-            smooth.label(text='Соседние выбранные точки задают направления')
-            density_box=box.box()
-            density_box.label(text='Локальная плотность',icon='MOD_SUBSURF')
-            density_box.prop(ui,'density_mode',expand=True)
-            density_result=_CACHE.get(obj.as_pointer(),{}).get('result')
-            density_keys=(_point_density_target(mesh,density_result) is not None) if ui.density_mode=='POINT' else _density_targets(mesh,density_result)
-            density_controls=density_box.column(align=True);density_controls.enabled=bool(density_keys)
-            density_controls.prop(ui,'local_density')
-            if ui.density_mode=='POINT':density_controls.prop(ui,'point_radius')
-            row=density_controls.row(align=True)
-            for label,value in [('×2',2.),('×4',4.),('Сброс',1.)]:
-                op=row.operator('nyanw35.point_density' if ui.density_mode=='POINT' else 'nyanw35.local_density',text=label);op.value=value
-            density_box.label(text='Последняя выбранная точка — центр' if ui.density_mode=='POINT' else 'Выдели рёбра нужного участка')
-            action=box.operator('nyanw35.hair_loop',text='Hair Loop (Ctrl+R)',icon='MOD_SUBSURF')
-            action.mode='AUTO'
-            box.label(text='Shift+колесо: ширина; Ctrl+колесо: выпуклость')
-            box.label(text='Параметры принадлежат управляющей грани')
-
-        box=layout.box()
-        box.label(text='Подсветка',icon='SHADING_SOLID')
-        box.prop(props,'show_tint')
-        if props.show_tint:
-            box.prop(props,'tint')
-            box.prop(props,'opacity')
-        layout.label(text='Live без фоновой записи в Mesh',icon='INFO')
-        layout.operator('nyanw35.bake',icon='OUTLINER_OB_MESH')
-        layout.operator('nyanw35.disable',icon='X')
-        cached=_CACHE.get(obj.as_pointer(),{})
-        if cached.get('unpinned',0):
-            layout.label(text='Новые зоны: закрепи направление или нажми Перестроить',icon='INFO')
-        error_count=cached.get('error_count',0)
-        if error_count>0:
-            layout.label(text='Ошибки зон: %d'%error_count,icon='ERROR')
-        elif error_count<0:
-            layout.label(text='Ошибка генератора',icon='ERROR')
-        layout.label(text=cached.get('status','Ожидание первого расчёта')[:120],icon='INFO')
-
+            if transition and (transition[0]!=transition[1] or transition[2]!=transition[1]):layout.label(text='Ширина: %d → %d → %d'%transition)
+            row=layout.row(align=True);row.operator_context='INVOKE_REGION_WIN';row.operator('nyanw35.extrude',text='Extrude · E');row.operator('nyanw35.hair_loop',text='Loop · Ctrl R').mode='AUTO'
+        else:
+            layout.label(text='Tab — редактировать каркас',icon='EDITMODE_HLT')
+            layout.operator('nyanw35.bake',text='Создать Mesh',icon='OUTLINER_OB_MESH')
+        def section(key,label):
+            header,body=layout.panel(key,default_closed=True);header.label(text=label);return body
+        if bm is not None:
+            body=section('nyanw_shape','Форма и плотность')
+            if body is not None:
+                row=body.row(align=True);row.prop(ui,'bias',text='Распределение');row.prop(ui,'flip',text='',icon='ARROW_LEFTRIGHT')
+                body.separator();body.label(text='Касательная активной точки')
+                targets=_smooth_targets(bm,result);row=body.row(align=True);row.enabled=bool(targets)
+                row.prop(ui,'direction_smoothing',text='Плавность',slider=True);row.operator('nyanw35.direction_smoothing',text='',icon='LOOP_BACK').value=1.
+                body.label(text='Последняя точка — активная',icon='INFO')
+                body.separator();body.prop(ui,'density_mode',expand=True)
+                keys=_point_density_target(bm,result) is not None if ui.density_mode=='POINT' else _density_targets(bm,result)
+                controls=body.column(align=True);controls.enabled=bool(keys);controls.prop(ui,'local_density',text='Плотность')
+                if ui.density_mode=='POINT':controls.prop(ui,'point_radius',text='Радиус, %')
+                row=controls.row(align=True)
+                for label,value in [('×2',2.),('×4',4.),('Сброс',1.)]:row.operator('nyanw35.point_density' if ui.density_mode=='POINT' else 'nyanw35.local_density',text=label).value=value
+            body=section('nyanw_boundaries','Края сегмента')
+            if body is not None:
+                face=_zone_ui_primary(bm,obj) or _active_face(bm,obj);state=_read_caps(face,_boundary_layer(bm)) if face else None
+                body.label(text='Указано: %d / 2'%sum(c is not None and c[0] in ('edge','point') for c in (state or (None,None))))
+                op=body.operator('nyanw35.boundary',text='Отметить выбранный край');op.slot='AUTO';op.clear=False
+                for slot,label in [('FIRST','Край 1'),('SECOND','Край 2')]:
+                    row=body.row(align=True);op=row.operator('nyanw35.boundary',text=label);op.slot=slot;op.clear=False
+                    op=row.operator('nyanw35.boundary',text='',icon='X');op.slot=slot;op.clear=True
+        body=section('nyanw_appearance','Внешний вид')
+        if body is not None:
+            body.prop(props,'smooth_preview',text='Smooth + Sharp');body.prop(props,'follow_matcap',text='MatCap из вида')
+            row=body.row(align=True);row.prop(props,'show_wire',text='Сетка');column=row.column();column.enabled=props.show_wire;column.prop(props,'wire_opacity',text='',slider=True)
+            body.prop(props,'show_tint',text='Подсветка сегмента')
+            if props.show_tint:
+                row=body.row(align=True);row.prop(props,'tint',text='');row.prop(props,'opacity',text='Сила',slider=True)
+            if cached.get('appearance_status'):body.label(text=cached['appearance_status'],icon='INFO')
+        body=section('nyanw_tools','Дополнительно')
+        if body is not None:
+            body.prop(props,'regular_rows',text='Ровные квадовые полосы');body.operator('nyanw35.refresh_layout',text='Обновить раскладку рядов')
+            body.operator('nyanw35.disable',text='Отключить на объекте',icon='X')
+        if cached.get('unpinned',0):layout.label(text='Новые зоны: нажми ↻',icon='INFO')
+        errors=cached.get('error_count',0)
+        if errors:layout.label(text='Ошибок зон: %d'%errors,icon='ERROR');layout.label(text=cached.get('status','')[:100])
+        elif result:layout.label(text='%d зон · %d полигонов'%(len(cached.get('zones',())),len(result.faces)))
 
 
 _CIRCLE_OFFSETS=tuple(p for i in range(12) for p in ((0.,0.),(math.cos(2*math.pi*i/12),math.sin(2*math.pi*i/12)),(math.cos(2*math.pi*(i+1)/12),math.sin(2*math.pi*(i+1)/12))))
@@ -1934,13 +1910,16 @@ def _gpu_batches(cache,guide,shader):
     selected=(_selected_zone_indices(cache) if guide==bpy.context.edit_object and guide.nh35.show_tint and guide.nh35.opacity>0 else set())
     active=cache.get('active',-1)
     tint=(tuple(sorted(selected)),active,tuple(guide.nh35.tint),float(guide.nh35.opacity))
-    signature=(id(result),transform,tint)
+    signature=(id(result),transform,tint,bool(guide.nh35.smooth_preview))
     if cache.get('gpu_signature')==signature:return cache['gpu_batches']
     old=cache.get('gpu_chunks',{});current={};groups={};coords={};edge_groups={}
+    from . import appearance
+    normals=appearance.corner_normals(result,guide.nh35.smooth_preview)
+    normal_matrix=matrix.to_3x3().inverted_safe().transposed()
     plans={p.index:p for p in result.plans_by_loop.values()}
-    for face,owner in zip(result.faces,result.owners):
+    for face,owner,corner_normals in zip(result.faces,result.owners,normals):
         p=plans[owner];key=(p.settings.order if p.settings.order>0 else owner)//4
-        groups.setdefault(key,[]).append((face,owner))
+        groups.setdefault(key,[]).append((face,owner,corner_normals))
         for a,b in zip(face,face[1:]+face[:1]):
             if a!=b:edge_groups.setdefault(core.edge_key(a,b),key)
     owned_by_chunk={key:[] for key in groups}
@@ -1948,29 +1927,25 @@ def _gpu_batches(cache,guide,shader):
     def world(index):
         if index not in coords:coords[index]=tuple(matrix@Vector(result.vertices[index]))
         return coords[index]
-    light=Vector((.31,-.43,.85)).normalized();wire_shader=_stroke_shader()
+    wire_shader=_stroke_shader()
     for key,faces in groups.items():
-        owners=sorted({owner for face,owner in faces})
-        geometry=tuple((owner,tuple(result.vertex_keys[v] for v in face),tuple(result.vertices[v] for v in face)) for face,owner in faces)
+        owners=sorted({owner for face,owner,normals in faces})
+        geometry=tuple((owner,tuple(result.vertex_keys[v] for v in face),tuple(result.vertices[v] for v in face),normals) for face,owner,normals in faces)
         colors_key=tuple((owner,guide.nh35.opacity*(1. if owner==active else .65) if owner in selected else 0.) for owner in owners)
         owned_edges=owned_by_chunk[key]
         edge_key=tuple(tuple(result.vertex_keys[v] for v in edge) for edge in owned_edges)
         stamp=(transform,geometry,edge_key,colors_key,tuple(guide.nh35.tint))
         saved=old.get(key)
         if saved and saved[0]==stamp:current[key]=saved;continue
-        tris=[];colors=[];edges=set()
-        for face,owner in faces:
-            a,b,c=(Vector(world(face[i])) for i in (0,1,2));normal=(b-a).cross(c-a)
-            if normal.length_squared>1e-15:normal.normalize()
-            else:normal=Vector((0,0,1))
-            intensity=.70+.26*abs(normal.dot(light));base=(.74*intensity,.79*intensity,.87*intensity)
-            if owner in selected:
-                alpha=guide.nh35.opacity*(1. if owner==active else .65)
-                base=tuple(v*(1.-alpha)+color*alpha for v,color in zip(base,guide.nh35.tint))
-            color=(*base,1.)
+        tris=[];colors=[];vertex_normals=[]
+        for face,owner,normals in faces:
+            alpha=guide.nh35.opacity*(1. if owner==active else .65) if owner in selected else 0.
+            color=(*guide.nh35.tint,alpha)
             for i in range(1,len(face)-1):
-                for v in (face[0],face[i],face[i+1]):tris.append(world(v));colors.append(color)
-        solid=batch_for_shader(shader,'TRIS',{'pos':tris,'color':colors}) if tris else None
+                for corner in (0,i,i+1):
+                    tris.append(world(face[corner]));colors.append(color)
+                    vertex_normals.append(tuple((normal_matrix@Vector(normals[corner])).normalized()))
+        solid=batch_for_shader(shader,'TRIS',{'pos':tris,'normal':vertex_normals,'color':colors}) if tris else None
         lines=[world(v) for edge in owned_edges for v in edge]
         wire=batch_for_shader(wire_shader,'LINES',{'pos':lines}) if lines else None
         current[key]=(stamp,solid,wire)
@@ -2065,7 +2040,8 @@ def _draw_preview():
         except (ReferenceError,RuntimeError): pass
     overlay_depth='NONE' if _xray_enabled(ctx) else 'LESS_EQUAL'
     try:
-        shader=gpu.shader.from_builtin('SMOOTH_COLOR')
+        from . import appearance
+        shader=appearance.shader()
         previous_depth=gpu.state.depth_test_get()
         previous_mask=gpu.state.depth_mask_get()
         gpu.state.blend_set('ALPHA')
@@ -2080,15 +2056,16 @@ def _draw_preview():
             solid,wire,rails=_gpu_batches(cached,obj,shader)
             if solid:
                 gpu.state.depth_mask_set(True)
-                shader.bind()
+                shader,status=appearance.bind(ctx,obj.nh35.follow_matcap)
+                cached['appearance_status']=status
                 solid.draw(shader)
             gpu.state.depth_mask_set(False)
-            if wire:
+            if wire and obj.nh35.show_wire and obj.nh35.wire_opacity>0:
                 # Mesh strokes obey the viewport's X-ray toggle.
                 gpu.state.depth_test_set(overlay_depth)
                 line_shader=_stroke_shader()
                 line_shader.bind()
-                line_shader.uniform_float('color',(.10,.13,.17,.42))
+                line_shader.uniform_float('color',(.10,.13,.17,obj.nh35.wire_opacity))
                 wire.draw(line_shader)
                 gpu.state.depth_test_set('LESS_EQUAL')
             if rails:
@@ -2116,18 +2093,14 @@ def _draw_preview():
                     gpu.state.depth_test_set('LESS_EQUAL')
         if _CUT_PREVIEW:
             preview=_CUT_PREVIEW
-            coords=preview['line']
-            if coords:
-                shader_line=_stroke_shader()
-                shader_line.bind()
-                shader_line.uniform_float('color',(.95,.77,.41,1.0))
-                gpu.state.depth_test_set(overlay_depth)
+            for coords in preview.get('lines',(preview['line'],)):
+                if not coords:continue
+                shader_line=_stroke_shader();shader_line.bind()
+                shader_line.uniform_float('color',(.95,.77,.41,1.0));gpu.state.depth_test_set(overlay_depth)
                 if len(coords)>=2:
                     batch=batch_for_shader(shader_line,'LINE_STRIP',{'pos':[tuple(p) for p in coords]})
-                    gpu.state.line_width_set(3.0)
-                    batch.draw(shader_line)
-                # Anchor marker belongs to the POST_PIXEL overlay instead.
-                # 3D point size is unreliable at steep viewing angles.
+                    gpu.state.line_width_set(3.0);batch.draw(shader_line)
+                # Anchor markers belong to the POST_PIXEL overlay.
     except (ReferenceError,RuntimeError,ValueError,TypeError):
         # Object can be invalidated by scene replacement or undo.
         pass
@@ -2342,6 +2315,8 @@ def register():
 def unregister():
     global _RUNNING,_DRAW_HANDLER,_POINT_HANDLER,_CUT_PREVIEW,_STROKE_SHADER
     editing.cancel_all()
+    from . import appearance
+    appearance.clear()
     _STROKE_SHADER=None
     _RUNNING=False
     _clear_zone_pick()

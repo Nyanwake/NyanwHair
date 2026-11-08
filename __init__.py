@@ -1,11 +1,11 @@
-"""NyanwHair 0.35.20 Guided Surfaces (preview)."""
+"""NyanwHair 0.35.21 Guided Surfaces (preview)."""
 bl_info = {
     'name': 'NyanwHair - Guided Surfaces',
     'author': 'NyanWake',
-    'version': (0,35,20),
+    'version': (0,35,21),
     'blender': (5,1,0),
     'location': 'View3D > Sidebar > NyanwHair',
-    'description': 'Hair ribbons with grouped extrusion, open face branches and adaptive width',
+    'description': 'Guided hair with shared-cap cuts, smooth sharp shading and viewport MatCaps',
     'category': 'Mesh',
 }
 
