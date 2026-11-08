@@ -1117,17 +1117,17 @@ class NHGuidedProperties(PropertyGroup):
 
 
 class NHGuidedUISettings(PropertyGroup):
-    detail:IntProperty(name='Детализация',default=12,min=2,max=160,update=_on_ui_change('detail'))
-    volume:BoolProperty(name='Вторая сторона',default=False,update=_on_back_change)
-    back_width:IntProperty(name='Ширина спинки',default=2,min=2,max=32,update=_on_ui_change('back_width'))
-    back_depth:FloatProperty(name='Выпуклость спинки',default=.08,min=0.,max=3.,update=_on_back_change)
+    detail:IntProperty(name='Детализация',default=12,min=2,max=160,update=_on_ui_change('detail'),description='Плотность полигонов по длине выбранных сегментов; форма направляющих сохраняется')
+    volume:BoolProperty(name='Объём',default=False,update=_on_back_change,description='Замкнутая обратная сторона с собственной шириной и выпуклостью')
+    back_width:IntProperty(name='Ширина обратной стороны',default=2,min=2,max=32,update=_on_ui_change('back_width'),description='Количество колонок обратной стороны; лицевая сетка сохраняется')
+    back_depth:FloatProperty(name='Выпуклость обратной стороны',default=.08,min=0.,max=3.,update=_on_back_change,description='Поперечный профиль обратной стороны; 0 — плоский профиль')
     density_mode: EnumProperty(name='Центр уплотнения',items=[('POINT','Точка','Плавное уплотнение вокруг активной точки'),('EDGE','Рёбра','Прежний множитель на выбранных рёбрах')],default='POINT')
     point_radius: FloatProperty(name='Радиус, % длины',min=.1,max=200.,get=_get_point_radius,set=_set_point_radius,description='Расстояние вдоль направляющих в процентах от опорной длины детализации; плавное затухание до обычной сетки')
     local_density: FloatProperty(name='Множитель плотности',min=1.,max=8.,get=_get_local_density,set=_set_local_density,description='Плотность вокруг всех выбранных точек; форма кривых сохраняется')
     direction_smoothing: FloatProperty(name='Сглаживание',min=0.,max=1.,get=_get_direction_smoothing,set=_set_direction_smoothing,description='Alt + колесо. 1 — плавная касательная; 0 — направление к соседней точке. Только активный конец выбранных направлений')
-    width: IntProperty(name='Ширина',min=1,max=32,default=2,update=_on_ui_change('width'))
-    bulge: FloatProperty(name='Выпуклость',default=_DEFAULT_BULGE,min=-3,max=3,step=5,precision=3,update=_on_ui_change('bulge'))
-    bias: FloatProperty(name='Распределение',default=0.0,min=-2,max=2,step=5,precision=3,update=_on_ui_change('bias'))
+    width: IntProperty(name='Ширина',min=1,max=32,default=2,update=_on_ui_change('width'),description='Колонки поперёк сегмента. Shift + колесо — изменить у выбранных сегментов')
+    bulge: FloatProperty(name='Выпуклость',default=_DEFAULT_BULGE,min=-3,max=3,step=5,precision=3,update=_on_ui_change('bulge'),description='Поперечная выпуклость. Ctrl + колесо — изменить у выбранных сегментов')
+    bias: FloatProperty(name='Распределение',default=0.0,min=-2,max=2,step=5,precision=3,update=_on_ui_change('bias'),description='Распределение колонок по ширине; 0 — равномерно')
     flip: BoolProperty(name='Перевернуть',default=False,update=_on_ui_change('flip'))
 
 
@@ -1475,9 +1475,10 @@ def _pick_smooth_anchor(context,obj,mx,my,result):
     bm=bmesh.from_edit_mesh(obj.data)
     bm.verts.ensure_lookup_table(); bm.verts.index_update()
     bm.edges.ensure_lookup_table(); bm.edges.index_update()
-    points=[tuple(v.co) for v in bm.verts]
     plans=list(result.plans_by_loop.values())
-    evaluator=core.make_edge_evaluator(points,plans,result.directional_smoothing)
+    evaluator=result.edge_evaluator
+    if evaluator is None:
+        evaluator=core.make_edge_evaluator([tuple(v.co) for v in bm.verts],plans,result.directional_smoothing)
     source_edges={core.edge_key(*tuple(v.index for v in e.verts)):e.index
                   for e in bm.edges}
     world=obj.matrix_world
@@ -1949,7 +1950,7 @@ def _draw_extra_panels(layout,context,obj,cached,edit):
 
 
 class NYANW35_PT_main(Panel):
-    bl_label='NyanwHair v0.35.23'
+    bl_label='NyanwHair v0.35.24'
     bl_idname='NYANW35_PT_main'
     bl_space_type='VIEW_3D'
     bl_region_type='UI'
@@ -1974,16 +1975,16 @@ class NYANW35_PT_main(Panel):
             row=body.row(align=True);row.operator('nyanw35.group',text='',icon='ADD').action='ADD';remove=row.row(align=True);remove.enabled=len(props.groups)>1;remove.operator('nyanw35.group',text='',icon='REMOVE').action='REMOVE'
             active=groups.settings(obj)
             if active is not None:
-                row=body.row(align=True);label=row.row(align=True);label.ui_units_x=3.7;label.label(text='Mirror',icon='MOD_MIRROR')
-                for axis in 'xyz':row.prop(active,'mirror_'+axis,text=axis.upper(),toggle=True)
+                split=body.split(factor=.32,align=True);split.column(align=True).label(text='Mirror',icon='MOD_MIRROR');axes=split.row(align=True)
+                for axis in 'xyz':axes.prop(active,'mirror_'+axis,text=axis.upper(),toggle=True)
             else:body.label(text='Нажмите ↻ для подготовки групп')
         bm=bmesh.from_edit_mesh(obj.data)
         layout.separator();layout.label(text='Настройки сегмента',icon='FACESEL')
         parameters=layout.column(align=True);parameters.enabled=bool(_zone_ui_faces(bm,obj))
         parameters.prop(ui,'detail',text='Детализация');parameters.prop(ui,'width',text='Ширина');parameters.prop(ui,'bulge',text='Выпуклость');parameters.prop(ui,'bias',text='Распределение')
-        parameters.separator();parameters.prop(ui,'volume',text='Спинка',icon='MOD_SOLIDIFY')
+        parameters.separator();parameters.prop(ui,'volume',text='Объём',icon='MOD_SOLIDIFY')
         if ui.volume:
-            parameters.prop(ui,'back_width',text='Ширина спинки');parameters.prop(ui,'back_depth',text='Выпуклость спинки')
+            parameters.prop(ui,'back_width',text='Обратная: ширина');parameters.prop(ui,'back_depth',text='Обратная: выпуклость')
         if not cached.get('zone_count',0):layout.operator('nyanw35.group_starter',text='Создать локон в группе',icon='ADD')
         layout.separator();layout.label(text='Края сегмента',icon='EDGESEL')
         ends=layout.column(align=True);ends.enabled=bool(_zone_ui_faces(bm,obj))
@@ -2039,6 +2040,30 @@ class _BatchGroup:
         for batch in self.batches:batch.draw(shader)
 
 
+def _gpu_mesh_records(cache,result,smooth):
+    """Mesh-only records survive selection, color and object transform edits."""
+    signature=(id(result),bool(smooth))
+    if cache.get('gpu_mesh_signature')==signature:return cache['gpu_mesh_records']
+    from . import appearance
+    normals=appearance.corner_normals(result,smooth)
+    plans={p.index:p for p in result.plans_by_loop.values()};chunks={};edge_groups={}
+    for face,owner,corner_normals in zip(result.faces,result.owners,normals):
+        plan=plans[owner];key=(plan.settings.order if plan.settings.order>0 else owner)//4
+        chunks.setdefault(key,[]).append((face,owner,corner_normals))
+        for a,b in zip(face,face[1:]+face[:1]):
+            if a!=b:edge_groups.setdefault(core.edge_key(a,b),key)
+    owned_edges={key:[] for key in chunks}
+    for edge,key in edge_groups.items():owned_edges[key].append(edge)
+    records=[]
+    for key,faces in chunks.items():
+        owners=tuple(sorted({owner for face,owner,normals in faces}))
+        geometry=tuple((owner,tuple(result.vertex_keys[v] for v in face),tuple(result.vertices[v] for v in face),normals) for face,owner,normals in faces)
+        edges=tuple(owned_edges[key]);keys=tuple(tuple(result.vertex_keys[v] for v in edge) for edge in edges)
+        records.append((key,faces,owners,geometry,edges,keys))
+    cache['gpu_mesh_signature']=signature;cache['gpu_mesh_records']=tuple(records)
+    return cache['gpu_mesh_records']
+
+
 def _gpu_batches(cache,guide,shader):
     """Retain small GPU chunks across edits; all zones remain visible."""
     from . import decorations
@@ -2051,28 +2076,18 @@ def _gpu_batches(cache,guide,shader):
     overlays=cache.get('group_id',1)==groups.active_id(guide) and _helpers_visible(bpy.context)
     signature=(id(result),transform,tint,bool(guide.nh35.smooth_preview),base_color,overlays)
     if cache.get('gpu_signature')==signature:return cache['gpu_batches']
-    old=cache.get('gpu_chunks',{});current={};chunk_groups={};coords={};edge_groups={}
-    from . import appearance
-    normals=appearance.corner_normals(result,guide.nh35.smooth_preview)
+    old=cache.get('gpu_chunks',{});current={};coords={};normal_coords={}
+    records=_gpu_mesh_records(cache,result,guide.nh35.smooth_preview)
     normal_matrix=matrix.to_3x3().inverted_safe().transposed()
-    plans={p.index:p for p in result.plans_by_loop.values()}
-    for face,owner,corner_normals in zip(result.faces,result.owners,normals):
-        p=plans[owner];key=(p.settings.order if p.settings.order>0 else owner)//4
-        chunk_groups.setdefault(key,[]).append((face,owner,corner_normals))
-        for a,b in zip(face,face[1:]+face[:1]):
-            if a!=b:edge_groups.setdefault(core.edge_key(a,b),key)
-    owned_by_chunk={key:[] for key in chunk_groups}
-    for edge,key in edge_groups.items():owned_by_chunk[key].append(edge)
     def world(index):
         if index not in coords:coords[index]=tuple(matrix@Vector(result.vertices[index]))
         return coords[index]
+    def world_normal(normal):
+        if normal not in normal_coords:normal_coords[normal]=tuple((normal_matrix@Vector(normal)).normalized())
+        return normal_coords[normal]
     wire_shader=_stroke_shader()
-    for key,faces in chunk_groups.items():
-        owners=sorted({owner for face,owner,normals in faces})
-        geometry=tuple((owner,tuple(result.vertex_keys[v] for v in face),tuple(result.vertices[v] for v in face),normals) for face,owner,normals in faces)
+    for key,faces,owners,geometry,owned_edges,edge_key in records:
         colors_key=tuple((owner,guide.nh35.opacity*(1. if owner==active else .65) if owner in selected else 0.) for owner in owners)
-        owned_edges=owned_by_chunk[key]
-        edge_key=tuple(tuple(result.vertex_keys[v] for v in edge) for edge in owned_edges)
         stamp=(transform,geometry,edge_key,colors_key,tuple(guide.nh35.tint),base_color,overlays)
         saved=old.get(key)
         if saved and saved[0]==stamp:current[key]=saved;continue
@@ -2088,13 +2103,15 @@ def _gpu_batches(cache,guide,shader):
             for triangle in triangles:
                 for corner in triangle:
                     tris.append(world(face[corner]));colors.append(color)
-                    vertex_normals.append(tuple((normal_matrix@Vector(normals[corner])).normalized()))
+                    vertex_normals.append(world_normal(normals[corner]))
         solid=batch_for_shader(shader,'TRIS',{'pos':tris,'normal':vertex_normals,'color':colors,'base':[base_color]*len(tris)}) if tris else None
         lines=[world(v) for edge in owned_edges for v in edge] if overlays else []
         wire=batch_for_shader(wire_shader,'LINES',{'pos':lines}) if lines else None
         current[key]=(stamp,solid,wire)
     # Rail batches are independent of mesh density and segment tint.
-    evaluate=core.make_edge_evaluator(cache['positions'],list(plans.values()),result.directional_smoothing)
+    evaluate=result.edge_evaluator
+    if overlays and evaluate is None:
+        evaluate=core.make_edge_evaluator(cache['positions'],list(result.plans_by_loop.values()),result.directional_smoothing)
     old_rails=cache.get('gpu_rail_records',{});rail_records={};rail_segments={}
     for paths in (result.face_paths.values() if overlays else ()):
         for path in paths:

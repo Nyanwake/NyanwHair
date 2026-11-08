@@ -5,10 +5,11 @@ from collections import defaultdict
 from . import core,appearance
 
 
-def _clone(result):
+def _clone(result,copy_mesh=True):
     out=core.MeshResult()
     for field in fields(out):setattr(out,field.name,getattr(result,field.name))
-    out.vertices=list(result.vertices);out.vertex_keys=list(result.vertex_keys);out.faces=list(result.faces);out.owners=list(result.owners)
+    if copy_mesh:
+        out.vertices=list(result.vertices);out.vertex_keys=list(result.vertex_keys);out.faces=list(result.faces);out.owners=list(result.owners)
     out.extra_sharp_edges=set();out.replica_faces=set()
     return out
 
@@ -16,7 +17,21 @@ def _clone(result):
 def _enabled(option):return option.back_enabled if option.back_enabled is not None else option.back>0.
 
 
-def _back(out,result,axes=(),previous=None):
+def _edge_samples(mesh,edge):
+    cached=getattr(mesh,'edge_sample_index',None)
+    if cached is None:
+        vertices={};edges=defaultdict(list)
+        for i,key in enumerate(mesh.vertex_keys):
+            if key[0]=='v':vertices[key[1]]=i
+            elif key[0] in ('s','cap'):edges[key[1:3]].append((key[3] if key[0]=='s' else key[3]/key[4],i))
+        cached=(vertices,edges);mesh.edge_sample_index=cached
+    vertices,edges=cached
+    found=list(edges.get(edge,()))
+    found.extend((float(v==edge[1]),vertices[v]) for v in edge if v in vertices)
+    return sorted(found)
+
+
+def _back(out,result,axes=(),previous=None,reuse_geometry=False):
     from dataclasses import replace
     plans=list(result.plans_by_loop.values());options={p.index:p.settings for p in plans}
     enabled={owner for owner,o in options.items() if _enabled(o)}
@@ -24,10 +39,10 @@ def _back(out,result,axes=(),previous=None):
     # Reuse the same controls, curve dependencies, length detail and density.
     # Only transverse resolution and convexity belong to the reverse sheet.
     settings=[replace(p.settings,width=max(2,p.settings.back_width or p.settings.width),bulge=-p.settings.back,back=0.,back_enabled=False,back_simple=False) for p in plans]
-    back=core.generate(result.source_points,[p.boundary for p in plans],settings,rows=result.base_rows,
+    back=previous if reuse_geometry and previous is not None else core.generate(result.source_points,[p.boundary for p in plans],settings,rows=result.base_rows,
         caps=[(p.start,p.end) for p in plans],face_indices=[p.index for p in plans],previous=previous or result,
         reference_length=result.reference_length,directional_smoothing=result.directional_smoothing,
-        local_density=result.local_density,point_density=result.point_density,layout_lengths=result.layout_lengths,regular_rows=result.regular_rows)
+        local_density=result.local_density,point_density=result.point_density,layout_lengths=result.layout_lengths,regular_rows=result.regular_rows,edge_evaluator=result.edge_evaluator)
     enabled.intersection_update(back.owners)
     front_faces=[(f,o) for f,o in zip(result.faces,result.owners) if o in enabled]
     back_faces=[(f,o) for f,o in zip(back.faces,back.owners) if o in enabled]
@@ -103,19 +118,13 @@ def _back(out,result,axes=(),previous=None):
         for a,b in zip(p.boundary,p.boundary[1:]+p.boundary[:1]):source_owners[core.edge_key(a,b)].add(p.index)
         for kind,i in (p.start,p.end):
             if kind=='edge':cap_owner[core.edge_key(p.boundary[i],p.boundary[(i+1)%len(p.boundary)])]=p.index
-    def samples(mesh,edge):
-        found=[]
-        for i,key in enumerate(mesh.vertex_keys):
-            if key[0]=='v' and key[1] in edge:found.append((float(key[1]==edge[1]),i))
-            elif key[0] in ('s','cap') and key[1:3]==edge:found.append((key[3] if key[0]=='s' else key[3]/key[4],i))
-        return sorted(found)
     front_directions={}
     for face,owner in front_faces:
         for a,b in zip(face,face[1:]+face[:1]):front_directions[core.edge_key(a,b)]=(a,b)
     from .ribbon import zipper_flows
     for edge,owner in cap_owner.items():
         if len(source_owners[edge])!=1:continue
-        fs=samples(result,edge);bs=samples(back,edge)
+        fs=_edge_samples(result,edge);bs=_edge_samples(back,edge)
         if len(fs)<2 or len(bs)<2 or any(on and all(abs(result.source_points[v][axis])<1e-7 for v in edge) for axis,on in enumerate(axes)):continue
         forward=front_directions.get(core.edge_key(fs[0][1],fs[1][1]))==(fs[0][1],fs[1][1])
         path=zipper_flows([t for t,v in fs],[t for t,v in bs])
@@ -131,8 +140,11 @@ def _back(out,result,axes=(),previous=None):
     return back
 
 
-def build(result,axes=(),previous_back=None):
-    out=_clone(result);out.back_result=_back(out,result,axes,previous_back)
+def build(result,axes=(),previous_back=None,reuse_back=False):
+    if not any(axes) and not any(_enabled(p.settings) for p in result.plans_by_loop.values()):
+        out=_clone(result,copy_mesh=False);out.back_result=None
+        return out
+    out=_clone(result);out.back_result=_back(out,result,axes,previous_back,reuse_back)
     source_vertices=list(out.vertices);source_keys=list(out.vertex_keys);source_faces=list(out.faces);source_owners=list(out.owners)
     sharp=appearance.sharp_edges(out);lookup={};axis_bits=[1<<i for i,value in enumerate(axes) if value]
     seen_faces={frozenset(face) for face in source_faces};masks=[0]
@@ -167,5 +179,6 @@ def display(cache,obj):
     group=groups.settings(obj,cache.get('group_id',1));axes=(group.mirror_x,group.mirror_y,group.mirror_z) if group else (False,)*3
     signature=(id(cache['result']),axes)
     if cache.get('display_signature')!=signature:
-        cache['display_result']=build(cache['result'],axes,cache.get('back_result'));cache['back_result']=cache['display_result'].back_result;cache['display_signature']=signature
+        cache['display_result']=build(cache['result'],axes,cache.get('back_result'),cache.get('back_source') is cache['result'])
+        cache['back_result']=cache['display_result'].back_result;cache['back_source']=cache['result'];cache['display_signature']=signature
     return cache['display_result']

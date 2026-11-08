@@ -1,4 +1,4 @@
-"""NyanwHair 0.35.23: shared curve contracts and independent reverse-sheet widths.
+"""NyanwHair 0.35.24: shared curve contracts and independent reverse-sheet widths.
 
 Pure Python, no Blender IDs or tags on vertices/edges. Blender face corners may
 store the user's chosen end caps; this module only consumes that choice.
@@ -60,6 +60,7 @@ class FacePlan:
 class MeshResult:
     source_points: tuple=()
     regular_rows: bool=False
+    edge_evaluator: object=field(default=None,repr=False,compare=False)
     vertices: list=field(default_factory=list)
     faces: list=field(default_factory=list)
     owners: list=field(default_factory=list)
@@ -416,7 +417,7 @@ def plan_widths(plans,fixed=None,warnings=None):
 
 
 def generate(points,boundaries,settings=None,rows=12,max_polygons=200000,
-             previous=None,caps=None,reference_length=0.,directional_smoothing=None,local_density=None,point_density=None,layout_lengths=None,regular_rows=False,face_indices=None):
+             previous=None,caps=None,reference_length=0.,directional_smoothing=None,local_density=None,point_density=None,layout_lengths=None,regular_rows=False,face_indices=None,edge_evaluator=None):
     points=[tuple(map(float,p)) for p in points]
     settings=list(settings or [ZoneSettings() for _ in boundaries])
     rows=max(2,min(256,int(rows)))
@@ -477,7 +478,10 @@ def generate(points,boundaries,settings=None,rows=12,max_polygons=200000,
     out.effective_widths=widths
     out.base_rows=rows
     out.directional_smoothing=dict(directional_smoothing or {})
-    evaluate=make_edge_evaluator(points,plans,out.directional_smoothing)
+    # The reverse sheet changes width/profile only; its source curves are
+    # identical and can reuse the front solve. Other callers solve normally.
+    evaluate=edge_evaluator if edge_evaluator is not None else make_edge_evaluator(points,plans,out.directional_smoothing)
+    out.edge_evaluator=evaluate
     out.local_density=dict(local_density or {})
     out.point_density=dict(point_density or {})
     details={p.index:p.settings.detail if p.settings.detail>0 else rows for p in plans}
