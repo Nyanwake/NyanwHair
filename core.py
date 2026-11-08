@@ -1,4 +1,4 @@
-"""NyanwHair 0.35.12: smooth guides with independent junction branches.
+"""NyanwHair 0.35.13: continuous splines and proportional ribbon detail.
 
 Pure Python, no Blender IDs or tags on vertices/edges. Blender face corners may
 store the user's chosen end caps; this module only consumes that choice.
@@ -69,6 +69,8 @@ class MeshResult:
     transitions: dict=field(default_factory=dict)
     orientation_by_face: dict=field(default_factory=dict)
     base_rows: int=0
+    reference_length: float=0.
+    target_spacing: float=0.
     surface_grids: dict=field(default_factory=dict)
     surface_sections: dict=field(default_factory=dict)
     rail_samples: dict=field(default_factory=dict)
@@ -302,50 +304,8 @@ def physical_edges(path): return [edge_key(a,b) for a,b in zip(path,path[1:])]
 
 
 def make_edge_evaluator(points,plans):
-    """Interpolating cubics with first-owner, reciprocal continuations.
-
-    A shared source edge has ONE shape. Its first owner specifies both
-    endpoint roles, including a free end. New walls cannot reinterpret it.
-    Continuations must agree on both incident half-edges: a child meeting a
-    through-guide is an independent curve end, not another tangent vote.
-
-    As in GuideCurveV19, free ends have zero handles; interior directions
-    bisect the adjacent unit chords. Handle lengths belong to their OWN
-    chord, so a nearby short support cannot flatten the longer curve.
-    This gives geometric (G1), not parameter-speed (C1), continuity.
-    """
-    claims={}
-    for p in sorted(plans,key=_plan_priority):
-        for rail in (p.left,p.right):
-            for i,(a,b) in enumerate(zip(rail,rail[1:])):
-                claims.setdefault((a,b),rail[i-1] if i else None)
-                claims.setdefault((b,a),rail[i+2] if i+2<len(rail) else None)
-    through={half:other for half,other in claims.items()
-             if other is not None and claims.get((half[0],other))==half[1]}
-    cache={}
-    def tangent(a,b):
-        other=through.get((a,b))
-        span=sub(points[b],points[a]);size=length(span)
-        if other is None or size<EPS:return (0.,0.,0.)
-        incoming=sub(points[a],points[other])
-        direction=norm(add(norm(incoming),norm(span)))
-        # A true U-turn has no unique tangent. A zero handle avoids a loop.
-        if dot(direction,norm(span))<=EPS:return (0.,0.,0.)
-        # Bezier handle = tangent / 3, hence <= 0.4 * this chord.
-        # Both handles project forwards and their combined projection is
-        # <= 0.8 * chord: the control polygon cannot double back along it.
-        return mul(direction,1.20*size)
-    def evaluate(a,b,t):
-        u,v=edge_key(a,b)
-        pair=(u,v)
-        if pair not in cache:
-            cache[pair]=(points[u],points[v],tangent(u,v),mul(tangent(v,u),-1.0))
-        p0,p1,m0,m1=cache[pair]
-        t=t if a==u else 1-t
-        tt=t*t; ttt=tt*t
-        return add(add(mul(p0,2*ttt-3*tt+1),mul(p1,-2*ttt+3*tt)),
-                   add(mul(m0,ttt-2*tt+t),mul(m1,ttt-tt)))
-    return evaluate
+    from .curves import CurveNetwork
+    return CurveNetwork(points,plans)
 
 
 def sample_smooth(points,path,count,evaluate,ident):
@@ -413,29 +373,9 @@ def plan_widths(plans):
     return {p.index:widths[root(p.index)] for p in plans}
 
 
-def zipper_path(na,nb):
-    """Fixed monotone correspondence; only count changes can alter it.
-
-    With equal counts, every step is a quad row. With unequal counts, local
-    one-sided transitions become triangles nearest the compressed rail.
-    """
-    if na<1 or nb<1: return []
-    a=b=0
-    path=[(a,b)]
-    while a<na or b<nb:
-        if a==na: b+=1
-        elif b==nb: a+=1
-        else:
-            da=(a+1)/na; db=(b+1)/nb
-            if abs(da-db)<0.5/max(na,nb): a+=1; b+=1
-            elif da<db: a+=1
-            else: b+=1
-        path.append((a,b))
-    return path
-
 
 def generate(points,boundaries,settings=None,rows=12,max_polygons=200000,
-             previous=None,caps=None):
+             previous=None,caps=None,reference_length=0.):
     points=[tuple(map(float,p)) for p in points]
     settings=list(settings or [ZoneSettings() for _ in boundaries])
     rows=max(2,min(256,int(rows)))
@@ -495,7 +435,9 @@ def generate(points,boundaries,settings=None,rows=12,max_polygons=200000,
     out.base_rows=rows
     evaluate=make_edge_evaluator(points,plans)
     cap_profiles=_cap_profiles(points,plans,widths,evaluate)
-    registry=RailRegistry(points,evaluate,rows)
+    registry=RailRegistry(points,evaluate,rows,plans,reference_length,max_polygons)
+    out.reference_length=registry.reference_length
+    out.target_spacing=registry.spacing
     vertex_index={}
     produced=set()
     def put(key,pos):
@@ -556,22 +498,25 @@ def generate(points,boundaries,settings=None,rows=12,max_polygons=200000,
                 signature=tuple(sorted(face))
                 if signature in produced or signature in local_keys:return
                 local_keys.add(signature);local.append(tuple(face))
-            def band(a,b):
-                path=zipper_path(len(a)-1,len(b)-1)
+            def band(a,b,fa,fb):
+                from .ribbon import zipper_flows
+                path=zipper_flows(fa,fb)
                 for (i,j),(ni,nj) in zip(path,path[1:]):emit([a[i],b[j],b[nj],a[ni]])
-            if w==1:band(actual_a,actual_b)
+            flows_a=registry.flows(ca,cb,ca,left)
+            flows_b=registry.flows(ca,cb,cb,right)
+            if w==1:band(actual_a,actual_b,flows_a,flows_b)
             else:
-                band(actual_a,[row[1] for row in grid])
+                band(actual_a,[row[1] for row in grid],flows_a,fractions)
                 for x in range(1,w-1):
-                    band([row[x] for row in grid],[row[x+1] for row in grid])
-                band([row[w-1] for row in grid],actual_b)
+                    band([row[x] for row in grid],[row[x+1] for row in grid],fractions,fractions)
+                band([row[w-1] for row in grid],actual_b,fractions,flows_b)
             if len(local)+len(out.faces)>max_polygons:raise ValueError('Превышен лимит полигонов')
             produced.update(local_keys)
             out.faces.extend(local);out.owners.extend([p.index]*len(local))
             out.surface_grids[p.index]=tuple(tuple(row) for row in grid)
             out.surface_sections[p.index]=tuple(sections)
             out.rail_samples[p.index]=(tuple(left),tuple(right))
-            registry.register(ca,left,_plan_priority(p));registry.register(cb,right,_plan_priority(p))
+            registry.register(ca,left);registry.register(cb,right)
         except (ValueError,IndexError,ZeroDivisionError) as exc:
             out.warnings[p.index]=str(exc)
     out.faces,out.owners=registry.stitch(out.vertices,out.faces,out.owners,vertex_index)

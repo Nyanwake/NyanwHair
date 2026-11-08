@@ -1,11 +1,11 @@
-"""NyanwHair 0.35.12 Guided Surfaces (preview)."""
+"""NyanwHair 0.35.13 Guided Surfaces (preview)."""
 bl_info = {
     'name': 'NyanwHair - Guided Surfaces',
     'author': 'NyanWake',
-    'version': (0,35,12),
+    'version': (0,35,13),
     'blender': (5,1,0),
     'location': 'View3D > Sidebar > NyanwHair',
-    'description': 'Editable face-zones with smooth cubic guides and inherited mesh rows',
+    'description': 'Continuous hair splines, proportional ribbon detail and viewport X-ray',
     'category': 'Mesh',
 }
 

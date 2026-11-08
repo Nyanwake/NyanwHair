@@ -293,6 +293,12 @@ def _prepare_object(obj):
             bmesh.update_edit_mesh(obj.data,loop_triangles=False,destructive=False)
     finally:
         if owned: bm.free()
+    obj.show_in_front=False
+    if obj.nh35.detail_length<=0:
+        _rebuild(obj,True)
+        cached=_CACHE.get(obj.as_pointer())
+        if cached and cached.get('result'):
+            obj.nh35.detail_length=cached['result'].reference_length
 
 
 def _selection_state(bm):
@@ -397,8 +403,8 @@ def _capture(obj):
         if owned: bm.free()
 
 
-def _signature(positions,zones,options,rows,caps):
-    return (int(rows),
+def _signature(positions,zones,options,rows,caps,detail_length=0.):
+    return (int(rows),round(detail_length,8),
             tuple(tuple(round(x,6) for x in p) for p in positions),
             tuple(zones),tuple(caps),
             tuple((o.width,round(o.bulge,5),round(o.bias,5),o.flip,o.order) for o in options))
@@ -415,7 +421,7 @@ def _rebuild(obj,force=False):
     positions,zones,options,active,caps=_capture(obj)
     key=obj.as_pointer()
     rows=obj.nh35.rows
-    signature=_signature(positions,zones,options,rows,caps)
+    signature=_signature(positions,zones,options,rows,caps,obj.nh35.detail_length)
     old=_CACHE.get(key)
     if old and old['signature']==signature and not force:
         if active>=0: old['active']=active
@@ -435,7 +441,7 @@ def _rebuild(obj,force=False):
     # coordinate-only changes reuse the same face plan and mesh row counts.
     previous=(old['result'] if old and old['topology']==topology else None)
     try:
-        result=core.generate(positions,zones,options,rows,previous=previous,caps=caps)
+        result=core.generate(positions,zones,options,rows,previous=previous,caps=caps,reference_length=obj.nh35.detail_length)
         warnings=result.warnings
         if warnings:
             status='; '.join('Зона %d: %s'%(i+1,msg)
@@ -512,7 +518,8 @@ class NHGuidedProperties(PropertyGroup):
     enabled: BoolProperty(default=False)
     live: BoolProperty(name='Live',default=True)
     show_preview: BoolProperty(name='GPU-предпросмотр',default=True)
-    rows: IntProperty(name='Шаги участка по длине',default=12,min=2,max=160,description='Число шагов между топологическими узлами; опорные точки не добавляют ряды')
+    rows: IntProperty(name='Детализация по длине',default=12,min=2,max=160,description='Общая плотность рядов: короткие пряди получают меньше шагов, длинные больше')
+    detail_length: FloatProperty(default=0.,min=0.,options={'HIDDEN'})
     show_tint: BoolProperty(name='Подсветка зоны',default=True)
     tint: FloatVectorProperty(name='Цвет зоны',size=3,subtype='COLOR',min=0.0,max=1.0,default=_COLOR_TINT)
     opacity: FloatProperty(name='Непрозрачность',default=0.16,min=0,max=0.65,subtype='FACTOR')
@@ -566,7 +573,7 @@ class NYANW35_OT_create_guide(Operator):
         guide.nh35.enabled=True
         guide.nh35.show_preview=True
         guide.display_type='WIRE'
-        guide.show_in_front=True
+        guide.show_in_front=False
         _prepare_object(guide)
         _rebuild(guide,True)
         self.report({'INFO'},'Управляющая грань создана. Tab: редактирование. F: новая зона.')
@@ -588,7 +595,7 @@ class NYANW35_OT_activate(Operator):
         guide.nh35.enabled=True
         guide.nh35.show_preview=True
         guide.display_type='WIRE'
-        guide.show_in_front=True
+        guide.show_in_front=False
         _prepare_object(guide)
         _rebuild(guide,True)
         return {'FINISHED'}
@@ -650,7 +657,7 @@ class NYANW35_OT_demo(Operator):
         context.view_layer.objects.active=guide
         guide.nh35.enabled=True
         guide.nh35.show_preview=True
-        guide.display_type='WIRE'; guide.show_in_front=True
+        guide.display_type='WIRE'; guide.show_in_front=False
         _prepare_object(guide)
         _rebuild(guide,True)
         return {'FINISHED'}
@@ -1269,7 +1276,7 @@ class NYANW35_OT_hair_loop(Operator):
 
 
 class NYANW35_PT_main(Panel):
-    bl_label='NyanwHair v0.35.12'
+    bl_label='NyanwHair v0.35.13'
     bl_idname='NYANW35_PT_main'
     bl_space_type='VIEW_3D'
     bl_region_type='UI'
@@ -1328,6 +1335,34 @@ class NYANW35_PT_main(Panel):
         layout.label(text='Два выбранных торцевых ребра: задать направление',icon='DOT')
 
 
+_STROKE_SHADER=None
+
+
+def _stroke_shader():
+    global _STROKE_SHADER
+    if _STROKE_SHADER is None:
+        info=gpu.types.GPUShaderCreateInfo()
+        info.push_constant('MAT4','viewProjectionMatrix')
+        info.push_constant('VEC4','color')
+        info.push_constant('VEC4','projectionData')
+        info.vertex_in(0,'VEC3','pos')
+        info.fragment_out(0,'VEC4','fragColor')
+        info.vertex_source("""void main(){
+            gl_Position=viewProjectionMatrix*vec4(pos,1.0);
+            float w=max(abs(gl_Position.w),0.000001);
+            float pixelWorld=2.0*w/(abs(projectionData.x)*projectionData.w);
+            float gradient=abs(projectionData.y*gl_Position.w-gl_Position.z*projectionData.z)/(w*w);
+            gl_Position.z-=max(0.0000001,0.75*pixelWorld*gradient)*gl_Position.w;
+        }""")
+        info.fragment_source("void main(){fragColor=color;}")
+        _STROKE_SHADER=gpu.shader.create_from_info(info)
+    _STROKE_SHADER.bind()
+    projection=gpu.matrix.get_projection_matrix()
+    _STROKE_SHADER.uniform_float('viewProjectionMatrix',projection@gpu.matrix.get_model_view_matrix())
+    _STROKE_SHADER.uniform_float('projectionData',(projection[1][1],projection[2][2],projection[3][2],max(1,gpu.state.viewport_get()[3])))
+    return _STROKE_SHADER
+
+
 def _gpu_batches(cache,guide,shader):
     """Cache GPU uploads by result identity and object transform.
 
@@ -1369,13 +1404,59 @@ def _gpu_batches(cache,guide,shader):
             b=poly[(i+1)%len(poly)]
             if a!=b: edges.add(tuple(sorted((a,b))))
     solid=batch_for_shader(shader,'TRIS',{'pos':tris,'color':colors}) if tris else None
-    wire_shader=gpu.shader.from_builtin('UNIFORM_COLOR')
+    wire_shader=_stroke_shader()
     lines=[coords[j] for e in sorted(edges) for j in e]
     wire=batch_for_shader(wire_shader,'LINES',{'pos':lines}) if lines else None
     rails=batch_for_shader(wire_shader,'LINES',{'pos':guide_lines}) if guide_lines else None
     cache['gpu_signature']=signature
     cache['gpu_batches']=(solid,wire,rails)
     return solid,wire,rails
+
+
+def _xray_enabled(ctx):
+    space=ctx.space_data
+    if space is None or space.type!='VIEW_3D':return False
+    shading=space.shading
+    return (shading.show_xray_wireframe if shading.type=='WIREFRAME' else
+            shading.show_xray if shading.type=='SOLID' else False)
+
+
+def _point_visible(ctx,world):
+    """POST_PIXEL markers use the same occlusion intent as 3D strokes."""
+    if _xray_enabled(ctx):return True
+    screen=view3d_utils.location_3d_to_region_2d(ctx.region,ctx.region_data,world)
+    if screen is None:return False
+    origin=view3d_utils.region_2d_to_origin_3d(ctx.region,ctx.region_data,screen)
+    delta=world-origin;distance=delta.length
+    if distance<1e-8:return True
+    direction=delta/distance
+    # One-pixel tolerance keeps a source point visible on its own sampled
+    # curved boundary without exposing points through an overlapping sheet.
+    neighbor=view3d_utils.region_2d_to_location_3d(ctx.region,ctx.region_data,(screen.x+1,screen.y),world)
+    tolerance=max(1e-5,(neighbor-world).length*.75)
+    for guide in ctx.scene.objects:
+        if not is_guide(guide) or not guide.visible_get(view_layer=ctx.view_layer) or not guide.nh35.show_preview:continue
+        cached=_CACHE.get(guide.as_pointer())
+        if not cached or not cached['result'].faces:continue
+        result=cached['result']
+        if cached.get('pick_result') is not result:
+            cached['pick_bvh']=BVHTree.FromPolygons(result.vertices,result.faces)
+            cached['pick_result']=result
+        inverse=guide.matrix_world.inverted_safe()
+        hit,_,_,_=cached['pick_bvh'].ray_cast(inverse@origin,(inverse.to_3x3()@direction).normalized())
+        if hit is not None and (guide.matrix_world@hit-origin).length<distance-tolerance:return False
+    # Native source faces are wire guides, so skip them while checking
+    # ordinary scene occluders (head, other meshes and baked surfaces).
+    cursor=origin.copy();depsgraph=ctx.evaluated_depsgraph_get()
+    for _ in range(32):
+        remaining=(world-cursor).length-tolerance
+        if remaining<=0:break
+        hit,location,_,_,obj,_=ctx.scene.ray_cast(depsgraph,cursor,direction,distance=remaining)
+        if not hit:break
+        original=obj.original if hasattr(obj,'original') else obj
+        if not is_guide(original) and original.visible_get(view_layer=ctx.view_layer):return False
+        cursor=location+direction*max(tolerance*.1,1e-6)
+    return True
 
 
 def _draw_preview():
@@ -1388,6 +1469,7 @@ def _draw_preview():
     if is_guide(active) and active.nh35.live:
         try: _rebuild(active)
         except (ReferenceError,RuntimeError): pass
+    overlay_depth='NONE' if _xray_enabled(ctx) else 'LESS_EQUAL'
     try:
         shader=gpu.shader.from_builtin('SMOOTH_COLOR')
         previous_depth=gpu.state.depth_test_get()
@@ -1396,7 +1478,7 @@ def _draw_preview():
         gpu.state.depth_test_set('LESS_EQUAL')
         gpu.state.depth_mask_set(True)
         for obj in ctx.scene.objects:
-            if not is_guide(obj) or obj.hide_viewport or not obj.nh35.show_preview: continue
+            if not is_guide(obj) or not obj.visible_get(view_layer=ctx.view_layer) or not obj.nh35.show_preview: continue
             cached=_CACHE.get(obj.as_pointer())
             if not cached: continue
             result=cached['result']
@@ -1408,9 +1490,9 @@ def _draw_preview():
                 solid.draw(shader)
             gpu.state.depth_mask_set(False)
             if wire:
-                # The dark wire is an optional visual guide: thin, quiet.
-                gpu.state.depth_test_set('NONE')
-                line_shader=gpu.shader.from_builtin('UNIFORM_COLOR')
+                # Mesh strokes obey the viewport's X-ray toggle.
+                gpu.state.depth_test_set(overlay_depth)
+                line_shader=_stroke_shader()
                 line_shader.bind()
                 line_shader.uniform_float('color',(.10,.13,.17,.42))
                 wire.draw(line_shader)
@@ -1418,8 +1500,8 @@ def _draw_preview():
             if rails:
                 # Smooth curves show the actual guiding shape, not only
                 # the straight native Blender control edges.
-                gpu.state.depth_test_set('NONE')
-                guide_shader=gpu.shader.from_builtin('UNIFORM_COLOR')
+                gpu.state.depth_test_set(overlay_depth)
+                guide_shader=_stroke_shader()
                 guide_shader.bind()
                 guide_shader.uniform_float('color',_COLOR_BLUE)
                 gpu.state.line_width_set(2.4)
@@ -1430,10 +1512,10 @@ def _draw_preview():
                 bm=bmesh.from_edit_mesh(obj.data)
                 selected=_selected_guide_batch(cached,bm,ctx.tool_settings.mesh_select_mode[0])
                 if selected:
-                    selected_shader=gpu.shader.from_builtin('UNIFORM_COLOR')
+                    selected_shader=_stroke_shader()
                     selected_shader.bind()
                     selected_shader.uniform_float('color',(1.,.74,.46,.72))
-                    gpu.state.depth_test_set('NONE')
+                    gpu.state.depth_test_set(overlay_depth)
                     gpu.state.line_width_set(3.4)
                     selected.draw(selected_shader)
                     gpu.state.line_width_set(1.)
@@ -1469,10 +1551,10 @@ def _draw_preview():
             preview=_CUT_PREVIEW
             coords=preview['line']
             if coords:
-                shader_line=gpu.shader.from_builtin('UNIFORM_COLOR')
+                shader_line=_stroke_shader()
                 shader_line.bind()
                 shader_line.uniform_float('color',(.95,.77,.41,1.0))
-                gpu.state.depth_test_set('NONE')
+                gpu.state.depth_test_set(overlay_depth)
                 if len(coords)>=2:
                     batch=batch_for_shader(shader_line,'LINE_STRIP',{'pos':[tuple(p) for p in coords]})
                     gpu.state.line_width_set(3.0)
@@ -1490,7 +1572,7 @@ def _draw_preview():
 
 
 def _draw_control_points():
-    """Pixel-space control markers: independent of depth and polygon shading.
+    """Pixel-space control markers with viewport-dependent occlusion.
 
     POST_VIEW points were unreliable with different 3D draw order / point
     clipping in Blender 5.2. POST_PIXEL triangles remain plainly visible.
@@ -1506,8 +1588,10 @@ def _draw_control_points():
         active = bm.select_history.active
         groups = [[], [], []]
         for vert in bm.verts:
+            world=obj.matrix_world @ vert.co
+            if not _point_visible(ctx,world):continue
             pos = view3d_utils.location_3d_to_region_2d(
-                ctx.region, ctx.region_data, obj.matrix_world @ vert.co)
+                ctx.region, ctx.region_data, world)
             if pos is None or not (0 <= pos.x <= ctx.region.width and
                                    0 <= pos.y <= ctx.region.height):
                 continue
@@ -1546,7 +1630,7 @@ def _draw_control_points():
             # Explicit 2D marker, 7-pixel radius. It remains visible on top
             # of source vertices, preview lines, and the generated surface.
             preview=_CUT_PREVIEW.get('line',[])
-            if preview:
+            if preview and _point_visible(ctx,preview[0]):
                 marker=view3d_utils.location_3d_to_region_2d(ctx.region,ctx.region_data,preview[0])
                 if marker is not None:
                     position=[(marker.x,marker.y)]
@@ -1671,7 +1755,8 @@ def register():
 
 
 def unregister():
-    global _RUNNING,_DRAW_HANDLER,_POINT_HANDLER,_CUT_PREVIEW
+    global _RUNNING,_DRAW_HANDLER,_POINT_HANDLER,_CUT_PREVIEW,_STROKE_SHADER
+    _STROKE_SHADER=None
     _RUNNING=False
     _clear_zone_pick()
     _CUT_PREVIEW=None

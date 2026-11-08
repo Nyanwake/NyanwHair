@@ -1,4 +1,4 @@
-"""First-owner rail schedules and local stitches; no Blender dependencies.
+"""Shared curve sampling at a common physical spacing; no Blender dependencies.
 
 The curve evaluator is supplied by core. Topological sample identity is a
 source vertex or an oriented parameter on a source edge, never a position.
@@ -66,105 +66,77 @@ class CurvePath:
     def sample(self,fractions):return [self.at(u) for u in fractions]
 
 
-def _apportion(weights,budget):
-    """Allocate only the remaining budget, not rows anew for every fragment."""
-    if not weights:return []
-    budget=max(len(weights),int(budget))
-    extra=budget-len(weights);total=max(EPS,sum(weights))
-    raw=[extra*w/total for w in weights]
-    result=[1+int(x) for x in raw]
-    for i in sorted(range(len(weights)),key=lambda i:(-(raw[i]-int(raw[i])),i))[:budget-sum(result)]:
-        result[i]+=1
-    return result
-
 
 class RailRegistry:
-    """Schedules are rebuilt in persisted creation order on every generation.
+    """Sample each physical curve once, then share its topological identities.
 
-    Only the first owner chooses samples. Later owners keep those positions;
-    a new endpoint inside an old cell is stitched locally after all walls.
-    No Python cache or geometric nearest-owner guess is involved.
+    Logical junctions are mandatory anchors. Regular support vertices do
+    not allocate rows. No RAM cache or per-zone length budget is involved.
     """
-    def __init__(self,points,evaluate,rows):
+    def __init__(self,points,evaluate,rows,plans,reference_length=0.,max_samples=200000):
         self.points=points;self.evaluate=evaluate;self.rows=rows
-        self.stations=defaultdict(dict);self.owners={};self.paths={};self.boundaries=[]
+        self.stations=defaultdict(dict);self.paths={};self.boundaries=[]
+        self.maps={}
+        chains=[]
+        for path in evaluate.paths:
+            if sum(length(sub(points[b],points[a])) for a,b in zip(path,path[1:]))>EPS:
+                chains.append(self.curve(path))
+        self.reference_length=reference_length if reference_length>EPS else max((c.total for c in chains),default=1.)
+        self.spacing=self.reference_length/rows
+        mandatory={v for p in plans for rail in (p.left,p.right) for v in (rail[0],rail[-1])}
+        mandatory.update(v for v,neighbors in evaluate.adjacency.items() if len(neighbors)!=2)
+        allocated=0
+        for curve in chains:
+            stops=[(0.,curve.path[0])]
+            stops.extend((curve.fraction(('v',v)),v) for v in curve.path[1:-1] if v in mandatory)
+            stops.append((1.,curve.path[-1]))
+            stops.sort()
+            for (lo,first),(hi,last) in zip(stops,stops[1:]):
+                intervals=max(1,int((hi-lo)*curve.total/self.spacing+.5))
+                allocated+=intervals
+                if allocated>2*max_samples:raise ValueError('Превышен лимит точек детализации')
+                samples=curve.sample(lo+(hi-lo)*i/intervals for i in range(intervals+1))
+                samples[0]=(('v',first),points[first]);samples[-1]=(('v',last),points[last])
+                for key,pos in samples:
+                    if key[0]=='s':self.stations[(key[1],key[2])][key[3]]=(key,pos)
+                    else:
+                        vertex=key[1]
+                        for adjacent in evaluate.adjacency[vertex]:
+                            edge=edge_key(vertex,adjacent);t=0. if vertex==edge[0] else 1.
+                            self.stations[edge][t]=(key,pos)
 
     def curve(self,path):
         path=tuple(path)
         if path not in self.paths:self.paths[path]=CurvePath(self.points,path,self.evaluate)
         return self.paths[path]
 
-    def priority(self,curve):
-        return min((self.owners[e] for e in curve.edges if e in self.owners),default=None)
-
-    def inherited(self,curve):
-        """Existing subpaths plus a bounded remainder for genuinely new edges."""
-        path=curve.path;n=len(path)-1;parts=[];i=0
-        while i<n:
-            known=edge_key(path[i],path[i+1]) in self.owners
-            end=i+1
-            while end<n and (edge_key(path[end],path[end+1]) in self.owners)==known:end+=1
-            if known:
-                samples={('v',path[i]):self.points[path[i]],('v',path[end]):self.points[path[end]]}
-                for j in range(i,end):
-                    for key,pos in self.stations[edge_key(path[j],path[j+1])].values():
-                        s=curve.parameter(key)
-                        if s is not None and i-1e-9<=s<=end+1e-9:samples[key]=pos
-                items=sorted(samples.items(),key=lambda pair:curve.parameter(pair[0]))
-                parts.append((True,i,end,items))
-            else:parts.append((False,i,end,None))
-            i=end
-        if not any(p[0] for p in parts):return None
-        locked=sum(len(p[3])-1 for p in parts if p[0])
-        free=[p for p in parts if not p[0]]
-        weights=[curve.offsets[p[2]]-curve.offsets[p[1]] for p in free]
-        budgets=iter(_apportion(weights,max(len(free),self.rows-locked)))
-        output=[]
-        for known,i,end,samples in parts:
-            if not known:
-                budget=next(budgets)
-                lo=curve.offsets[i]/curve.total;hi=curve.offsets[end]/curve.total
-                samples=curve.sample(lo+(hi-lo)*j/budget for j in range(budget+1))
-                samples[0]=(('v',path[i]),self.points[path[i]])
-                samples[-1]=(('v',path[end]),self.points[path[end]])
-            output.extend(samples if not output else samples[1:])
-        return output
+    def boundary(self,curve):
+        samples={('v',curve.path[0]):self.points[curve.path[0]],
+                 ('v',curve.path[-1]):self.points[curve.path[-1]]}
+        for edge in curve.edges:
+            for key,pos in self.stations[edge].values():
+                if curve.parameter(key) is not None:samples[key]=pos
+        return sorted(samples.items(),key=lambda item:curve.parameter(item[0]))
 
     def pair(self,left,right):
+        from .ribbon import RibbonMap
         a=self.curve(left);b=self.curve(right)
-        pa=self.priority(a);pb=self.priority(b)
-        master_left=pb is None or pa is not None and pa<=pb
-        master=a if master_left else b
-        actual=self.inherited(master)
-        if actual is None:actual=master.sample(i/self.rows for i in range(self.rows+1))
-        fractions=[master.fraction(key) for key,pos in actual]
-        fractions[0]=0.;fractions[-1]=1.
-        other=b if master_left else a
-        paired=other.sample(fractions)
-        actual_other=self.inherited(other)
-        if actual_other is None:actual_other=paired
-        if master_left:return a,b,actual,actual_other,actual,paired,fractions
-        return a,b,actual_other,actual,paired,actual,fractions
+        left_samples=self.boundary(a);right_samples=self.boundary(b)
+        mapping=RibbonMap(a,b);self.maps[a.path,b.path]=mapping
+        count=max(1,int(mapping.total/self.spacing+.5))
+        fractions=[i/count for i in range(count+1)]
+        paired=[mapping.at(u) for u in fractions]
+        return a,b,left_samples,right_samples,[p[0] for p in paired],[p[1] for p in paired],fractions
 
-    def register(self,curve,samples,priority):
-        path=curve.path
-        for edge in curve.edges:self.owners.setdefault(edge,priority)
-        for key,pos in samples:
-            if key[0]=='s':
-                edge=(key[1],key[2]);self.stations[edge].setdefault(key[3],(key,pos))
-            elif key[0]=='v':
-                i=curve.vertices[key[1]]
-                for j in (i-1,i):
-                    if 0<=j<len(path)-1:
-                        edge=edge_key(path[j],path[j+1]);t=0. if key[1]==edge[0] else 1.
-                        self.stations[edge].setdefault(t,(key,pos))
+    def flows(self,a,b,curve,samples):
+        mapping=self.maps[a.path,b.path]
+        return [mapping.fraction(curve,key) for key,pos in samples]
+
+    def register(self,curve,samples):
         self.boundaries.append((curve,samples))
 
     def normal(self,a,b,u,left,right):
-        eps=.001
-        lo=max(0.,u-eps);hi=min(1.,u+eps)
-        tangent=sub(add(a.at(hi)[1],b.at(hi)[1]),add(a.at(lo)[1],b.at(lo)[1]))
-        return norm(cross(sub(right,left),tangent))
+        return self.maps[a.path,b.path].normal(u,left,right)
 
     def stitch(self,vertices,faces,owners,index):
         """Insert missing samples only into cells bordering the changed seam."""
