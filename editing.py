@@ -273,11 +273,12 @@ class NYANW35_OT_extrude(Operator):
         a._rebuild(obj);backup=bmesh.from_edit_mesh(obj.data).copy();selection=a._selection_state(bmesh.from_edit_mesh(obj.data));committed=False
         def operation(bm):
             data=extrude_stage(bm,a._CACHE[obj.as_pointer()]['result'],obj.matrix_world.inverted_safe().to_3x3()@Vector(self.offset))
-            validate_stage(bm,obj);return data
+            if data['mode']!='WIRE':validate_stage(bm,obj)
+            return data
         try:
-            a._edit_transaction(obj,operation);committed=True
+            data=a._edit_transaction(obj,operation);committed=True
             a._prepare_object(obj);a._rebuild(obj,True)
-            if a._CACHE[obj.as_pointer()]['error_count']:raise ValueError('Не удалось построить поверхность')
+            if data['mode']!='WIRE' and a._CACHE[obj.as_pointer()]['error_count']:raise ValueError('Не удалось построить поверхность')
         except (ValueError,RuntimeError,ReferenceError) as exc:
             if committed:restore_backup(obj,backup,selection);a._CACHE.pop(obj.as_pointer(),None);a._rebuild(obj,True)
             self.report({'WARNING'},str(exc));return {'CANCELLED'}
@@ -298,7 +299,7 @@ class NYANW35_OT_extrude(Operator):
         _ACTIVE.add(self);context.window_manager.modal_handler_add(self);self._status(context)
         return {'RUNNING_MODAL'}
     def _status(self,context):
-        label={'EXTEND':'Удлинение','BRANCH':'Ответвление','VOLUME':'E-Face'}.get(self._data['mode'],'Вытягивание')
+        label={'EXTEND':'Удлинение','BRANCH':'Ответвление','VOLUME':'E-Face','WIRE':'Каркас'}.get(self._data['mode'],'Вытягивание')
         if self._data.get('count',1)>1:label+=' ×%d'%self._data['count']
         context.area.header_text_set(label+' · мышь / X Y Z / число · Enter: принять · Esc: отменить')
     def _move(self,context,event):
@@ -350,7 +351,7 @@ class NYANW35_OT_extrude(Operator):
             if self._delta.length<1e-8:self._end(context,True);return {'CANCELLED'}
             try:
                 a._prepare_object(self._obj);a._rebuild(self._obj,True)
-                if a._CACHE[self._obj.as_pointer()]['error_count']:raise ValueError('Вытягивание даёт недопустимую поверхность')
+                if self._data['mode']!='WIRE' and a._CACHE[self._obj.as_pointer()]['error_count']:raise ValueError('Вытягивание даёт недопустимую поверхность')
             except (ValueError,RuntimeError,ReferenceError) as exc:self.report({'WARNING'},str(exc));self._end(context,True);return {'CANCELLED'}
             self.offset=self._delta;self._end(context,False);return {'FINISHED'}
         if event.value=='PRESS' and event.type in ('X','Y','Z'):

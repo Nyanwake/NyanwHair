@@ -1952,7 +1952,7 @@ def _draw_extra_panels(layout,context,obj,cached,edit):
 
 
 class NYANW35_PT_main(Panel):
-    bl_label='NyanwHair v0.35.27'
+    bl_label='NyanwHair v0.35.28'
     bl_idname='NYANW35_PT_main'
     bl_space_type='VIEW_3D'
     bl_region_type='UI'
@@ -2329,7 +2329,7 @@ def _draw_control_points():
         from . import controls
         cap_lines,cap_vertices=controls.caps(bm,obj,cache)
         signature=signature+(tuple(sorted(cap_vertices.items())),)
-        point_sets=[[],[],[],[],[]]
+        point_sets=[[],[],[],[],[],[],[]]
         if record is None or record[0]!=signature:
             occlusion=_occlusion_state(ctx)
             for vert in bm.verts:
@@ -2338,8 +2338,9 @@ def _draw_control_points():
                 pos=view3d_utils.location_3d_to_region_2d(ctx.region,ctx.region_data,world)
                 if pos is None or not (0<=pos.x<=ctx.region.width and 0<=pos.y<=ctx.region.height):continue
                 if not _point_visible(ctx,world,occlusion,pos):continue
-                group=3+cap_vertices[vert.index] if vert.index in cap_vertices else 2 if vert is active and vert.select else 1 if vert.select else 0
                 if vert is active and vert.select:group=2
+                elif vert.index in cap_vertices:group=(5 if vert.select else 3)+cap_vertices[vert.index]
+                else:group=1 if vert.select else 0
                 point_sets[group].append((pos.x,pos.y))
         old_mask = gpu.state.depth_mask_get()
         old_depth = gpu.state.depth_test_get()
@@ -2351,15 +2352,15 @@ def _draw_control_points():
             return [(x+dx*radius,y+dy*radius) for x,y in points for dx,dy in _CIRCLE_OFFSETS]
         if record is None or record[0]!=signature:
             batches=[]
-            for coords,color,radius in zip(point_sets,(*style.points,*style.cap_points),style.radii):
+            for coords,(color,radius,outline_color,outline_width) in zip(point_sets,palette.markers(style)):
                 if coords:
-                    outline=batch_for_shader(shader,'TRIS',{'pos':circles(coords,radius+style.outline_width)})
+                    outline=batch_for_shader(shader,'TRIS',{'pos':circles(coords,radius+outline_width)})
                     shade=batch_for_shader(shader,'TRIS',{'pos':circles(coords,radius)})
-                    batches.append((outline,shade,color))
+                    batches.append((outline,shade,color,outline_color))
             record=(signature,batches);saved[region_key]=record
             if len(saved)>8:saved.clear();saved[region_key]=record
-        for outline,shade,color in record[1]:
-            shader.bind();shader.uniform_float('color',style.outline);outline.draw(shader)
+        for outline,shade,color,outline_color in record[1]:
+            shader.bind();shader.uniform_float('color',outline_color);outline.draw(shader)
             shader.uniform_float('color',color);shade.draw(shader)
         if _CUT_PREVIEW is not None and _CUT_PREVIEW.get('kind')=='anchor':
             # Explicit 2D marker, 7-pixel radius. It remains visible on top

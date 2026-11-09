@@ -1,5 +1,5 @@
 """Shared-vertex cap extension and open region extrusion on a staged BMesh."""
-import bmesh
+import bpy,bmesh
 from mathutils import Vector
 from . import addon as a
 from . import editing as e
@@ -112,6 +112,7 @@ def _volume(bm,result,offset,faces=(),band=None):
     if not walls:raise ValueError('Не найден открытый контур основания')
     origin=sum((v.co for v in root),Vector())/len(root)
     moving={v:bm.verts.new(v.co+offset) for v in sorted(root,key=lambda v:v.index)}
+    candidates={v for source in removed for v in source.verts}
     for source in removed:bm.faces.remove(source)
     used={int(f[layer]) for f in bm.faces}
     def identity(attrs):
@@ -128,9 +129,19 @@ def _volume(bm,result,offset,faces=(),band=None):
         records[0][one,moving[one]]=0.;records[0][two,moving[two]]=0.
     for edge in old_edges:
         if edge.is_valid and not edge.link_faces:bm.edges.remove(edge)
-    for vertex in list(bm.verts):
-        if not vertex.link_edges:bm.verts.remove(vertex)
+    for vertex in candidates:
+        if vertex.is_valid and not vertex.link_edges:bm.verts.remove(vertex)
     return _finish(bm,offset,list(moving.values()),origin,normal,'VOLUME',len(walls),records)
+
+
+def _wire(bm,source,offset):
+    from . import groups
+    origin=source.co.copy();direction=sum((source.co-edge.other_vert(source).co for edge in source.link_edges),Vector())
+    vertex=bm.verts.new(origin+offset)
+    vertex[bm.verts.layers.int[a.L_VERTEX_GROUP]]=source[bm.verts.layers.int[a.L_VERTEX_GROUP]] or groups.active_id(bpy.context.edit_object)
+    bm.edges.new((source,vertex));e._select(bm,[vertex]);bm.verts.index_update()
+    return dict(mode='WIRE',indices=(vertex.index,),bases=(tuple(origin),),anchor=tuple(origin),
+        direction=tuple(direction.normalized() if direction.length else Vector((0,0,1))))
 
 
 def extrude(bm,result,offset):
@@ -154,6 +165,7 @@ def extrude(bm,result,offset):
             chosen.append(i)
         if chosen:targets.append((face,chosen))
     if targets:return _extend(bm,targets,offset)
+    if len(selected)==1:return _wire(bm,next(iter(selected)),offset)
     # Two opposite rail edges delimit a band; its old surface is removed.
     bands=[]
     for face in bm.faces:

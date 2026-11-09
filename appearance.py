@@ -77,13 +77,13 @@ def shader():
         info.fragment_source('''
         void main(){
             vec3 n=normalize(viewNormal)*(gl_FrontFacing?1.0:-1.0);
-            float intensity=.65+.35*abs(dot(n,normalize(vec3(.31,.43,.85))));
-            vec3 base=baseColor*.4*intensity;
+            float intensity=.75+.25*abs(dot(n,normalize(vec3(.31,.43,.85))));
+            vec3 base=baseColor*intensity*(lighting.z/.8);
             if(lighting.x>.5){
                 vec2 uv=clamp(n.xy*.5+.5,vec2(.001),vec2(.999));
-                base=baseColor*texture(matcapDiffuse,uv).rgb+lighting.y*texture(matcapSpecular,uv).rgb;
+                base=(baseColor*texture(matcapDiffuse,uv).rgb+lighting.y*texture(matcapSpecular,uv).rgb)*lighting.z;
             }
-            fragColor=vec4(mix(base*lighting.z,tint.rgb,tint.a),1.0);
+            fragColor=vec4(mix(base,tint.rgb,tint.a),1.0);
         }''')
         _SHADER=gpu.shader.create_from_info(info)
     return _SHADER

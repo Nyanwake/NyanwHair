@@ -15,8 +15,29 @@ def get_index(self):return next((i for i,g in enumerate(self.groups) if g.uid==s
 def set_index(self,value):
     if not _RESTORING and 0<=value<len(self.groups) and self.groups[value].uid!=self.active_group:
         bpy.ops.nyanw35.group('EXEC_DEFAULT',True,action='SELECT',uid=self.groups[value].uid)
+def _custom_color(group):
+    stored=group.get('color')
+    if stored is None:return None
+    # Older Undo journals sometimes materialized the original gray default.
+    # A new explicit edit is tagged, including an intentional choice of gray.
+    if not group.get('_nh35_color_custom',False) and all(abs(x-y)<1e-6 for x,y in zip(stored,DEFAULT_COLOR)):return None
+    return stored
+
+def color_get(group):
+    stored=_custom_color(group)
+    if stored is not None:return stored
+    from . import palette
+    obj=group.id_data
+    return palette.get(obj.nh35).group if hasattr(obj,'nh35') else DEFAULT_COLOR
+
+def color_set(group,value):
+    group['color']=tuple(value);group['_nh35_color_custom']=True
+
 def color(obj,uid):
-    group=settings(obj,uid);return tuple(group.color) if group else DEFAULT_COLOR
+    group=settings(obj,uid)
+    if group is not None:return tuple(group.color)
+    from . import palette
+    return palette.get(obj.nh35).group
 
 def changed(self,context):
     if _RESTORING:return
@@ -30,7 +51,7 @@ def changed(self,context):
 class NH35HairGroup(PropertyGroup):
     uid:IntProperty(default=1)
     name:StringProperty(name='Имя',default='Группа',update=changed)
-    color:FloatVectorProperty(name='Цвет группы',subtype='COLOR',size=3,default=DEFAULT_COLOR,min=0.,max=1.,update=changed)
+    color:FloatVectorProperty(name='Цвет группы',subtype='COLOR',size=3,default=DEFAULT_COLOR,min=0.,max=1.,get=color_get,set=color_set,update=changed)
     mirror_x:BoolProperty(name='Mirror X',default=False,update=changed,description='Связанное отражение по локальной оси X объекта; редактируется исходная половина')
     mirror_y:BoolProperty(name='Mirror Y',default=False,update=changed,description='Связанное отражение по локальной оси Y объекта; редактируется исходная половина')
     mirror_z:BoolProperty(name='Mirror Z',default=False,update=changed,description='Связанное отражение по локальной оси Z объекта; редактируется исходная половина')
@@ -51,7 +72,7 @@ def ensure(obj):
 
 
 def _state(obj):
-    return [active_id(obj),[[g.uid,g.name,list(g.color),[g.mirror_x,g.mirror_y,g.mirror_z],g.reference_length] for g in obj.nh35.groups]]
+    return [active_id(obj),[[g.uid,g.name,(list(_custom_color(g)) if _custom_color(g) is not None else None),[g.mirror_x,g.mirror_y,g.mirror_z],g.reference_length,_custom_color(g) is not None] for g in obj.nh35.groups]]
 
 
 def remember(obj):
@@ -102,8 +123,11 @@ def restore(obj):
     _RESTORING=True
     try:
         obj.nh35.groups.clear()
-        for uid,name,color,axes,reference in state[1]:
-            group=obj.nh35.groups.add();group.uid=uid;group.name=name;group.color=color
+        for record in state[1]:
+            uid,name,color,axes,reference=record[:5]
+            custom=record[5] if len(record)>5 else color is not None and any(abs(x-y)>1e-6 for x,y in zip(color,DEFAULT_COLOR))
+            group=obj.nh35.groups.add();group.uid=uid;group.name=name
+            if color is not None and custom:group.color=color
             group.mirror_x,group.mirror_y,group.mirror_z=axes;group.reference_length=reference
         obj.nh35.active_group=state[0]
     finally:_RESTORING=False
