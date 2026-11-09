@@ -1,4 +1,4 @@
-"""NyanwHair 0.35.24: shared curve contracts and independent reverse-sheet widths.
+"""NyanwHair 0.35.25: shared curve contracts and independent reverse-sheet widths.
 
 Pure Python, no Blender IDs or tags on vertices/edges. Blender face corners may
 store the user's chosen end caps; this module only consumes that choice.
@@ -91,6 +91,8 @@ class MeshResult:
     point_density: dict=field(default_factory=dict)
     layout_lengths: dict=field(default_factory=dict)
     surface_columns: dict=field(default_factory=dict)
+    phase_cache: object=field(default=None,repr=False,compare=False)
+    row_cache: dict=field(default_factory=dict,repr=False)
     sampling_cache: dict=field(default_factory=dict,repr=False)
     correspondence_cache: dict=field(default_factory=dict,repr=False)
     patch_cache: dict=field(default_factory=dict,repr=False)
@@ -540,11 +542,9 @@ def generate(points,boundaries,settings=None,rows=12,max_polygons=200000,
             def emit(face):
                 face=[v for j,v in enumerate(face) if v!=face[j-1]]
                 if len(face)>1 and face[0]==face[-1]:face.pop()
-                if len(set(face))<3 or length(newell(out.vertices,face))<EPS:return
+                if len(set(face))<3:return
                 if reverse:face.reverse()
-                signature=tuple(sorted(face))
-                if signature in produced or signature in local_keys:return
-                local_keys.add(signature);local.append(tuple(face))
+                local.append(tuple(face))
             mapping=registry.maps.get((ca.path,cb.path))
             density_here=any(registry.density.get(edge,1.)>1. for curve in (ca,cb) for edge in curve.edges)
             start_width,body_width,end_width=out.width_transitions[p.index]
@@ -564,6 +564,26 @@ def generate(points,boundaries,settings=None,rows=12,max_polygons=200000,
                 sections,columns,grid,reused=build_strip(p,w,registry,ca,cb,left,right,cap_profiles,put,emit,max_polygons,
                     out.patch_cache,getattr(previous,'patch_cache',{}))
                 out.reused_patches+=reused
+            # Batch Newell validation instead of Python vector operations for
+            # every edge of every output polygon, on every pointer movement.
+            from .topology import np
+            if np is not None and local:
+                offsets=[];aa=[];bb=[]
+                for face in local:
+                    offsets.append(len(aa));aa.extend(face);bb.extend(face[1:]+face[:1])
+                a=np.asarray([out.vertices[v] for v in aa]);b=np.asarray([out.vertices[v] for v in bb])
+                components=(a-b)*np.roll(a+b,-1,axis=1)
+                # Newell x uses y,z; y uses z,x; z uses x,y.
+                vectors=np.add.reduceat(np.roll(components,-1,axis=1),offsets,axis=0)
+                valid=np.einsum('ij,ij->i',vectors,vectors)>EPS*EPS
+            else:valid=[length(newell(out.vertices,face))>=EPS for face in local]
+            accepted=[]
+            for face,keep in zip(local,valid):
+                if not keep:continue
+                signature=tuple(sorted(face))
+                if signature in produced or signature in local_keys:continue
+                local_keys.add(signature);accepted.append(face)
+            local=accepted
             out.surface_columns[p.index]=tuple(tuple(column) for column in columns)
             if len(local)+len(out.faces)>max_polygons:raise ValueError('Превышен лимит полигонов')
             produced.update(local_keys)
@@ -574,6 +594,8 @@ def generate(points,boundaries,settings=None,rows=12,max_polygons=200000,
             registry.register(ca,left);registry.register(cb,right)
         except (ValueError,IndexError,ZeroDivisionError) as exc:
             out.warnings[p.index]=str(exc)
+    out.phase_cache=registry.phase_cache
+    out.row_cache=registry.row_cache
     out.sampling_cache=registry.geometry_cache
     out.correspondence_cache=registry.map_cache
     out.faces,out.owners=registry.stitch(out.vertices,out.faces,out.owners,vertex_index)

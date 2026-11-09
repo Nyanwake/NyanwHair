@@ -1,11 +1,11 @@
-"""NyanwHair 0.35.24 Guided Surfaces (preview)."""
+"""NyanwHair 0.35.25 Guided Surfaces (preview)."""
 bl_info = {
     'name': 'NyanwHair - Guided Surfaces',
     'author': 'NyanWake',
-    'version': (0,35,24),
+    'version': (0,35,25),
     'blender': (5,1,0),
     'location': 'View3D > Sidebar > NyanwHair',
-    'description': 'Guided hair with cached previews, independent volume and stable multi-selection',
+    'description': 'Guided hair with faster live curve editing and independent volume',
     'category': 'Mesh',
 }
 

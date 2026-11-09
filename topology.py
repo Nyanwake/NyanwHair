@@ -20,7 +20,7 @@ class CurvePath:
         self.edges={edge_key(a,b):(i,a,b) for i,(a,b) in enumerate(zip(path,path[1:]))}
         self.tables=[]; self.offsets=[0.]; self._samples={}
         if cached is not None:
-            self.tables,self.offsets,self.total=cached
+            self.tables,self.offsets,self.total,self._old_samples=cached
             return
         if np is not None and hasattr(evaluate,'coefficients'):
             coefficients=[]
@@ -66,7 +66,8 @@ class CurvePath:
 
     def at(self,u):
         if u in self._samples:return self._samples[u]
-        sample=self._at(u);self._samples[u]=sample
+        old=getattr(self,'_old_samples',{})
+        sample=old[u] if u in old else self._at(u);self._samples[u]=sample
         return sample
 
     def _at(self,u):
@@ -141,7 +142,13 @@ class RailRegistry:
         mandatory={v for p in plans for rail in (p.left,p.right) for v in (rail[0],rail[-1])}
         mandatory.update(v for v,neighbors in evaluate.adjacency.items() if len(neighbors)!=2)
         mandatory.update(a for (a,b),strength in getattr(evaluate,'smoothing',{}).items() if strength<1.)
-        self.phases=self._phases(chains,plans,mandatory)
+        # Phase depends on stored layout lengths and topology, not moving points.
+        phase_signature=(self.spacing,tuple(c.path for c in chains),tuple(sorted(self.layout_lengths.items())),
+            tuple(sorted(mandatory)),tuple((p.index,p.left,p.right,p.start,p.end,p.settings.order) for p in plans))
+        old_phase=getattr(previous,'phase_cache',None)
+        self.phases=old_phase[1] if old_phase and old_phase[0]==phase_signature else self._phases(chains,plans,mandatory)
+        self.phase_cache=(phase_signature,self.phases)
+        self.row_cache={};old_rows=getattr(previous,'row_cache',{})
         allocated=0;sections=[]
         for curve in chains:
             stops=[(0.,curve.path[0])]
@@ -169,14 +176,18 @@ class RailRegistry:
                     if depth<6 and length(sub(pm,mix(pa,pb,.5)))>self.spacing*.065:
                         return refine(a,middle,depth+1)[:-1]+refine(middle,b,depth+1)
                     return [a,b]
-                adaptive=[]
-                for a,b in zip(fractions,fractions[1:]):adaptive.extend(refine(a,b)[:-1])
-                adaptive.append(hi)
+                row_key=(curve.path,first,last)
+                row_signature=(curve.geometry_signature,self.spacing,lo,hi,phase,phase_difference,direction)
+                old=old_rows.get(row_key)
+                if old and old[0]==row_signature:adaptive=list(old[1])
+                else:
+                    adaptive=[]
+                    for a,b in zip(fractions,fractions[1:]):adaptive.extend(refine(a,b)[:-1])
+                    adaptive.append(hi)
+                self.row_cache[row_key]=(row_signature,tuple(adaptive))
                 allocated+=len(adaptive)-len(fractions)
                 if allocated>2*max_samples:raise ValueError('Превышен лимит точек детализации')
                 sections.append([curve,first,last,adaptive])
-                self._register_samples(curve,first,last,adaptive)
-        self.stations.clear()
         for curve,first,last,adaptive in sections:
             if any((edge_details or {}).get(edge,1.)>1.+1e-7 for edge in curve.edges):
                 from .density import redistribute
@@ -306,7 +317,7 @@ class RailRegistry:
             curve=CurvePath(self.points,path,self.evaluate,cached)
             curve.geometry_signature=signature
             self.paths[path]=curve
-            self.geometry_cache[path]=(signature,(curve.tables,curve.offsets,curve.total))
+            self.geometry_cache[path]=(signature,(curve.tables,curve.offsets,curve.total,curve._samples))
         return self.paths[path]
 
     def boundary(self,curve):

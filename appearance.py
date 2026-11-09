@@ -11,35 +11,52 @@ def sharp_edges(result):
     return sharp|set(getattr(result,"extra_sharp_edges",()))
 
 
-def corner_normals(result,smooth=True):
+def corner_normals(result,smooth=True,topology=None):
     old=getattr(result,'normal_cache',None)
     if old and old[0]==smooth:return old[1]
-    faces=result.faces;points=result.vertices;offsets=[];total=0;areas=[];edges={}
-    for face in faces:
-        offsets.append(total);area=(0.,0.,0.)
-        for a,b in zip(face,face[1:]+face[:1]):area=add(area,cross(points[a],points[b]))
-        areas.append(area)
-        for i,a in enumerate(face):
-            j=(i+1)%len(face);b=face[j];edges.setdefault(edge_key(a,b),[]).append(((a,total+i),(b,total+j)))
-        total+=len(face)
-    if not smooth:output=tuple(tuple(norm(area) for v in face) for face,area in zip(faces,areas))
+    import numpy as np
+    faces=result.faces
+    if not faces:
+        result.normal_cache=(smooth,());return ()
+    sharp=frozenset(sharp_edges(result)) if smooth else frozenset()
+    signature=(bool(smooth),tuple(faces),sharp)
+    topology=topology or getattr(result,'normal_topology',None)
+    if topology is None or topology[0]!=signature:
+        offsets=[];vertices=[];next_vertices=[];face_ids=[];edges={}
+        for fi,face in enumerate(faces):
+            offset=len(vertices);offsets.append(offset)
+            vertices.extend(face);next_vertices.extend(face[1:]+face[:1]);face_ids.extend([fi]*len(face))
+            if smooth:
+                for i,a in enumerate(face):
+                    j=(i+1)%len(face);b=face[j]
+                    edges.setdefault(edge_key(a,b),[]).append(((a,offset+i),(b,offset+j)))
+        if smooth:
+            parents=list(range(len(vertices)))
+            def root(x):
+                while parents[x]!=x:parents[x]=parents[parents[x]];x=parents[x]
+                return x
+            for key,group in edges.items():
+                if key in sharp or len(group)!=2:continue
+                one=dict(group[0]);two=dict(group[1])
+                for vertex in key:parents[root(one[vertex])]=root(two[vertex])
+            groups=np.asarray([root(i) for i in range(len(vertices))],dtype=np.intp)
+        else:groups=None
+        topology=(signature,np.asarray(offsets,dtype=np.intp),np.asarray(vertices,dtype=np.intp),
+            np.asarray(next_vertices,dtype=np.intp),np.asarray(face_ids,dtype=np.intp),groups)
+    _,offsets,vertices,next_vertices,face_ids,groups=topology
+    points=np.asarray(result.vertices,dtype=np.float64)
+    areas=np.add.reduceat(np.cross(points[vertices],points[next_vertices]),offsets,axis=0)
+    if smooth:
+        weighted=areas[face_ids]
+        sums=np.stack([np.bincount(groups,weights=weighted[:,axis],minlength=len(vertices)) for axis in range(3)],axis=1)
+        size=np.linalg.norm(sums,axis=1);sums/=np.where(size>1e-10,size,1.)[:,None];sums[size<=1e-10]=0.
+        values=sums[groups]
     else:
-        parents=list(range(total))
-        def root(x):
-            while parents[x]!=x:parents[x]=parents[parents[x]];x=parents[x]
-            return x
-        sharp=sharp_edges(result)
-        for key,group in edges.items():
-            if key in sharp or len(group)!=2:continue
-            one=dict(group[0]);two=dict(group[1])
-            for vertex in key:parents[root(one[vertex])]=root(two[vertex])
-        sums={}
-        for face,offset,area in zip(faces,offsets,areas):
-            for i in range(len(face)):
-                key=root(offset+i);sums[key]=add(sums.get(key,(0.,0.,0.)),area)
-        normals={key:norm(value) for key,value in sums.items()}
-        output=tuple(tuple(normals[root(offset+i)] for i in range(len(face))) for face,offset in zip(faces,offsets))
-    result.normal_cache=(smooth,output)
+        size=np.linalg.norm(areas,axis=1);areas/=np.where(size>1e-10,size,1.)[:,None];areas[size<=1e-10]=0.
+        values=areas[face_ids]
+    values=list(map(tuple,values.tolist()))
+    output=tuple(tuple(values[offset:offset+len(face)]) for offset,face in zip(offsets,faces))
+    result.normal_topology=topology;result.normal_cache=(smooth,output)
     return output
 
 

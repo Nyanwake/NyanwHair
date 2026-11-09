@@ -990,7 +990,7 @@ def _rebuild(obj,force=False,lazy=False,group_id=None,_background=False):
     if old is None and _CACHE.get(key,{}).get('group_id',1)==uid:old=_CACHE.get(key)
     if old is not None and not _background:_CACHE[key]=old
     group=groups.settings(obj,uid);reference=(group.reference_length if group else 0.) or (obj.nh35.detail_length if uid==1 else 0.)
-    state=(obj.mode,int(obj.nh35.rows),float(reference),bool(obj.nh35.regular_rows),uid)
+    state=(obj.mode,int(obj.nh35.rows),float(reference),True,uid)
     if lazy and not force and old and old.get('signature') is not None and not old.get('source_dirty',True) and old.get('source_state')==state:return False
     positions,full_zones,full_options,active,full_caps,smoothing,density,point_density,layout_lengths=_capture(obj,True,True,True,True)
     indices=[i for i,o in enumerate(full_options) if o.group==uid]
@@ -999,7 +999,7 @@ def _rebuild(obj,force=False,lazy=False,group_id=None,_background=False):
     smoothing={e:v for e,v in smoothing.items() if set(e)<=used};density={e:v for e,v in density.items() if set(e)<=used}
     layout_lengths={e:v for e,v in layout_lengths.items() if set(e)<=used};point_density={v:p for v,p in point_density.items() if v in used}
     rows=obj.nh35.rows
-    signature=_signature([positions[i] for i in sorted(used)],zones,options,rows,caps,reference,smoothing,density,point_density,layout_lengths,obj.nh35.regular_rows)
+    signature=_signature([positions[i] for i in sorted(used)],zones,options,rows,caps,reference,smoothing,density,point_density,layout_lengths,True)
     if old and old.get('signature')==signature and not force:
         old.update(revision=_SOURCE_REVISION,source_state=state,source_dirty=False)
         if active in indices and not old.get('zone_selection_explicit'):old['active']=active
@@ -1019,14 +1019,14 @@ def _rebuild(obj,force=False,lazy=False,group_id=None,_background=False):
             result=copy(old['result']);current=dict(zip(indices,options))
             result.plans_by_loop={loop:replace(plan,settings=current[plan.index]) for loop,plan in result.plans_by_loop.items()}
         else:
-            result=core.generate(positions,zones,options,rows,previous=previous,caps=[core.neutral_caps(loop,c) for loop,c in zip(zones,caps)],reference_length=reference,directional_smoothing=smoothing,local_density=density,point_density=point_density,layout_lengths=layout_lengths,regular_rows=obj.nh35.regular_rows,face_indices=indices)
+            result=core.generate(positions,zones,options,rows,previous=previous,caps=[core.neutral_caps(loop,c) for loop,c in zip(zones,caps)],reference_length=reference,directional_smoothing=smoothing,local_density=density,point_density=point_density,layout_lengths=layout_lengths,regular_rows=True,face_indices=indices)
         warnings=result.warnings;selection={}
         if old and old.get('zone_selection_explicit'):
             lookup=_zone_lookup(result);keys=frozenset(k for k in old.get('zone_selection',()) if k in lookup)
             selected=next((_zone_key(p) for p in old['result'].plans_by_loop.values() if p.index==old.get('active',-1)),None)
             active=lookup.get(selected,min((lookup[k] for k in keys),default=-1));selection={'zone_selection':keys,'zone_selection_explicit':True}
         if active not in indices:active=indices[0] if indices else -1
-        reuse={k:old[k] for k in ('gpu_chunks','gpu_rails','gpu_rail_records','gpu_rail_signature','native_selection_stamp','back_result') if old and k in old}
+        reuse={k:old[k] for k in ('gpu_chunks','gpu_rails','gpu_rail_records','gpu_rail_signature','native_selection_stamp','back_result','normal_topology','gpu_layout') if old and k in old}
         cached=dict(selection,**reuse,signature=signature,topology=tuple(full_zones),face_indices=tuple(indices),group_zones=tuple(zones),group_id=uid,object_pointer=key,
                     rows=rows,revision=_SOURCE_REVISION,source_state=state,source_dirty=False,data_pointer=obj.data.as_pointer(),positions=tuple(positions),zones=tuple(full_zones),
                     result=result,active=active,status='; '.join('Зона %d: %s'%(i+1,v) for i,v in list(sorted(warnings.items()))[:3]) if warnings else '%d зон, %d полигонов'%(len(zones),len(result.faces)),
@@ -1108,7 +1108,7 @@ class NHGuidedProperties(PropertyGroup):
     wire_opacity: FloatProperty(name='Непрозрачность сетки',default=.22,min=0.,max=1.,subtype='FACTOR')
     smooth_preview: BoolProperty(name='Smooth + Sharp по направляющим',default=True,description='Плавное освещение внутри прядей с резкими границами по направляющим; сохраняется в независимом Mesh')
     follow_matcap: BoolProperty(name='MatCap из вида',default=True,description='В режиме Solid использовать MatCap, выбранный в настройках освещения 3D-вида')
-    regular_rows: BoolProperty(name='Ровные квадовые полосы',default=True,description='Общие ряды между направляющими; отключение включает прежнюю адаптацию колонок')
+    regular_rows: BoolProperty(name='Ровные квадовые полосы',default=True,description='Устаревшее сохранённое свойство; инструменты используют ровные квадовые полосы')
     rows: IntProperty(name='Детализация по длине',default=12,min=2,max=160,description='Общая плотность рядов: короткие пряди получают меньше шагов, длинные больше')
     detail_length: FloatProperty(default=0.,min=0.,options={'HIDDEN'})
     show_tint: BoolProperty(name='Подсветка зоны',default=True)
@@ -1945,12 +1945,12 @@ def _draw_extra_panels(layout,context,obj,cached,edit):
     header,body=layout.panel('nyanw_tools',default_closed=True);header.label(text='Дополнительно',icon='PREFERENCES')
     if body is not None:
         if edit:
-            body.prop(context.window_manager.nh35_ui,'flip',text='Перевернуть профиль');body.prop(props,'regular_rows',text='Ровные квадовые полосы');body.operator('nyanw35.refresh_layout',text='Обновить раскладку рядов',icon='FILE_REFRESH')
+            body.prop(context.window_manager.nh35_ui,'flip',text='Перевернуть профиль');body.operator('nyanw35.refresh_layout',text='Обновить раскладку рядов',icon='FILE_REFRESH')
         body.operator('nyanw35.disable',text='Отключить на объекте',icon='X')
 
 
 class NYANW35_PT_main(Panel):
-    bl_label='NyanwHair v0.35.24'
+    bl_label='NyanwHair v0.35.25'
     bl_idname='NYANW35_PT_main'
     bl_space_type='VIEW_3D'
     bl_region_type='UI'
@@ -2045,20 +2045,34 @@ def _gpu_mesh_records(cache,result,smooth):
     signature=(id(result),bool(smooth))
     if cache.get('gpu_mesh_signature')==signature:return cache['gpu_mesh_records']
     from . import appearance
-    normals=appearance.corner_normals(result,smooth)
-    plans={p.index:p for p in result.plans_by_loop.values()};chunks={};edge_groups={}
-    for face,owner,corner_normals in zip(result.faces,result.owners,normals):
-        plan=plans[owner];key=(plan.settings.order if plan.settings.order>0 else owner)//4
-        chunks.setdefault(key,[]).append((face,owner,corner_normals))
-        for a,b in zip(face,face[1:]+face[:1]):
-            if a!=b:edge_groups.setdefault(core.edge_key(a,b),key)
-    owned_edges={key:[] for key in chunks}
-    for edge,key in edge_groups.items():owned_edges[key].append(edge)
+    normals=appearance.corner_normals(result,smooth,cache.get('normal_topology'))
+    cache['normal_topology']=getattr(result,'normal_topology',None)
+    plans={p.index:p for p in result.plans_by_loop.values()}
+    layout_signature=(tuple(result.faces),tuple(result.owners),
+        tuple(sorted((owner,p.settings.order) for owner,p in plans.items())))
+    saved=cache.get('gpu_layout')
+    if saved and saved[0]==layout_signature:layout=saved[1]
+    else:
+        chunks={};edge_groups={}
+        for fi,(face,owner) in enumerate(zip(result.faces,result.owners)):
+            plan=plans[owner];key=(plan.settings.order if plan.settings.order>0 else owner)//4
+            chunks.setdefault(key,[]).append(fi)
+            for a,b in zip(face,face[1:]+face[:1]):
+                if a!=b:edge_groups.setdefault(core.edge_key(a,b),key)
+        owned_edges={key:[] for key in chunks}
+        for edge,key in edge_groups.items():owned_edges[key].append(edge)
+        layout=[]
+        for key,indices in chunks.items():
+            owners=tuple(sorted({result.owners[fi] for fi in indices}))
+            vertices=tuple(sorted({v for fi in indices for v in result.faces[fi]}))
+            faces_key=(tuple((result.owners[fi],result.faces[fi]) for fi in indices),vertices)
+            edges=tuple(owned_edges[key]);keys=edges
+            layout.append((key,tuple(indices),owners,vertices,faces_key,edges,keys))
+        cache['gpu_layout']=(layout_signature,tuple(layout))
     records=[]
-    for key,faces in chunks.items():
-        owners=tuple(sorted({owner for face,owner,normals in faces}))
-        geometry=tuple((owner,tuple(result.vertex_keys[v] for v in face),tuple(result.vertices[v] for v in face),normals) for face,owner,normals in faces)
-        edges=tuple(owned_edges[key]);keys=tuple(tuple(result.vertex_keys[v] for v in edge) for edge in edges)
+    for key,indices,owners,vertices,faces_key,edges,keys in layout:
+        faces=tuple((result.faces[fi],result.owners[fi],normals[fi]) for fi in indices)
+        geometry=(faces_key,tuple(result.vertices[v] for v in vertices),tuple(normals[fi] for fi in indices))
         records.append((key,faces,owners,geometry,edges,keys))
     cache['gpu_mesh_signature']=signature;cache['gpu_mesh_records']=tuple(records)
     return cache['gpu_mesh_records']

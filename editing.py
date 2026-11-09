@@ -254,7 +254,7 @@ def validate_stage(bm,obj):
     result=a.core.generate([tuple(v.co) for v in bm.verts],[tuple(v.index for v in f.verts) for f in faces],
         [a._get_zone(f,bm) for f in faces],rows=obj.nh35.rows,caps=[a.core.neutral_caps(tuple(v.index for v in f.verts),a._read_caps(f,a._boundary_layer(bm))) for f in faces],
         reference_length=(groups.settings(obj).reference_length if groups.settings(obj) else obj.nh35.detail_length),directional_smoothing=a._directional_smoothing(bm),local_density=a._edge_density(bm),
-        point_density=a._point_density(bm),layout_lengths=a._layout_lengths(bm),regular_rows=obj.nh35.regular_rows,face_indices=[f.index for f in faces])
+        point_density=a._point_density(bm),layout_lengths=a._layout_lengths(bm),regular_rows=True,face_indices=[f.index for f in faces])
     if result.warnings:raise ValueError(next(iter(result.warnings.values())))
     if not result.faces:raise ValueError('Не удалось построить поверхность')
 
