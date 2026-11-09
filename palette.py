@@ -1,4 +1,4 @@
-"""Five display palettes, shared marker geometry; no scene or GPU resources."""
+"""Six display palettes, shared marker geometry; no scene or GPU resources."""
 from dataclasses import dataclass
 
 @dataclass(frozen=True)
@@ -36,28 +36,28 @@ RADII=(4.,5.3,6.1,4.8,4.8)
 CAPS=(_rgba('#94D8AA'),_rgba('#CA9AE0'))
 CAP_POINTS=(_pixel_rgba('#94D8AA'),_pixel_rgba('#CA9AE0'))
 
-def _make(guide,selection,points,active,outline,wire,group):
+def _make(guide,selection,points,active,outline,wire,group,strength=.30):
     return Palette(group=_rgb(group),guide=_rgba(guide),selected=_rgba(selection),wire=_rgb(wire),
         points=(_pixel_rgba(points),_pixel_rgba(selection),_pixel_rgba(active)),caps=CAPS,cap_points=CAP_POINTS,
         outline=_pixel_rgba(outline),radii=RADII,outline_width=1.,
         guide_width=3.,selected_width=4.,cap_width=3.5,
-        tint=_rgb(selection),tint_strength=.30)
+        tint=_rgb(selection),tint_strength=strength)
 
 # Keep the stored identifiers from 0.35.26 (WARM=0, CLASSIC=1).
-CLASSIC=_make('#BFD9EF','#DDFDF8','#F2F0E7','#FFFFFF','#303B44','#343A40','#E5EAF0')
-WARM=_make('#DDB09A','#D1F6E5','#F7DFC9','#FFFFFF','#403631','#3D3531','#E9DED5')
+CLASSIC=_make('#527FA3','#DDFDF8','#D7E3EC','#FFFFFF','#303B44','#343A40','#B3C9D8',.46)
+WARM=_make('#A26151','#D1F6E5','#F0D7BC','#FFFFFF','#403631','#3D3531','#D6C1AA',.46)
 RED=_make('#E28C83','#FFE3A1','#F6CEBB','#FFFFFF','#4D2B31','#472D30','#EBD2CD')
-PURPLE=_make('#C7B8EB','#F0E6FF','#E9E1F7','#FFFFFF','#3D3449','#3C3543','#E4DAEF')
+PURPLE=_make('#8465B3','#F0E6FF','#D8C9EB','#FFFFFF','#3D3449','#3C3543','#BDAFD2',.46)
 GREEN=_make('#B4D6B3','#DCFFE2','#E4EED7','#FFFFFF','#303D35','#343E36','#DEE9D8')
 
 BLENDER=_make('#000000','#FF9900','#000000','#FFFFFF','#202020','#202020','#A6A6A6')
 
 PALETTES={'BLENDER':BLENDER,'CLASSIC':CLASSIC,'WARM':WARM,'RED':RED,'PURPLE':PURPLE,'GREEN':GREEN}
 # Explicit enum numbers preserve old saved values even though the menu is reordered.
-ITEMS=[('CLASSIC','Светлый','Светло-голубые направляющие и бирюзовое выделение',1),
-       ('WARM','Тёплый','Песочная терракота, серо-зелёное выделение и кремовые точки',0),
+ITEMS=[('CLASSIC','Светлый','Голубовато-серая поверхность, синие направляющие и светлое бирюзовое выделение',1),
+       ('WARM','Тёплый','Кремово-песочная поверхность, терракотовые направляющие и светлое мятное выделение',0),
        ('RED','Красный','Кораллово-красные направляющие, золотистое выделение и винный контур',2),
-       ('PURPLE','Фиолетовый','Лавандовые направляющие и насыщенное фиолетовое выделение',3),
+       ('PURPLE','Фиолетовый','Лавандовая поверхность, фиолетовые направляющие и светлое лиловое выделение',3),
        ('GREEN','Зелёный','Мягкие зелёные направляющие и выразительное зелёное выделение',4),
        ('BLENDER','Блендер','Серый объект и цвета редактирования текущей темы Blender',5)]
 
