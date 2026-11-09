@@ -32,7 +32,7 @@ def _pixel_rgba(value):
     # scene-linear custom POST_VIEW shader. Keep both representations explicit.
     return (*(int(value[i:i+2],16)/255. for i in (1,3,5)),1.)
 
-RADII=(5.,6.3,7.1,5.8,5.8)
+RADII=(4.5,5.8,6.6,5.3,5.3)
 CAPS=(_rgba('#94D8AA'),_rgba('#CA9AE0'))
 CAP_POINTS=(_pixel_rgba('#94D8AA'),_pixel_rgba('#CA9AE0'))
 
@@ -40,7 +40,7 @@ def _make(guide,selection,points,active,outline,wire,group,strength=.30):
     return Palette(group=_rgb(group),guide=_rgba(guide),selected=_rgba(selection),wire=_rgb(wire),
         points=(_pixel_rgba(points),_pixel_rgba(selection),_pixel_rgba(active)),caps=CAPS,cap_points=CAP_POINTS,
         outline=_pixel_rgba(outline),radii=RADII,outline_width=1.,
-        guide_width=5.,selected_width=6.,cap_width=5.5,
+        guide_width=4.,selected_width=5.,cap_width=4.5,
         tint=_rgb(selection),tint_strength=strength)
 
 # Keep the stored identifiers from 0.35.26 (WARM=0, CLASSIC=1).

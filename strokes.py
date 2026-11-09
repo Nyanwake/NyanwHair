@@ -54,7 +54,7 @@ def rails(cache,result,evaluate,matrix,normal_matrix,visible):
     return records,segments,attributes
 
 
-def view_style(cache,obj,context):
+def view_style(cache,obj,context,pixel=False):
     """Scale overlay strokes by projected control bounds, for either view projection."""
     import gpu
     result=cache.get('result')
@@ -72,11 +72,40 @@ def view_style(cache,obj,context):
         span=max((one-two).length for one in corners for two in corners)
         saved=(signature,corners,span);cache['gpu_stroke_bounds']=saved
     _,corners,span=saved
-    projection=gpu.matrix.get_projection_matrix()@gpu.matrix.get_model_view_matrix();clips=[projection@point.to_4d() for point in corners]
+    projection=context.region_data.perspective_matrix if pixel else gpu.matrix.get_projection_matrix()@gpu.matrix.get_model_view_matrix()
+    clips=[projection@point.to_4d() for point in corners]
     if any(point.w<=1e-6 for point in clips):return 1.,0.
-    _,_,width,height=gpu.state.viewport_get();screen=[(point.x/point.w*width*.5,point.y/point.w*height*.5) for point in clips]
+    width,height=(context.region.width,context.region.height) if pixel else gpu.state.viewport_get()[2:]
+    screen=[(point.x/point.w*width*.5,point.y/point.w*height*.5) for point in clips]
     extent=max(max(p[axis] for p in screen)-min(p[axis] for p in screen) for axis in (0,1))
-    amount=max(0.,min(1.,(extent-60.)/540.));amount=amount*amount*(3.-2.*amount)
-    scale=.28+.72*amount
+    amount=max(0.,min(1.,(extent-45.)/655.));amount=amount*amount*(3.-2.*amount)
+    scale=.20+.80*amount
     limit=span*.01/max(1e-4,(1.-scale)**2) if scale<.99999 else 0.
     return scale,limit
+
+
+class _EmptyBatch:
+    def __bool__(self):return False
+    def draw(self,shader):pass
+
+
+def batch(shader,kind,attributes):
+    """Cached indexed rectangles; the shader expands them in screen space.
+
+    Native wide GL lines have implementation-dependent square ends. Rounded
+    analytic capsules cover joints consistently without per-frame CPU work.
+    """
+    from gpu_extras.batch import batch_for_shader
+    import numpy as np
+    points=attributes['pos'];count=len(points)
+    if count<2:return _EmptyBatch()
+    positions=np.asarray(points,dtype=np.float32)
+    pairs=np.column_stack((np.arange(count-1),np.arange(1,count))) if kind=='LINE_STRIP' else np.arange(count//2*2).reshape(-1,2)
+    pairs=pairs[np.any(positions[pairs[:,0]]!=positions[pairs[:,1]],axis=1)]
+    if not len(pairs):return _EmptyBatch()
+    ends=pairs[:,(0,0,1,1)].reshape(-1);others=pairs[:,(1,1,0,0)].reshape(-1)
+    data={name:np.asarray(values,dtype=np.float32)[ends] for name,values in attributes.items()}
+    data['other']=positions[others]
+    data['corner']=np.tile(np.array(((-1.,0.),(1.,0.),(1.,1.),(-1.,1.)),dtype=np.float32),(len(pairs),1))
+    indices=(np.arange(len(pairs),dtype=np.int32)[:,None,None]*4+np.array(((0,1,2),(0,2,3)),dtype=np.int32)).reshape(-1,3)
+    return batch_for_shader(shader,'TRIS',data,indices=indices)

@@ -1,11 +1,11 @@
-"""NyanwHair 0.35.35 Guided Surfaces (preview)."""
+"""NyanwHair 0.35.36 Guided Surfaces (preview)."""
 bl_info = {
     'name': 'NyanwHair - Guided Surfaces',
     'author': 'NyanWake',
-    'version': (0,35,35),
+    'version': (0,35,36),
     'blender': (5,1,0),
     'location': 'View3D > Sidebar > NyanwHair',
-    'description': 'Guided hair with antialiased guide overlays, shared tip extension and viewport lighting',
+    'description': 'Guided hair with rounded guide joins, stable depth offsets and distance-scaled markers',
     'category': 'Mesh',
 }
 

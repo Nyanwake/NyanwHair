@@ -372,7 +372,7 @@ def _selected_guide_batch(cache,bm,vertex_mode):
     if cache.get('selected_signature')!=signature:
         coords=[p for edge in keys for p in cache.get('rail_segments',{}).get(edge,())]
         data={name:[value for edge in keys for value in cache.get('rail_attributes',{}).get(edge,{}).get(name,())] for name in ('pos','normalA','normalB','curveGap')}
-        cache['selected_batch']=batch_for_shader(_stroke_shader(guides=True),'LINES',data) if coords else None
+        cache['selected_batch']=_stroke_batch(_stroke_shader(guides=True),'LINES',data) if coords else None
         cache['selected_signature']=signature
     return cache.get('selected_batch')
 
@@ -1951,7 +1951,7 @@ def _draw_extra_panels(layout,context,obj,cached,edit):
 
 
 class NYANW35_PT_main(Panel):
-    bl_label='NyanwHair v0.35.35'
+    bl_label='NyanwHair v0.35.36'
     bl_idname='NYANW35_PT_main'
     bl_space_type='VIEW_3D'
     bl_region_type='UI'
@@ -2009,23 +2009,28 @@ _CIRCLE_OFFSETS=tuple(p for i in range(12) for p in ((0.,0.),(math.cos(2*math.pi
 _STROKE_SHADER=None
 
 
+def _stroke_batch(shader,kind,attributes):
+    from . import strokes
+    return strokes.batch(shader,kind,attributes)
+
+
 def _stroke_shader(width=1.,guides=False,normal=(0.,0.,0.),max_clearance=0.):
-    """Pixel-sized depth clearance, including the surface slope under wide lines."""
+    """Screen-space capsules with stable projection-depth derivatives."""
     global _STROKE_SHADER
     if _STROKE_SHADER is None:_STROKE_SHADER={}
     if guides not in _STROKE_SHADER:
         info=gpu.types.GPUShaderCreateInfo()
-        interface=gpu.types.GPUStageInterfaceInfo('nyanwhair_stroke_aa')
-        interface.smooth('VEC3','clipCenter');info.vertex_out(interface)
+        interface=gpu.types.GPUStageInterfaceInfo('nyanwhair_capsule_aa')
+        interface.flat('VEC4','screenSegment');info.vertex_out(interface)
         info.typedef_source('struct StrokeViewport { vec4 rect; };')
         info.uniform_buf(0,'StrokeViewport','strokeViewport')
         info.push_constant('MAT4','viewProjectionMatrix')
         info.push_constant('VEC4','strokeData')
         info.push_constant('VEC4','color')
         info.push_constant('VEC4','projectionData')
-        info.vertex_in(0,'VEC3','pos')
+        info.vertex_in(0,'VEC3','pos');info.vertex_in(1,'VEC3','other');info.vertex_in(2,'VEC2','corner')
         if guides:
-            info.vertex_in(1,'VEC3','normalA');info.vertex_in(2,'VEC3','normalB');info.vertex_in(3,'VEC4','curveGap')
+            info.vertex_in(3,'VEC3','normalA');info.vertex_in(4,'VEC3','normalB');info.vertex_in(5,'VEC4','curveGap')
         info.fragment_out(0,'VEC4','fragColor')
         normal_code='vec3 a=normalA;vec3 b=normalB;float incline=max(slope(a),slope(b));vec3 delta=curveGap.xyz;float gap=max(gapDepth(a,delta),gapDepth(b,delta))+curveGap.w*(1.0+incline);' if guides else 'float incline=strokeData.x;float gap=0.0;'
         info.vertex_source("""float slope(vec3 n){
@@ -2038,25 +2043,42 @@ def _stroke_shader(width=1.,guides=False,normal=(0.,0.,0.),max_clearance=0.):
             return size<0.000001?abs(dot(delta,strokeData.xyz)):abs(dot(n,delta))/max(abs(dot(n,strokeData.xyz)),0.12*size);
         }
         void main(){
-            gl_Position=viewProjectionMatrix*vec4(pos,1.0);
-            float w=max(abs(gl_Position.w),0.000001);
-            float pixelWorld=2.0*w/(max(projectionData.x,0.000001));
-            float gradient=abs(projectionData.y*gl_Position.w-gl_Position.z*projectionData.z)/(w*w);
+            vec4 current=viewProjectionMatrix*vec4(pos,1.0);
+            vec4 adjacent=viewProjectionMatrix*vec4(other,1.0);
+            float d0=current.z+current.w,d1=adjacent.z+adjacent.w;
+            if(d0<0.0 && d1<0.0){gl_Position=vec4(0.0,0.0,2.0,1.0);screenSegment=vec4(0.0);return;}
+            if(d0<0.0)current=mix(current,adjacent,d0/(d0-d1));
+            else if(d1<0.0)adjacent=mix(adjacent,current,d1/(d1-d0));
+            if(current.w<=0.0000001 || adjacent.w<=0.0000001){gl_Position=vec4(0.0,0.0,2.0,1.0);screenSegment=vec4(0.0);return;}
+            vec2 p=(current.xy/current.w*0.5+0.5)*strokeViewport.rect.zw+strokeViewport.rect.xy;
+            vec2 q=(adjacent.xy/adjacent.w*0.5+0.5)*strokeViewport.rect.zw+strokeViewport.rect.xy;
+            vec2 start=corner.y<0.5?p:q,end=corner.y<0.5?q:p;
+            screenSegment=vec4(start,end);
+            vec2 direction=end-start;float len=length(direction);
+            direction=len>0.00001?direction/len:vec2(1.0,0.0);
+            vec2 perpendicular=vec2(-direction.y,direction.x);
+            float extent=0.5*strokeData.w+1.0;
+            vec2 offset=(perpendicular*corner.x+direction*(2.0*corner.y-1.0))*extent;
+            gl_Position=current;
+            float w=max(abs(current.w),0.000001);
+            float pixelWorld=2.0*w/max(projectionData.x,0.000001);
+            // The projection determinant is computed on the CPU. Subtracting
+            // two large depth terms here loses the near-plane contribution.
+            float gradient=projectionData.y/(w*w);
         """+normal_code+"""
-            float padding=pixelWorld*(1.0+(0.5*strokeData.w+0.75)*incline);
+            float padding=pixelWorld*(1.0+(0.5*strokeData.w+1.0)*incline);
             if(projectionData.w>0.0)padding=min(padding,projectionData.w);
-            float clearance=gap+padding;
-            float minimum=projectionData.w>0.0?min(0.0000001,projectionData.w*gradient):0.0000001;
-            gl_Position.z-=max(minimum,clearance*gradient)*gl_Position.w;
-            clipCenter=gl_Position.xyw;
+            float minimum=projectionData.w>0.0?min(0.00000024,projectionData.w*gradient):0.00000024;
+            gl_Position.z-=max(minimum,(gap+padding)*gradient)*gl_Position.w;
+            gl_Position.xy+=offset*2.0/strokeViewport.rect.zw*gl_Position.w;
         }""")
         info.fragment_source("""void main(){
-            vec2 center=(clipCenter.xy/max(clipCenter.z,0.00000001)*0.5+0.5)*strokeViewport.rect.zw+strokeViewport.rect.xy;
-            vec2 dx=dFdx(center),dy=dFdy(center);
-            vec2 tangent=dot(dx,dx)>dot(dy,dy)?dx:dy;
-            vec2 offset=gl_FragCoord.xy-center;
-            float distance=dot(tangent,tangent)>0.000001?abs(dot(offset,vec2(-tangent.y,tangent.x)))/length(tangent):length(offset);
-            float aa=dot(tangent,tangent)>0.000001?max(1.0,(abs(tangent.x)+abs(tangent.y))/length(tangent)):1.0;
+            vec2 segment=screenSegment.zw-screenSegment.xy;
+            vec2 delta=gl_FragCoord.xy-screenSegment.xy;
+            float t=clamp(dot(delta,segment)/max(dot(segment,segment),0.0000001),0.0,1.0);
+            vec2 offset=delta-t*segment;float distance=length(offset);
+            float aa=max(1.0,(abs(segment.x)+abs(segment.y))/max(length(segment),0.000001));
+            if((t<=0.0 || t>=1.0) && distance>0.000001)aa=max(1.0,(abs(offset.x)+abs(offset.y))/distance);
             float coverage=clamp((0.5*strokeData.w+0.5*aa-distance)/aa,0.0,min(1.0,strokeData.w/aa));
             if(coverage<=0.0)discard;
             fragColor=vec4(color.rgb,color.a*coverage);
@@ -2068,10 +2090,10 @@ def _stroke_shader(width=1.,guides=False,normal=(0.,0.,0.),max_clearance=0.):
         viewport_buffer.update(gpu.types.Buffer('FLOAT',4,viewport))
         _STROKE_SHADER[guides]=(shader,viewport_buffer,viewport)
     shader.uniform_block('strokeViewport',viewport_buffer)
-    gpu.state.line_width_set(max(1.,math.ceil((width+1.5)*math.sqrt(2.))))
     projection=gpu.matrix.get_projection_matrix();view=gpu.matrix.get_model_view_matrix()
     shader.uniform_float('viewProjectionMatrix',projection@view)
-    shader.uniform_float('projectionData',(abs(projection[1][1])*max(1,gpu.state.viewport_get()[3]),projection[2][2],projection[3][2],max_clearance))
+    determinant=abs(float(projection[2][2])*float(projection[3][3])-float(projection[2][3])*float(projection[3][2]))
+    shader.uniform_float('projectionData',(abs(projection[1][1])*max(1,viewport[3]),determinant,0.,max_clearance))
     direction=Vector(tuple(view[2])[:3]).normalized()
     if guides:data=(*direction,width)
     else:
@@ -2152,6 +2174,7 @@ def _gpu_batches(cache,guide,shader):
     signature=(id(result),transform,tint,bool(guide.nh35.smooth_preview),base_color,overlays)
     if cache.get('gpu_signature')==signature:return cache['gpu_batches']
     old=cache.get('gpu_chunks',{});current={};coords={};normal_coords={}
+    old_wires=cache.get('gpu_wire_chunks',{});wire_chunks={}
     records=_gpu_mesh_records(cache,result,guide.nh35.smooth_preview)
     normal_matrix=matrix.to_3x3().inverted_safe().transposed()
     def world(index):
@@ -2165,7 +2188,10 @@ def _gpu_batches(cache,guide,shader):
         colors_key=tuple((owner,tint_strength*(1. if owner==active else .65) if owner in selected else 0.) for owner in owners)
         stamp=(transform,geometry,edge_key,colors_key,tint_color,base_color,overlays)
         saved=old.get(key)
-        if saved and saved[0]==stamp:current[key]=saved;continue
+        if saved and saved[0]==stamp:
+            current[key]=saved
+            if key in old_wires:wire_chunks[key]=old_wires[key]
+            continue
         tris=[];colors=[];vertex_normals=[]
         for face,owner,normals in faces:
             alpha=tint_strength*(1. if owner==active else .65) if owner in selected else 0.
@@ -2180,8 +2206,12 @@ def _gpu_batches(cache,guide,shader):
                     tris.append(world(face[corner]));colors.append(color)
                     vertex_normals.append(world_normal(normals[corner]))
         solid=batch_for_shader(shader,'TRIS',{'pos':tris,'normal':vertex_normals,'color':colors,'base':[base_color]*len(tris)}) if tris else None
-        lines=[world(v) for edge in owned_edges for v in edge] if overlays else []
-        wire=batch_for_shader(wire_shader,'LINES',{'pos':lines}) if lines else None
+        wire_stamp=(transform,geometry,edge_key,overlays);saved_wire=old_wires.get(key)
+        if saved_wire and saved_wire[0]==wire_stamp:wire=saved_wire[1]
+        else:
+            lines=[world(v) for edge in owned_edges for v in edge] if overlays else []
+            wire=_stroke_batch(wire_shader,'LINES',{'pos':lines}) if lines else None
+        wire_chunks[key]=(wire_stamp,wire)
         current[key]=(stamp,solid,wire)
     # Rail batches are independent of mesh density and segment tint.
     evaluate=result.edge_evaluator
@@ -2193,9 +2223,9 @@ def _gpu_batches(cache,guide,shader):
     rails=cache.get('gpu_rails')
     if cache.get('gpu_rail_signature')!=rail_signature:
         attributes={name:[value for key in sorted(rail_records) for value in rail_records[key][1][name]] for name in ('pos','normalA','normalB','curveGap')}
-        rails=batch_for_shader(_stroke_shader(guides=True),'LINES',attributes) if attributes['pos'] else None
+        rails=_stroke_batch(_stroke_shader(guides=True),'LINES',attributes) if attributes['pos'] else None
     solid=_BatchGroup(item[1] for item in current.values());wire=_BatchGroup(item[2] for item in current.values())
-    cache.update(gpu_signature=signature,gpu_batches=(solid,wire,rails),gpu_chunks=current,
+    cache.update(gpu_signature=signature,gpu_batches=(solid,wire,rails),gpu_chunks=current,gpu_wire_chunks=wire_chunks,
         gpu_rails=rails,gpu_rail_records=rail_records,gpu_rail_signature=rail_signature,rail_segments=rail_segments,rail_attributes=rail_attributes)
     return solid,wire,rails
 
@@ -2328,7 +2358,7 @@ def _draw_preview():
                         normal=(obj.matrix_world.to_3x3().inverted_safe().transposed()@Vector(plan.normal)).normalized() if plan else Vector()
                         endpoint_shader=_stroke_shader(style.cap_width*stroke_scale,normal=normal,max_clearance=depth_limit);endpoint_shader.bind();endpoint_shader.uniform_float('color',style.caps[side])
                         gpu.state.depth_test_set(overlay_depth)
-                        batch_for_shader(endpoint_shader,'LINE_STRIP',{'pos':coords}).draw(endpoint_shader)
+                        _stroke_batch(endpoint_shader,'LINE_STRIP',{'pos':coords}).draw(endpoint_shader)
                     gpu.state.line_width_set(1.);gpu.state.depth_test_set('LESS_EQUAL')
         if _CUT_PREVIEW and _helpers_visible(ctx):
             preview=_CUT_PREVIEW
@@ -2339,7 +2369,7 @@ def _draw_preview():
                 shader_line=_stroke_shader(3.*cut_scale,max_clearance=cut_limit);shader_line.bind()
                 shader_line.uniform_float('color',(.95,.77,.41,1.0));gpu.state.depth_test_set(overlay_depth)
                 if len(coords)>=2:
-                    batch=batch_for_shader(shader_line,'LINE_STRIP',{'pos':[tuple(p) for p in coords]})
+                    batch=_stroke_batch(shader_line,'LINE_STRIP',{'pos':[tuple(p) for p in coords]})
                     batch.draw(shader_line)
                 # Anchor markers belong to the POST_PIXEL overlay.
     except (ReferenceError,RuntimeError,ValueError,TypeError):
@@ -2372,14 +2402,15 @@ def _draw_control_points():
         cache=_CACHE.get(obj.as_pointer(),{})
         selection=tuple((v.select,v.hide,v is active) for v in bm.verts)
         view=(tuple(v for row in ctx.region_data.perspective_matrix for v in row),ctx.region.width,ctx.region.height)
-        from . import decorations
+        from . import decorations,strokes
+        point_scale=.6+.4*max(0.,min(1.,(strokes.view_style(cache,obj,ctx,pixel=True)[0]-.2)/.8))
         previews=tuple((o.as_pointer(),tuple(id(decorations.display(entry,o)) for entry in groups.all_caches(o)),tuple(v for row in o.matrix_world for v in row),o.visible_get(view_layer=ctx.view_layer),o.nh35.show_preview) for o in ctx.scene.objects if is_guide(o))
         signature=(_SOURCE_REVISION,id(cache.get('result')),view,selection,previews,_xray_enabled(ctx),ctx.view_layer.as_pointer(),obj.nh35.palette,style)
         saved=cache.setdefault('point_draw_cache',{});region_key=ctx.region.as_pointer()
         record=saved.get(region_key)
         from . import controls
         cap_lines,cap_vertices=controls.caps(bm,obj,cache)
-        signature=signature+(tuple(sorted(cap_vertices.items())),)
+        signature=signature+(tuple(sorted(cap_vertices.items())),point_scale)
         point_sets=[[],[],[],[],[],[],[]]
         if record is None or record[0]!=signature:
             occlusion=_occlusion_state(ctx)
@@ -2405,6 +2436,7 @@ def _draw_control_points():
             batches=[]
             for coords,(color,radius,outline_color,outline_width) in zip(point_sets,palette.markers(style)):
                 if coords:
+                    radius*=point_scale;outline_width=max(.65,outline_width*point_scale)
                     outline=batch_for_shader(shader,'TRIS',{'pos':circles(coords,radius+outline_width)})
                     shade=batch_for_shader(shader,'TRIS',{'pos':circles(coords,radius)})
                     batches.append((outline,shade,color,outline_color))
