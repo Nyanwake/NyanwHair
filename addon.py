@@ -15,7 +15,7 @@ from mathutils import Vector
 from mathutils.bvhtree import BVHTree
 from bpy_extras import view3d_utils
 
-from . import core,groups
+from . import core,groups,palette
 
 try:
     import gpu
@@ -1100,6 +1100,7 @@ class NHGuidedProperties(PropertyGroup):
     groups: CollectionProperty(type=groups.NH35HairGroup)
     group_index: IntProperty(get=groups.get_index,set=groups.set_index)
     active_group: IntProperty(default=1,min=1)
+    palette: EnumProperty(name='Палитра',items=[('WARM','Тёплая пастель','Приглушённые тёплые направляющие и точки; персиковое выделение'),('CLASSIC','Прежняя','Светло-голубые направляющие и прежний контраст')],default='WARM')
     brightness: FloatProperty(name="Яркость",default=.8,min=.1,max=2.)
     enabled: BoolProperty(default=False)
     live: BoolProperty(name='Live',default=True)
@@ -1112,8 +1113,8 @@ class NHGuidedProperties(PropertyGroup):
     rows: IntProperty(name='Детализация по длине',default=12,min=2,max=160,description='Общая плотность рядов: короткие пряди получают меньше шагов, длинные больше')
     detail_length: FloatProperty(default=0.,min=0.,options={'HIDDEN'})
     show_tint: BoolProperty(name='Подсветка зоны',default=True)
-    tint: FloatVectorProperty(name='Цвет зоны',size=3,subtype='COLOR',min=0.0,max=1.0,default=_COLOR_TINT)
-    opacity: FloatProperty(name='Непрозрачность',default=0.16,min=0,max=0.65,subtype='FACTOR')
+    tint: FloatVectorProperty(name='Цвет зоны',size=3,subtype='COLOR',min=0.0,max=1.0,default=palette.WARM.tint,get=palette.tint_get,set=palette.tint_set)
+    opacity: FloatProperty(name='Непрозрачность',default=palette.WARM.tint_strength,min=0,max=0.65,subtype='FACTOR',get=palette.strength_get,set=palette.strength_set)
 
 
 class NHGuidedUISettings(PropertyGroup):
@@ -1936,6 +1937,7 @@ def _draw_extra_panels(layout,context,obj,cached,edit):
     props=obj.nh35
     header,body=layout.panel('nyanw_appearance',default_closed=True);header.label(text='Внешний вид',icon='SHADING_SOLID')
     if body is not None:
+        if edit:body.prop(props,'palette',text='Палитра')
         body.prop(props,'smooth_preview',text='Smooth + Sharp');body.prop(props,'follow_matcap',text='MatCap из вида');body.prop(props,'brightness',text='Яркость',slider=True)
         row=body.row(align=True);row.prop(props,'show_wire',text='Сетка');column=row.column();column.enabled=props.show_wire;column.prop(props,'wire_opacity',text='',slider=True)
         if edit:body.prop(props,'show_tint',text='Подсветка сегмента')
@@ -1950,7 +1952,7 @@ def _draw_extra_panels(layout,context,obj,cached,edit):
 
 
 class NYANW35_PT_main(Panel):
-    bl_label='NyanwHair v0.35.25'
+    bl_label='NyanwHair v0.35.26'
     bl_idname='NYANW35_PT_main'
     bl_space_type='VIEW_3D'
     bl_region_type='UI'
@@ -1993,7 +1995,7 @@ class NYANW35_PT_main(Panel):
             op=row.operator('nyanw35.boundary',text='',icon='X');op.slot=slot;op.clear=True
         layout.separator();layout.label(text='Точки',icon='VERTEXSEL')
         row=layout.row(align=True);row.enabled=bool(_smooth_targets(bm,result));row.prop(ui,'direction_smoothing',text='Сглаживание',slider=True);row.operator('nyanw35.direction_smoothing',text='',icon='LOOP_BACK').value=1.
-        layout.label(text='Плотность',icon='MOD_SUBSURF')
+        layout.separator(factor=.4);layout.label(text='Локальная плотность',icon='MOD_SUBSURF')
         vertices=_point_density_targets(bm,result)
         column=layout.column(align=True);column.enabled=bool(vertices);column.prop(ui,'local_density',text='Плотность');column.prop(ui,'point_radius',text='Радиус, %')
         row=layout.row(align=True);selected=row.row(align=True);selected.enabled=bool(vertices);selected.operator('nyanw35.density_reset',text='Сброс').all_points=False
@@ -2082,10 +2084,11 @@ def _gpu_batches(cache,guide,shader):
     """Retain small GPU chunks across edits; all zones remain visible."""
     from . import decorations
     result=decorations.display(cache,guide);matrix=guide.matrix_world
+    tint_color,tint_strength=palette.highlight(guide.nh35)
     transform=tuple(float(x) for row in matrix for x in row)
-    selected=(_selected_zone_indices(cache) if guide==bpy.context.edit_object and cache.get('group_id',1)==groups.active_id(guide) and _helpers_visible(bpy.context) and guide.nh35.show_tint and guide.nh35.opacity>0 else set())
+    selected=(_selected_zone_indices(cache) if guide==bpy.context.edit_object and cache.get('group_id',1)==groups.active_id(guide) and _helpers_visible(bpy.context) and guide.nh35.show_tint and tint_strength>0 else set())
     active=cache.get('active',-1)
-    tint=(tuple(sorted(selected)),active,tuple(guide.nh35.tint),float(guide.nh35.opacity))
+    tint=(tuple(sorted(selected)),active,tint_color,float(tint_strength))
     base_color=groups.color(guide,cache.get('group_id',1))
     overlays=cache.get('group_id',1)==groups.active_id(guide) and _helpers_visible(bpy.context)
     signature=(id(result),transform,tint,bool(guide.nh35.smooth_preview),base_color,overlays)
@@ -2101,14 +2104,14 @@ def _gpu_batches(cache,guide,shader):
         return normal_coords[normal]
     wire_shader=_stroke_shader()
     for key,faces,owners,geometry,owned_edges,edge_key in records:
-        colors_key=tuple((owner,guide.nh35.opacity*(1. if owner==active else .65) if owner in selected else 0.) for owner in owners)
-        stamp=(transform,geometry,edge_key,colors_key,tuple(guide.nh35.tint),base_color,overlays)
+        colors_key=tuple((owner,tint_strength*(1. if owner==active else .65) if owner in selected else 0.) for owner in owners)
+        stamp=(transform,geometry,edge_key,colors_key,tint_color,base_color,overlays)
         saved=old.get(key)
         if saved and saved[0]==stamp:current[key]=saved;continue
         tris=[];colors=[];vertex_normals=[]
         for face,owner,normals in faces:
-            alpha=guide.nh35.opacity*(1. if owner==active else .65) if owner in selected else 0.
-            color=(*guide.nh35.tint,alpha)
+            alpha=tint_strength*(1. if owner==active else .65) if owner in selected else 0.
+            color=(*tint_color,alpha)
             if len(face)>4:
                 from .topology import _triangulate
                 corner_for={v:i for i,v in enumerate(face)}
@@ -2228,6 +2231,7 @@ def _draw_preview():
         gpu.state.depth_mask_set(True)
         for obj in ctx.scene.objects:
             if not is_guide(obj) or not obj.visible_get(view_layer=ctx.view_layer) or not obj.nh35.show_preview: continue
+            style=palette.get(obj.nh35)
             for cached in groups.all_caches(obj):
                 result=cached['result']
                 if not result.faces: continue
@@ -2244,7 +2248,7 @@ def _draw_preview():
                     gpu.state.depth_test_set(overlay_depth)
                     line_shader=_stroke_shader()
                     line_shader.bind()
-                    line_shader.uniform_float('color',(.10,.13,.17,obj.nh35.wire_opacity))
+                    line_shader.uniform_float('color',(*style.wire,obj.nh35.wire_opacity))
                     wire.draw(line_shader)
                     gpu.state.depth_test_set('LESS_EQUAL')
                 if overlays and rails:
@@ -2253,8 +2257,8 @@ def _draw_preview():
                     gpu.state.depth_test_set(overlay_depth)
                     guide_shader=_stroke_shader()
                     guide_shader.bind()
-                    guide_shader.uniform_float('color',_COLOR_BLUE)
-                    gpu.state.line_width_set(2.4)
+                    guide_shader.uniform_float('color',style.guide)
+                    gpu.state.line_width_set(style.guide_width)
                     rails.draw(guide_shader)
                     gpu.state.line_width_set(1.0)
                     gpu.state.depth_test_set('LESS_EQUAL')
@@ -2264,17 +2268,17 @@ def _draw_preview():
                     if selected:
                         selected_shader=_stroke_shader()
                         selected_shader.bind()
-                        selected_shader.uniform_float('color',(1.,.74,.46,.72))
+                        selected_shader.uniform_float('color',style.selected)
                         gpu.state.depth_test_set(overlay_depth)
-                        gpu.state.line_width_set(3.4)
+                        gpu.state.line_width_set(style.selected_width)
                         selected.draw(selected_shader)
                         gpu.state.line_width_set(1.)
                         gpu.state.depth_test_set('LESS_EQUAL')
                     from . import controls
                     for side,coords in controls.caps(bm,obj,cached)[0]:
                         if len(coords)<2:continue
-                        endpoint_shader=_stroke_shader();endpoint_shader.bind();endpoint_shader.uniform_float('color',controls.COLORS[side])
-                        gpu.state.depth_test_set(overlay_depth);gpu.state.line_width_set(3.2)
+                        endpoint_shader=_stroke_shader();endpoint_shader.bind();endpoint_shader.uniform_float('color',style.caps[side])
+                        gpu.state.depth_test_set(overlay_depth);gpu.state.line_width_set(style.cap_width)
                         batch_for_shader(endpoint_shader,'LINE_STRIP',{'pos':coords}).draw(endpoint_shader)
                     gpu.state.line_width_set(1.);gpu.state.depth_test_set('LESS_EQUAL')
         if _CUT_PREVIEW and _helpers_visible(ctx):
@@ -2312,13 +2316,14 @@ def _draw_control_points():
         return
     try:
         bm = bmesh.from_edit_mesh(obj.data)
+        style=palette.get(obj.nh35)
         active = bm.select_history.active
         cache=_CACHE.get(obj.as_pointer(),{})
         selection=tuple((v.select,v.hide,v is active) for v in bm.verts)
         view=(tuple(v for row in ctx.region_data.perspective_matrix for v in row),ctx.region.width,ctx.region.height)
         from . import decorations
         previews=tuple((o.as_pointer(),tuple(id(decorations.display(entry,o)) for entry in groups.all_caches(o)),tuple(v for row in o.matrix_world for v in row),o.visible_get(view_layer=ctx.view_layer),o.nh35.show_preview) for o in ctx.scene.objects if is_guide(o))
-        signature=(_SOURCE_REVISION,id(cache.get('result')),view,selection,previews,_xray_enabled(ctx),ctx.view_layer.as_pointer())
+        signature=(_SOURCE_REVISION,id(cache.get('result')),view,selection,previews,_xray_enabled(ctx),ctx.view_layer.as_pointer(),obj.nh35.palette)
         saved=cache.setdefault('point_draw_cache',{});region_key=ctx.region.as_pointer()
         record=saved.get(region_key)
         from . import controls
@@ -2334,6 +2339,7 @@ def _draw_control_points():
                 if pos is None or not (0<=pos.x<=ctx.region.width and 0<=pos.y<=ctx.region.height):continue
                 if not _point_visible(ctx,world,occlusion,pos):continue
                 group=3+cap_vertices[vert.index] if vert.index in cap_vertices else 2 if vert is active and vert.select else 1 if vert.select else 0
+                if obj.nh35.palette!='CLASSIC' and vert is active and vert.select:group=2
                 point_sets[group].append((pos.x,pos.y))
         old_mask = gpu.state.depth_mask_get()
         old_depth = gpu.state.depth_test_get()
@@ -2345,15 +2351,15 @@ def _draw_control_points():
             return [(x+dx*radius,y+dy*radius) for x,y in points for dx,dy in _CIRCLE_OFFSETS]
         if record is None or record[0]!=signature:
             batches=[]
-            for coords,color,radius in zip(point_sets,((.89,.95,1.,1.),(1.,.79,.44,1.),(1.,1.,1.,1.),*controls.COLORS),(3.2,4.5,5.2,4.4,4.4)):
+            for coords,color,radius in zip(point_sets,(*style.points,*style.caps),style.radii):
                 if coords:
-                    outline=batch_for_shader(shader,'TRIS',{'pos':circles(coords,radius+1.1)})
+                    outline=batch_for_shader(shader,'TRIS',{'pos':circles(coords,radius+style.outline_width)})
                     shade=batch_for_shader(shader,'TRIS',{'pos':circles(coords,radius)})
                     batches.append((outline,shade,color))
             record=(signature,batches);saved[region_key]=record
             if len(saved)>8:saved.clear();saved[region_key]=record
         for outline,shade,color in record[1]:
-            shader.bind();shader.uniform_float('color',(.08,.12,.18,1.0));outline.draw(shader)
+            shader.bind();shader.uniform_float('color',style.outline);outline.draw(shader)
             shader.uniform_float('color',color);shade.draw(shader)
         if _CUT_PREVIEW is not None and _CUT_PREVIEW.get('kind')=='anchor':
             # Explicit 2D marker, 7-pixel radius. It remains visible on top
