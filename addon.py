@@ -371,8 +371,8 @@ def _selected_guide_batch(cache,bm,vertex_mode):
     signature=(cache.get('gpu_signature'),keys)
     if cache.get('selected_signature')!=signature:
         coords=[p for edge in keys for p in cache.get('rail_segments',{}).get(edge,())]
-        shader=gpu.shader.from_builtin('UNIFORM_COLOR')
-        cache['selected_batch']=batch_for_shader(shader,'LINES',{'pos':coords}) if coords else None
+        data={name:[value for edge in keys for value in cache.get('rail_attributes',{}).get(edge,{}).get(name,())] for name in ('pos','normalA','normalB','curveGap')}
+        cache['selected_batch']=batch_for_shader(_stroke_shader(guides=True),'LINES',data) if coords else None
         cache['selected_signature']=signature
     return cache.get('selected_batch')
 
@@ -1951,7 +1951,7 @@ def _draw_extra_panels(layout,context,obj,cached,edit):
 
 
 class NYANW35_PT_main(Panel):
-    bl_label='NyanwHair v0.35.32'
+    bl_label='NyanwHair v0.35.33'
     bl_idname='NYANW35_PT_main'
     bl_space_type='VIEW_3D'
     bl_region_type='UI'
@@ -2009,29 +2009,53 @@ _CIRCLE_OFFSETS=tuple(p for i in range(12) for p in ((0.,0.),(math.cos(2*math.pi
 _STROKE_SHADER=None
 
 
-def _stroke_shader():
+def _stroke_shader(width=1.,guides=False,normal=(0.,0.,0.)):
+    """Pixel-sized depth clearance, including the surface slope under wide lines."""
     global _STROKE_SHADER
-    if _STROKE_SHADER is None:
+    if _STROKE_SHADER is None:_STROKE_SHADER={}
+    if guides not in _STROKE_SHADER:
         info=gpu.types.GPUShaderCreateInfo()
         info.push_constant('MAT4','viewProjectionMatrix')
+        info.push_constant('VEC4','strokeData')
         info.push_constant('VEC4','color')
         info.push_constant('VEC4','projectionData')
         info.vertex_in(0,'VEC3','pos')
+        if guides:
+            info.vertex_in(1,'VEC3','normalA');info.vertex_in(2,'VEC3','normalB');info.vertex_in(3,'VEC4','curveGap')
         info.fragment_out(0,'VEC4','fragColor')
-        info.vertex_source("""void main(){
+        normal_code='vec3 a=normalA;vec3 b=normalB;float incline=max(slope(a),slope(b));vec3 delta=curveGap.xyz;float gap=max(gapDepth(a,delta),gapDepth(b,delta))+curveGap.w*(1.0+incline);' if guides else 'float incline=strokeData.x;float gap=0.0;'
+        info.vertex_source("""float slope(vec3 n){
+            float size=length(n);
+            float facing=abs(dot(n,strokeData.xyz));
+            return size<0.000001?1.0:min(8.0,sqrt(max(0.0,size*size-facing*facing))/max(facing,0.12*size));
+        }
+        float gapDepth(vec3 n,vec3 delta){
+            float size=length(n);
+            return size<0.000001?abs(dot(delta,strokeData.xyz)):abs(dot(n,delta))/max(abs(dot(n,strokeData.xyz)),0.12*size);
+        }
+        void main(){
             gl_Position=viewProjectionMatrix*vec4(pos,1.0);
             float w=max(abs(gl_Position.w),0.000001);
             float pixelWorld=2.0*w/(abs(projectionData.x)*projectionData.w);
             float gradient=abs(projectionData.y*gl_Position.w-gl_Position.z*projectionData.z)/(w*w);
-            gl_Position.z-=max(0.0000001,0.75*pixelWorld*gradient)*gl_Position.w;
+        """+normal_code+"""
+            float clearance=gap+pixelWorld*(1.0+0.5*strokeData.w*incline);
+            gl_Position.z-=max(0.0000001,clearance*gradient)*gl_Position.w;
         }""")
         info.fragment_source("void main(){fragColor=color;}")
-        _STROKE_SHADER=gpu.shader.create_from_info(info)
-    _STROKE_SHADER.bind()
-    projection=gpu.matrix.get_projection_matrix()
-    _STROKE_SHADER.uniform_float('viewProjectionMatrix',projection@gpu.matrix.get_model_view_matrix())
-    _STROKE_SHADER.uniform_float('projectionData',(projection[1][1],projection[2][2],projection[3][2],max(1,gpu.state.viewport_get()[3])))
-    return _STROKE_SHADER
+        _STROKE_SHADER[guides]=gpu.shader.create_from_info(info)
+    shader=_STROKE_SHADER[guides];shader.bind()
+    projection=gpu.matrix.get_projection_matrix();view=gpu.matrix.get_model_view_matrix()
+    shader.uniform_float('viewProjectionMatrix',projection@view)
+    shader.uniform_float('projectionData',(projection[1][1],projection[2][2],projection[3][2],max(1,gpu.state.viewport_get()[3])))
+    direction=Vector(tuple(view[2])[:3]).normalized()
+    if guides:data=(*direction,width)
+    else:
+        vector=Vector(normal);size=vector.length;facing=abs(vector.dot(direction))
+        incline=min(8.,math.sqrt(max(0.,size*size-facing*facing))/max(facing,.12*size)) if size>1e-6 else 1.
+        data=(incline,0.,0.,width)
+    shader.uniform_float('strokeData',data)
+    return shader
 
 
 class _BatchGroup:
@@ -2049,7 +2073,10 @@ def _gpu_mesh_records(cache,result,smooth):
     normals=appearance.corner_normals(result,smooth,cache.get('normal_topology'))
     cache['normal_topology']=getattr(result,'normal_topology',None)
     plans={p.index:p for p in result.plans_by_loop.values()}
-    layout_signature=(tuple(result.faces),tuple(result.owners),
+    boundary_keys=tuple(key[1] if key[0]=='shell' else key for key in result.vertex_keys)
+    boundary=tuple(i for i,key in enumerate(boundary_keys) if key[0] in ('v','s'))
+    front_count=len(cache['result'].faces)
+    layout_signature=(tuple(result.faces),tuple(result.owners),boundary,front_count,
         tuple(sorted((owner,p.settings.order) for owner,p in plans.items())))
     saved=cache.get('gpu_layout')
     if saved and saved[0]==layout_signature:layout=saved[1]
@@ -2070,11 +2097,19 @@ def _gpu_mesh_records(cache,result,smooth):
             edges=tuple(owned_edges[key]);keys=edges
             layout.append((key,tuple(indices),owners,vertices,faces_key,edges,keys))
         cache['gpu_layout']=(layout_signature,tuple(layout))
+        boundary=set(boundary)
+        cache['gpu_boundary_corners']=tuple((vertex,owner,fi,corner) for fi,(face,owner) in enumerate(zip(result.faces[:front_count],result.owners[:front_count])) for corner,vertex in enumerate(face) if vertex in boundary)
     records=[]
     for key,indices,owners,vertices,faces_key,edges,keys in layout:
         faces=tuple((result.faces[fi],result.owners[fi],normals[fi]) for fi in indices)
         geometry=(faces_key,tuple(result.vertices[v] for v in vertices),tuple(normals[fi] for fi in indices))
         records.append((key,faces,owners,geometry,edges,keys))
+    boundary_normals={}
+    for vertex,owner,fi,corner in cache.get('gpu_boundary_corners',()):
+        key=(boundary_keys[vertex],owner);value=normals[fi][corner]
+        if key in boundary_normals:boundary_normals[key]=core.add(boundary_normals[key],value)
+        else:boundary_normals[key]=value
+    cache['gpu_boundary_normals']={key:core.norm(value) for key,value in boundary_normals.items()}
     cache['gpu_mesh_signature']=signature;cache['gpu_mesh_records']=tuple(records)
     return cache['gpu_mesh_records']
 
@@ -2128,27 +2163,16 @@ def _gpu_batches(cache,guide,shader):
     evaluate=result.edge_evaluator
     if overlays and evaluate is None:
         evaluate=core.make_edge_evaluator(cache['positions'],list(result.plans_by_loop.values()),result.directional_smoothing)
-    old_rails=cache.get('gpu_rail_records',{});rail_records={};rail_segments={}
-    for paths in (result.face_paths.values() if overlays else ()):
-        for path in paths:
-            for a,b in zip(path,path[1:]):
-                key=core.edge_key(a,b)
-                if key in rail_records:continue
-                stamp=(transform,evaluate.coefficients.get((a,b)),evaluate.coefficients.get((b,a)))
-                saved=old_rails.get(key)
-                if saved and saved[0]==stamp:record=saved
-                else:
-                    curve=[tuple(matrix@Vector(evaluate(a,b,j/24.))) for j in range(25)]
-                    record=(stamp,[p for pair in zip(curve,curve[1:]) for p in pair])
-                rail_records[key]=record;rail_segments[key]=record[1]
+    from . import strokes
+    rail_records,rail_segments,rail_attributes=strokes.rails(cache,result,evaluate,matrix,normal_matrix,overlays)
     rail_signature=tuple((key,record[0]) for key,record in sorted(rail_records.items()))
     rails=cache.get('gpu_rails')
     if cache.get('gpu_rail_signature')!=rail_signature:
-        lines=[p for key in sorted(rail_records) for p in rail_records[key][1]]
-        rails=batch_for_shader(wire_shader,'LINES',{'pos':lines}) if lines else None
+        attributes={name:[value for key in sorted(rail_records) for value in rail_records[key][1][name]] for name in ('pos','normalA','normalB','curveGap')}
+        rails=batch_for_shader(_stroke_shader(guides=True),'LINES',attributes) if attributes['pos'] else None
     solid=_BatchGroup(item[1] for item in current.values());wire=_BatchGroup(item[2] for item in current.values())
     cache.update(gpu_signature=signature,gpu_batches=(solid,wire,rails),gpu_chunks=current,
-        gpu_rails=rails,gpu_rail_records=rail_records,gpu_rail_signature=rail_signature,rail_segments=rail_segments)
+        gpu_rails=rails,gpu_rail_records=rail_records,gpu_rail_signature=rail_signature,rail_segments=rail_segments,rail_attributes=rail_attributes)
     return solid,wire,rails
 
 
@@ -2254,7 +2278,7 @@ def _draw_preview():
                     # Smooth curves show the actual guiding shape, not only
                     # the straight native Blender control edges.
                     gpu.state.depth_test_set(overlay_depth)
-                    guide_shader=_stroke_shader()
+                    guide_shader=_stroke_shader(style.guide_width,guides=True)
                     guide_shader.bind()
                     guide_shader.uniform_float('color',style.guide)
                     gpu.state.line_width_set(style.guide_width)
@@ -2265,7 +2289,7 @@ def _draw_preview():
                     bm=bmesh.from_edit_mesh(obj.data)
                     selected=_selected_guide_batch(cached,bm,ctx.tool_settings.mesh_select_mode[0])
                     if selected:
-                        selected_shader=_stroke_shader()
+                        selected_shader=_stroke_shader(style.selected_width,guides=True)
                         selected_shader.bind()
                         selected_shader.uniform_float('color',style.selected)
                         gpu.state.depth_test_set(overlay_depth)
@@ -2276,7 +2300,9 @@ def _draw_preview():
                     from . import controls
                     for side,coords in controls.caps(bm,obj,cached)[0]:
                         if len(coords)<2:continue
-                        endpoint_shader=_stroke_shader();endpoint_shader.bind();endpoint_shader.uniform_float('color',style.caps[side])
+                        primary=_zone_ui_primary(bm,obj);plan=cached['result'].plans_by_loop.get(tuple(v.index for v in primary.verts)) if primary else None
+                        normal=(obj.matrix_world.to_3x3().inverted_safe().transposed()@Vector(plan.normal)).normalized() if plan else Vector()
+                        endpoint_shader=_stroke_shader(style.cap_width,normal=normal);endpoint_shader.bind();endpoint_shader.uniform_float('color',style.caps[side])
                         gpu.state.depth_test_set(overlay_depth);gpu.state.line_width_set(style.cap_width)
                         batch_for_shader(endpoint_shader,'LINE_STRIP',{'pos':coords}).draw(endpoint_shader)
                     gpu.state.line_width_set(1.);gpu.state.depth_test_set('LESS_EQUAL')
@@ -2284,7 +2310,7 @@ def _draw_preview():
             preview=_CUT_PREVIEW
             for coords in preview.get('lines',(preview['line'],)):
                 if not coords:continue
-                shader_line=_stroke_shader();shader_line.bind()
+                shader_line=_stroke_shader(3.);shader_line.bind()
                 shader_line.uniform_float('color',(.95,.77,.41,1.0));gpu.state.depth_test_set(overlay_depth)
                 if len(coords)>=2:
                     batch=batch_for_shader(shader_line,'LINE_STRIP',{'pos':[tuple(p) for p in coords]})

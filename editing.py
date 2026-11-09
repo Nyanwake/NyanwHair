@@ -400,7 +400,7 @@ class NYANW35_OT_extrude(Operator):
         depth=gpu.state.depth_test_get();mask=gpu.state.depth_mask_get()
         try:
             from . import palette
-            style=palette.get(self._obj.nh35);shader=a._stroke_shader();shader.bind();shader.uniform_float('color',style.selected)
+            style=palette.get(self._obj.nh35);shader=a._stroke_shader(style.selected_width);shader.bind();shader.uniform_float('color',style.selected)
             gpu.state.blend_set('ALPHA');gpu.state.depth_test_set('NONE' if a._xray_enabled(ctx) else 'LESS_EQUAL');gpu.state.depth_mask_set(False);gpu.state.line_width_set(style.selected_width)
             a.batch_for_shader(shader,'LINE_STRIP',{'pos':self._curve_preview}).draw(shader)
         except (ReferenceError,RuntimeError,ValueError):pass
