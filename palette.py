@@ -44,21 +44,40 @@ def _make(guide,selection,points,active,outline,wire,group):
         tint=_rgb(selection),tint_strength=.30)
 
 # Keep the stored identifiers from 0.35.26 (WARM=0, CLASSIC=1).
-CLASSIC=_make('#BFD9EF','#36B9AE','#F2F0E7','#FFF0C7','#303B44','#343A40','#E5EAF0')
-WARM=_make('#DDB09A','#6BA78E','#F7DFC9','#FFF0C5','#403631','#3D3531','#E9DED5')
-RED=_make('#E28C83','#EFA63E','#F6CEBB','#FFE8AF','#4D2B31','#472D30','#EBD2CD')
-PURPLE=_make('#C7B8EB','#9D69D8','#E9E1F7','#FFF0C6','#3D3449','#3C3543','#E4DAEF')
-GREEN=_make('#B4D6B3','#62A77C','#E4EED7','#FFF2D1','#303D35','#343E36','#DEE9D8')
+CLASSIC=_make('#BFD9EF','#DDFDF8','#F2F0E7','#FFFFFF','#303B44','#343A40','#E5EAF0')
+WARM=_make('#DDB09A','#D1F6E5','#F7DFC9','#FFFFFF','#403631','#3D3531','#E9DED5')
+RED=_make('#E28C83','#FFE3A1','#F6CEBB','#FFFFFF','#4D2B31','#472D30','#EBD2CD')
+PURPLE=_make('#C7B8EB','#F0E6FF','#E9E1F7','#FFFFFF','#3D3449','#3C3543','#E4DAEF')
+GREEN=_make('#B4D6B3','#DCFFE2','#E4EED7','#FFFFFF','#303D35','#343E36','#DEE9D8')
 
-PALETTES={'CLASSIC':CLASSIC,'WARM':WARM,'RED':RED,'PURPLE':PURPLE,'GREEN':GREEN}
+BLENDER=_make('#000000','#FF9900','#000000','#FFFFFF','#202020','#202020','#A6A6A6')
+
+PALETTES={'BLENDER':BLENDER,'CLASSIC':CLASSIC,'WARM':WARM,'RED':RED,'PURPLE':PURPLE,'GREEN':GREEN}
 # Explicit enum numbers preserve old saved values even though the menu is reordered.
-ITEMS=[('CLASSIC','Светлая','Светло-голубые направляющие и бирюзовое выделение',1),
-       ('WARM','Тепло-зелёная','Песочная терракота, серо-зелёное выделение и кремовые точки',0),
-       ('RED','Красная','Кораллово-красные направляющие, золотистое выделение и винный контур',2),
-       ('PURPLE','Пастельная фиолетовая','Лавандовые направляющие и насыщенное фиолетовое выделение',3),
-       ('GREEN','Пастельная зелёная','Мягкие зелёные направляющие и выразительное зелёное выделение',4)]
+ITEMS=[('CLASSIC','Светлый','Светло-голубые направляющие и бирюзовое выделение',1),
+       ('WARM','Тёплый','Песочная терракота, серо-зелёное выделение и кремовые точки',0),
+       ('RED','Красный','Кораллово-красные направляющие, золотистое выделение и винный контур',2),
+       ('PURPLE','Фиолетовый','Лавандовые направляющие и насыщенное фиолетовое выделение',3),
+       ('GREEN','Зелёный','Мягкие зелёные направляющие и выразительное зелёное выделение',4),
+       ('BLENDER','Блендер','Серый объект и цвета редактирования текущей темы Blender',5)]
 
-def get(props):return PALETTES.get(props.palette,WARM)
+_NATIVE=None
+
+def _blender():
+    global _NATIVE
+    try:
+        import bpy
+        theme=bpy.context.preferences.themes[0].view_3d
+        key=tuple(tuple(getattr(theme,k))[:3] for k in ('wire_edit','vertex','vertex_select','edge_select','face_select'))
+    except (ImportError,AttributeError,IndexError):return BLENDER
+    if _NATIVE and _NATIVE[0]==key:return _NATIVE[1]
+    from dataclasses import replace
+    def hexcolor(rgb):return '#'+''.join('%02X'%max(0,min(255,round(c*255))) for c in rgb)
+    style=_make(hexcolor(key[0]),hexcolor(key[3]),hexcolor(key[1]),'#FFFFFF','#202020','#202020','#A6A6A6')
+    style=replace(style,points=(style.points[0],_pixel_rgba(hexcolor(key[2])),style.points[2]),tint=_rgb(hexcolor(key[4])))
+    _NATIVE=(key,style);return style
+
+def get(props):return _blender() if props.palette=='BLENDER' else PALETTES.get(props.palette,WARM)
 
 # Legacy saved color is retained for file compatibility; themes own rendered color.
 def tint_get(props):return props.get('tint',get(props).tint)
@@ -72,6 +91,6 @@ def markers(style):
     """Selected endpoint markers retain their semantic fill and gain an accent ring."""
     colors=(*style.points,*style.cap_points,*style.cap_points)
     radii=(*style.radii,style.radii[3]+.4,style.radii[4]+.4)
-    outlines=(style.outline,style.outline,style.points[1],style.outline,style.outline,style.points[1],style.points[1])
-    widths=(style.outline_width,style.outline_width,2.,style.outline_width,style.outline_width,1.8,1.8)
+    outlines=(style.outline,style.outline,style.outline,style.outline,style.outline,style.points[1],style.points[1])
+    widths=(style.outline_width,style.outline_width,1.6,style.outline_width,style.outline_width,1.8,1.8)
     return zip(colors,radii,outlines,widths)

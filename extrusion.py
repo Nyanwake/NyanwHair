@@ -140,7 +140,7 @@ def _wire(bm,source,offset):
     vertex=bm.verts.new(origin+offset)
     vertex[bm.verts.layers.int[a.L_VERTEX_GROUP]]=source[bm.verts.layers.int[a.L_VERTEX_GROUP]] or groups.active_id(bpy.context.edit_object)
     bm.edges.new((source,vertex));e._select(bm,[vertex]);bm.verts.index_update()
-    return dict(mode='WIRE',indices=(vertex.index,),bases=(tuple(origin),),anchor=tuple(origin),
+    return dict(mode='WIRE',wire_start=source.index,indices=(vertex.index,),bases=(tuple(origin),),anchor=tuple(origin),
         direction=tuple(direction.normalized() if direction.length else Vector((0,0,1))))
 
 

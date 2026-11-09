@@ -1176,7 +1176,6 @@ class NYANW35_OT_create_guide(Operator):
         guide.show_in_front=False
         _prepare_object(guide)
         _rebuild(guide,True)
-        self.report({'INFO'},'Управляющая грань создана. Tab: редактирование. F: новая зона.')
         return {'FINISHED'}
 
 
@@ -1377,7 +1376,6 @@ class NYANW35_OT_pin_rails(Operator):
         _sync_legacy_face(f,bm)
         bmesh.update_edit_mesh(obj.data,loop_triangles=False,destructive=False)
         _CACHE.pop(obj.as_pointer(),None)
-        self.report({'INFO'},'Направление сохранено в грани. Перемещение точек его не изменяет.')
         return {'FINISHED'}
 
 
@@ -1914,13 +1912,9 @@ class NYANW35_OT_hair_loop(Operator):
                     def insert(stage):
                         _insert_anchor_bmesh(stage,proposal,result,select_result=True)
                     _edit_transaction(self._obj,insert)
-                    self.report({'INFO'},'Опорная точка создана на сглаженной кривой')
                 else:
                     result=_CACHE[self._obj.as_pointer()]['result']
-                    budget,a,b=_split_control_face(self._obj,proposal['zone'],proposal['t'],result)
-                    from . import cuts
-                    count=len(cuts.network(result,proposal['zone'],proposal['t']))
-                    self.report({'INFO'},'Hair Loop: %d сегм., ширина %d → %d + %d'%(count,budget,a,b))
+                    _split_control_face(self._obj,proposal['zone'],proposal['t'],result)
             except Exception as exc:
                 # Keep the full traceback for genuine BMesh/API regressions.
                 # A short operator message alone hides the failing callsite.
@@ -1952,7 +1946,7 @@ def _draw_extra_panels(layout,context,obj,cached,edit):
 
 
 class NYANW35_PT_main(Panel):
-    bl_label='NyanwHair v0.35.28'
+    bl_label='NyanwHair v0.35.29'
     bl_idname='NYANW35_PT_main'
     bl_space_type='VIEW_3D'
     bl_region_type='UI'
@@ -2323,7 +2317,7 @@ def _draw_control_points():
         view=(tuple(v for row in ctx.region_data.perspective_matrix for v in row),ctx.region.width,ctx.region.height)
         from . import decorations
         previews=tuple((o.as_pointer(),tuple(id(decorations.display(entry,o)) for entry in groups.all_caches(o)),tuple(v for row in o.matrix_world for v in row),o.visible_get(view_layer=ctx.view_layer),o.nh35.show_preview) for o in ctx.scene.objects if is_guide(o))
-        signature=(_SOURCE_REVISION,id(cache.get('result')),view,selection,previews,_xray_enabled(ctx),ctx.view_layer.as_pointer(),obj.nh35.palette)
+        signature=(_SOURCE_REVISION,id(cache.get('result')),view,selection,previews,_xray_enabled(ctx),ctx.view_layer.as_pointer(),obj.nh35.palette,style)
         saved=cache.setdefault('point_draw_cache',{});region_key=ctx.region.as_pointer()
         record=saved.get(region_key)
         from . import controls
