@@ -52,3 +52,31 @@ def rails(cache,result,evaluate,matrix,normal_matrix,visible):
         records[edge]=(stamp,data);segments[edge]=data['pos'];attributes[edge]=data
     cache['gpu_guide_geometry_signature']=signature
     return records,segments,attributes
+
+
+def view_style(cache,obj,context):
+    """Scale overlay strokes by projected control bounds, for either view projection."""
+    import gpu
+    result=cache.get('result')
+    if result is None or not result.faces:return 1.,0.
+    points=getattr(result,'source_points',()) or cache.get('positions',())
+    if not points:return 1.,0.
+    matrix=obj.matrix_world;transform=tuple(float(v) for row in matrix for v in row)
+    signature=(id(result),transform)
+    saved=cache.get('gpu_stroke_bounds')
+    if saved is None or saved[0]!=signature:
+        ids={v for plan in result.plans_by_loop.values() for v in plan.boundary} if result else set()
+        used=[points[i] for i in sorted(ids)] if ids else points
+        lo=tuple(min(p[axis] for p in used) for axis in range(3));hi=tuple(max(p[axis] for p in used) for axis in range(3))
+        corners=tuple(matrix@Vector((x,y,z)) for x in (lo[0],hi[0]) for y in (lo[1],hi[1]) for z in (lo[2],hi[2]))
+        span=max((one-two).length for one in corners for two in corners)
+        saved=(signature,corners,span);cache['gpu_stroke_bounds']=saved
+    _,corners,span=saved
+    projection=gpu.matrix.get_projection_matrix()@gpu.matrix.get_model_view_matrix();clips=[projection@point.to_4d() for point in corners]
+    if any(point.w<=1e-6 for point in clips):return 1.,0.
+    _,_,width,height=gpu.state.viewport_get();screen=[(point.x/point.w*width*.5,point.y/point.w*height*.5) for point in clips]
+    extent=max(max(p[axis] for p in screen)-min(p[axis] for p in screen) for axis in (0,1))
+    amount=max(0.,min(1.,(extent-60.)/540.));amount=amount*amount*(3.-2.*amount)
+    scale=.28+.72*amount
+    limit=span*.01/max(1e-4,(1.-scale)**2) if scale<.99999 else 0.
+    return scale,limit

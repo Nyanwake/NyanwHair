@@ -400,8 +400,11 @@ class NYANW35_OT_extrude(Operator):
         depth=gpu.state.depth_test_get();mask=gpu.state.depth_mask_get()
         try:
             from . import palette
-            style=palette.get(self._obj.nh35);shader=a._stroke_shader(style.selected_width);shader.bind();shader.uniform_float('color',style.selected)
-            gpu.state.blend_set('ALPHA');gpu.state.depth_test_set('NONE' if a._xray_enabled(ctx) else 'LESS_EQUAL');gpu.state.depth_mask_set(False);gpu.state.line_width_set(style.selected_width)
+            style=palette.get(self._obj.nh35)
+            from . import strokes
+            scale,limit=strokes.view_style(a._CACHE.get(self._obj.as_pointer(),{}),self._obj,ctx)
+            shader=a._stroke_shader(style.selected_width*scale,max_clearance=limit);shader.bind();shader.uniform_float('color',style.selected)
+            gpu.state.blend_set('ALPHA');gpu.state.depth_test_set('NONE' if a._xray_enabled(ctx) else 'LESS_EQUAL');gpu.state.depth_mask_set(False);gpu.state.line_width_set(style.selected_width*scale)
             a.batch_for_shader(shader,'LINE_STRIP',{'pos':self._curve_preview}).draw(shader)
         except (ReferenceError,RuntimeError,ValueError):pass
         finally:gpu.state.depth_test_set(depth);gpu.state.depth_mask_set(mask);gpu.state.line_width_set(1.);gpu.state.blend_set('NONE')
