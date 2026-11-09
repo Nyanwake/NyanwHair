@@ -37,24 +37,73 @@ def _finish(bm,offset,moving,origin,direction,mode,count,records):
     return dict(mode=mode,count=count,indices=tuple(v.index for v in moving),bases=tuple(tuple(v.co-offset) for v in moving),anchor=tuple(origin),direction=tuple(direction.normalized() if direction.length else Vector((0,0,1))))
 
 
-def _extend(bm,targets,offset):
-    records=list(_records(bm));moving={};origins=[];directions=[]
+def _edge_curve(result,one,two):
+    p,q=tuple(one.co),tuple(two.co)
+    coefficients=getattr(result.edge_evaluator,'coefficients',{})
+    data=coefficients.get((one.index,two.index))
+    if data is not None:return tuple(tuple(v) for v in data)
+    data=coefficients.get((two.index,one.index))
+    if data is not None:
+        q,p,mb,ma=data
+        return tuple(p),tuple(q),tuple(-x for x in ma),tuple(-x for x in mb)
+    chord=tuple(two.co-one.co)
+    return p,q,chord,chord
+
+
+def update_opening(bm,opening,offset):
+    """Widen from the saved curves, never from a previous mouse event's positions."""
+    bm.verts.ensure_lookup_table()
+    for origin,span,carrier,rows in opening:
+        origin=Vector(origin);distance=offset.length
+        retreat=.6*span*max(distance,span*1e-5)/(max(distance,span*1e-5)+.5*span)
+        positions=[]
+        for base,end,curve in rows:
+            p,q,ma,mb=map(Vector,curve);length=(q-p).length
+            t=min(.6,retreat/max(length,1e-8));t2=t*t;t3=t2*t
+            point=(2*t3-3*t2+1)*p+(-2*t3+3*t2)*q+(t3-2*t2+t)*ma+(t3-t2)*mb
+            bm.verts[base].co=point;positions.append(point)
+        center=positions[carrier];direction=offset.normalized() if distance>1e-8 else (origin-center).normalized()
+        for (base,end,curve),point in zip(rows,positions):
+            across=point-center;across-=direction*across.dot(direction)
+            bm.verts[end].co=origin+offset+across
+
+
+def _extend(bm,targets,offset,result):
+    records=list(_records(bm));moving={};origins=[];directions=[];jobs=[];fans={};aliases={}
     order=bm.faces.layers.int[a.L_ORDER]
+    # Snapshot all corners before changing any shared vertex or replacing a face.
     for face,chosen in targets:
-        attributes=_attributes(face,bm);identity=int(face[order]);slots=list(e.boundary_vertices(face,bm));ring=list(face.verts);old_edges=list(face.edges)
+        slots=list(e.boundary_vertices(face,bm));ring=list(face.verts)
+        jobs.append((face,chosen,_attributes(face,bm),int(face[order]),slots,ring,list(face.edges)))
+        for index in chosen:
+            if len(slots[index])!=1:continue
+            tip=next(iter(slots[index]));i=ring.index(tip)
+            fans.setdefault(tip,set()).update((ring[i-1],ring[(i+1)%len(ring)]))
+    descriptions=[]
+    for tip,neighbors in fans.items():
+        neighbors=sorted(neighbors,key=lambda v:v.index);origin=tip.co.copy()
+        carrier=max(range(len(neighbors)),key=lambda i:(len(bm.edges.get((tip,neighbors[i])).link_faces),-neighbors[i].index))
+        rows=[];span=sum((v.co-origin).length for v in neighbors)/len(neighbors)
+        if span<1e-8:raise ValueError('Не удалось раскрыть точечный кончик')
+        curves=[_edge_curve(result,tip,neighbor) for neighbor in neighbors]
+        for i,(neighbor,curve) in enumerate(zip(neighbors,curves)):
+            base=tip if i==carrier else bm.verts.new(origin)
+            if base is not tip:
+                for name in (a.L_POINT_DENSITY,a.L_POINT_RADIUS):base[bm.verts.layers.float[name]]=tip[bm.verts.layers.float[name]]
+                base[bm.verts.layers.int[a.L_VERTEX_GROUP]]=tip[bm.verts.layers.int[a.L_VERTEX_GROUP]]
+            aliases[tip,neighbor]=base;end=bm.verts.new(origin+offset);moving[base]=end;rows.append((base,end,curve))
+        descriptions.append((tuple(origin),span,carrier,rows))
+    if aliases:
+        records=[{(aliases.get((u,v),u),aliases.get((v,u),v)):value for (u,v),value in values.items()} for values in records]
+    for face,chosen,attributes,identity,slots,ring,old_edges in jobs:
         replacements={}
         for index in chosen:
             cap=slots[index];vertices=list(cap);center=sum((v.co for v in vertices),Vector())/len(vertices);origins.append(center)
             if len(cap)==1:
-                first=vertices[0];i=ring.index(first);neighbor=ring[(i+1)%len(ring)];old=first.co.copy()
-                directions.append(old-(ring[i-1].co+neighbor.co)*.5)
-                across=(neighbor.co-ring[i-1].co)*.15
-                if across.length<1e-8:raise ValueError('Не удалось раскрыть точечный кончик')
-                first.co=old-across;second=bm.verts.new(old+across)
-                for name in (a.L_POINT_DENSITY,a.L_POINT_RADIUS):second[bm.verts.layers.float[name]]=first[bm.verts.layers.float[name]]
-                records=[{((second if u is first and v is neighbor else u),(second if v is first and u is neighbor else v)):value for (u,v),value in values.items()} for values in records]
-                moving[first]=bm.verts.new(first.co+offset);moving[second]=bm.verts.new(second.co+offset)
-                replacements[first]=[first,moving[first],moving[second],second]
+                tip=vertices[0];i=ring.index(tip);previous,following=ring[i-1],ring[(i+1)%len(ring)]
+                directions.append(center-(previous.co+following.co)*.5)
+                first,second=aliases[tip,previous],aliases[tip,following]
+                replacements[tip]=[first,moving[first],moving[second],second]
                 slots[index]=frozenset((moving[first],moving[second]))
             else:
                 i=next(i for i,v in enumerate(ring) if v in cap and ring[(i+1)%len(ring)] in cap)
@@ -68,8 +117,17 @@ def _extend(bm,targets,offset):
         bm.faces.remove(face);_face(bm,polygon,attributes,identity,slots)
         for edge in old_edges:
             if edge.is_valid and not edge.link_faces:bm.edges.remove(edge)
-    values=list(dict.fromkeys(moving.values()));origin=sum(origins,Vector())/len(origins);direction=sum(directions,Vector())
-    return _finish(bm,offset,values,origin,direction,'EXTEND',sum(len(indices) for face,indices in targets),records)
+    bm.verts.index_update()
+    opening=tuple((origin,span,carrier,tuple((base.index,end.index,curve) for base,end,curve in rows)) for origin,span,carrier,rows in descriptions)
+    update_opening(bm,opening,offset)
+    values=list(dict.fromkeys(moving.values()))
+    # Keep the central endpoint active at the cursor when opening a shared tip.
+    if descriptions:
+        active=descriptions[-1][3][descriptions[-1][2]][1];values.remove(active);values.append(active)
+    origin=sum(origins,Vector())/len(origins);direction=sum(directions,Vector())
+    data=_finish(bm,offset,values,origin,direction,'EXTEND',sum(len(indices) for face,indices in targets),records)
+    data['opening']=opening
+    return data
 
 
 def _edge_count(result,one,two,default=1):
@@ -157,14 +215,15 @@ def extrude(bm,result,offset):
         for i,cap in enumerate(slots):
             if not cap or not cap<=selected:continue
             if len(cap)==1:
-                if len(next(iter(cap)).link_faces)!=1:continue
+                tip=next(iter(cap))
+                if any(frozenset((tip,)) not in e.boundary_vertices(neighbor,bm) for neighbor in tip.link_faces):continue
             else:
                 edge=bm.edges.get(tuple(cap))
                 if edge is None or len(edge.link_faces)!=1:continue
                 if 'EDGE' in bm.select_mode and not edge.select:continue
             chosen.append(i)
         if chosen:targets.append((face,chosen))
-    if targets:return _extend(bm,targets,offset)
+    if targets:return _extend(bm,targets,offset,result)
     if len(selected)==1:return _wire(bm,next(iter(selected)),offset)
     # Two opposite rail edges delimit a band; its old surface is removed.
     bands=[]

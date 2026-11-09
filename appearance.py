@@ -77,7 +77,7 @@ def shader():
         info.fragment_source('''
         void main(){
             vec3 n=normalize(viewNormal)*(gl_FrontFacing?1.0:-1.0);
-            float intensity=.75+.25*abs(dot(n,normalize(vec3(.31,.43,.85))));
+            float intensity=lighting.w>.5?1.0:.75+.25*abs(dot(n,normalize(vec3(.31,.43,.85))));
             vec3 base=baseColor*intensity*(lighting.z/.8);
             if(lighting.x>.5){
                 vec2 uv=clamp(n.xy*.5+.5,vec2(.001),vec2(.999));
@@ -143,7 +143,7 @@ def bind(context,follow_matcap=True,brightness=.8):
         if None not in _MATCAPS:_MATCAPS[None]=_dummy()
         textures=_MATCAPS[None];status='MatCap недоступен: используется студийный свет'
     surface.uniform_sampler('matcapDiffuse',textures[0]);surface.uniform_sampler('matcapSpecular',textures[1])
-    surface.uniform_float('lighting',(float(bool(path and status is None)),float(shading.show_specular_highlight),brightness,0.))
+    surface.uniform_float('lighting',(float(bool(path and status is None)),float(shading.show_specular_highlight),brightness,float(shading.type=='SOLID' and shading.light=='FLAT')))
     return surface,status
 
 

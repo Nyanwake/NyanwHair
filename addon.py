@@ -565,7 +565,12 @@ def _prepare_bmesh(bm, result=None, group_id=None):
     for face in bm.faces:
         existing=_read_caps(face,layer)
         if existing is not None:
-            _write_caps(face,bm.loops.layers.int[L_CAP],existing)
+            if any(c is None for c in existing):
+                boundary=tuple(v.index for v in face.verts);hint=result.plans_by_loop.get(boundary) if result else None
+                try:existing=core.complete_caps(points,boundary,existing,hint)
+                except ValueError:continue
+                _write_boundary_pair(face,bm,existing)
+            else:_write_caps(face,bm.loops.layers.int[L_CAP],existing)
             continue
         boundary=tuple(v.index for v in face.verts)
         hint=result.plans_by_loop.get(boundary) if result else None
@@ -1108,7 +1113,7 @@ class NHGuidedProperties(PropertyGroup):
     show_wire: BoolProperty(name='Сетка',default=True,description='Показать рёбра результата; направляющие остаются видимыми')
     wire_opacity: FloatProperty(name='Непрозрачность сетки',default=.22,min=0.,max=1.,subtype='FACTOR')
     smooth_preview: BoolProperty(name='Smooth + Sharp по направляющим',default=True,description='Плавное освещение внутри прядей с резкими границами по направляющим; сохраняется в независимом Mesh')
-    follow_matcap: BoolProperty(name='MatCap из вида',default=True,description='В режиме Solid использовать MatCap, выбранный в настройках освещения 3D-вида')
+    follow_matcap: BoolProperty(name='MatCap из вида',default=True,description='Устаревшее поле; освещение всегда следует 3D-виду',options={'HIDDEN'})
     regular_rows: BoolProperty(name='Ровные квадовые полосы',default=True,description='Устаревшее сохранённое свойство; инструменты используют ровные квадовые полосы')
     rows: IntProperty(name='Детализация по длине',default=12,min=2,max=160,description='Общая плотность рядов: короткие пряди получают меньше шагов, длинные больше')
     detail_length: FloatProperty(default=0.,min=0.,options={'HIDDEN'})
@@ -1932,7 +1937,7 @@ def _draw_extra_panels(layout,context,obj,cached,edit):
     header,body=layout.panel('nyanw_appearance',default_closed=True);header.label(text='Внешний вид',icon='SHADING_SOLID')
     if body is not None:
         if edit:body.prop(props,'palette',text='Тема')
-        body.prop(props,'smooth_preview',text='Smooth + Sharp');body.prop(props,'follow_matcap',text='MatCap из вида');body.prop(props,'brightness',text='Яркость',slider=True)
+        body.prop(props,'smooth_preview',text='Smooth + Sharp');body.prop(props,'brightness',text='Яркость',slider=True)
         row=body.row(align=True);row.prop(props,'show_wire',text='Сетка');column=row.column();column.enabled=props.show_wire;column.prop(props,'wire_opacity',text='',slider=True)
         if edit:body.prop(props,'show_tint',text='Подсветка сегмента')
         if edit and props.show_tint:
@@ -1946,7 +1951,7 @@ def _draw_extra_panels(layout,context,obj,cached,edit):
 
 
 class NYANW35_PT_main(Panel):
-    bl_label='NyanwHair v0.35.29'
+    bl_label='NyanwHair v0.35.30'
     bl_idname='NYANW35_PT_main'
     bl_space_type='VIEW_3D'
     bl_region_type='UI'
@@ -2232,7 +2237,7 @@ def _draw_preview():
                 solid,wire,rails=_gpu_batches(cached,obj,shader)
                 if solid:
                     gpu.state.depth_mask_set(True)
-                    shader,status=appearance.bind(ctx,obj.nh35.follow_matcap,obj.nh35.brightness)
+                    shader,status=appearance.bind(ctx,True,obj.nh35.brightness)
                     cached['appearance_status']=status
                     solid.draw(shader)
                 gpu.state.depth_mask_set(False)

@@ -1,4 +1,4 @@
-"""NyanwHair 0.35.29: shared curve contracts and independent reverse-sheet widths.
+"""NyanwHair 0.35.30: shared curve contracts and independent reverse-sheet widths.
 
 Pure Python, no Blender IDs or tags on vertices/edges. Blender face corners may
 store the user's chosen end caps; this module only consumes that choice.
@@ -249,6 +249,44 @@ def auto_caps(points,loop):
     return best[1],best[2]
 
 
+def complete_caps(points,loop,caps=None,hint=None):
+    """Resolve automatic slots without dropping a zone or changing its fixed edge."""
+    caps=list(caps or (None,None))
+    if len(caps)!=2:raise ValueError('Некорректная пара краёв')
+    if any(c is not None and (c[0] not in ('point','edge') or not 0<=c[1]<len(loop)) for c in caps):
+        raise ValueError('Край сегмента требует уточнения после изменения каркаса')
+    missing=[i for i,c in enumerate(caps) if c is None]
+    if not missing:return tuple(caps)
+    if hint is not None and hint.boundary==tuple(loop):
+        old=(hint.start,hint.end)
+        if len(missing)==2:return old
+        fixed=caps[1-missing[0]]
+        if fixed in old:
+            caps[missing[0]]=old[1-old.index(fixed)]
+            if cap_paths(loop,*caps):return tuple(caps)
+    if len(missing)==2:return auto_caps(points,loop)
+    slot=missing[0];fixed=caps[1-slot];origin=cap_location(points,loop,fixed)
+    center=mul(tuple(map(sum,zip(*(points[v] for v in loop)))),1./len(loop))
+    axis=norm(sub(center,origin))
+    if length(axis)<EPS:axis=major_axis(points,loop)
+    values=[dot(sub(points[v],origin),axis) for v in loop];end=max(values);scale=max(EPS,max(values)-min(values));best=None
+    candidates=[('point',i) for i in range(len(loop))]+[('edge',i) for i in range(len(loop))]
+    for cap in candidates:
+        pair=list(caps);pair[slot]=cap;paths=cap_paths(loop,*pair)
+        if paths is None:continue
+        i=cap[1];j=(i+1)%len(loop);distance=(end-dot(sub(cap_location(points,loop,cap),origin),axis))/scale
+        if cap[0]=='edge':penalty=.8*length(sub(points[loop[i]],points[loop[j]]))/scale+2.*abs(values[i]-values[j])/scale
+        else:
+            before=norm(sub(points[loop[(i-1)%len(loop)]],points[loop[i]]));after=norm(sub(points[loop[j]],points[loop[i]]))
+            angle=math.acos(max(-1.,min(1.,dot(before,after))));penalty=.34+max(0.,min(1.,(angle-.5)/1.7))*.85
+        lengths=[sum(length(sub(points[b],points[a])) for a,b in zip(path,path[1:])) for path in paths]
+        if min(lengths)<EPS:continue
+        score=distance*2.3+penalty+.2*abs(lengths[0]-lengths[1])/max(lengths)
+        if best is None or score<best[0]:best=(score,tuple(pair))
+    if best is None:raise ValueError('Не удалось автоматически определить противоположный край')
+    return best[1]
+
+
 def neutral_caps(boundary,caps):
     """Choose an internal parameter direction independent of UI slot order."""
     if caps is None or len(caps)!=2 or any(c is None or c[0] not in ('point','edge') for c in caps):return caps
@@ -266,7 +304,8 @@ def plan_face(points,boundary,index,settings,hint=None,caps=None):
     normal=newell(points,loop)
     if length(normal)<EPS: raise ValueError('Площадь управляющей грани равна нулю')
     if caps is not None:
-        if len(caps)!=2 or any(c is None for c in caps):raise ValueError('Укажи недостающий край сегмента')
+        if len(caps)!=2:raise ValueError('Некорректная пара краёв')
+        if any(c is None for c in caps):caps=neutral_caps(loop,complete_caps(points,loop,caps,hint))
         if any(c[0] not in ('point','edge') for c in caps):raise ValueError('Край сегмента требует уточнения после изменения каркаса')
         c0,c1=caps
         paths=cap_paths(loop,c0,c1)

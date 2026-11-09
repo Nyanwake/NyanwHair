@@ -48,6 +48,9 @@ class NYANW35_OT_boundary(Operator):
     clear: bpy.props.BoolProperty(default=False,options={'SKIP_SAVE'})
     @classmethod
     def poll(cls,context):return bool(a.is_guide(context.edit_object))
+    @classmethod
+    def description(cls,context,properties):
+        return ('Автоматически определить этот край, сохранив противоположный и поверхность сегмента' if properties.clear else 'Назначить выбранную точку или ребро краем сегмента')
     def execute(self,context):
         obj=context.edit_object;live=bmesh.from_edit_mesh(obj.data);live.faces.index_update()
         face=a._zone_ui_primary(live,obj) or a._active_face(live,obj)
@@ -64,7 +67,10 @@ class NYANW35_OT_boundary(Operator):
                 elif len(empty)==2:index=0
                 else:raise ValueError('Оба края заданы: выбери «Край 1» или «Край 2» для замены')
             else:index=0 if self.slot=='FIRST' else 1
-            if self.clear:slots[index]=frozenset()
+            if self.clear:
+                raw=list(a._read_caps(face,a._boundary_layer(bm)) or (None,None));raw[index]=None
+                pair=a.core.complete_caps([tuple(v.co) for v in bm.verts],tuple(v.index for v in face.verts),raw)
+                a._write_boundary_pair(face,bm,pair);return
             else:
                 cap=a._selected_cap(face)
                 i=cap[1];loops=list(face.loops)
@@ -345,6 +351,9 @@ class NYANW35_OT_extrude(Operator):
         self._delta=delta;local=self._obj.matrix_world.inverted_safe().to_3x3()@delta
         bm=bmesh.from_edit_mesh(self._obj.data);bm.verts.ensure_lookup_table()
         for index,base in zip(self._data['indices'],self._data['bases']):bm.verts[index].co=Vector(base)+local
+        if self._data.get('opening'):
+            from . import extrusion
+            extrusion.update_opening(bm,self._data['opening'],local)
         bmesh.update_edit_mesh(self._obj.data,loop_triangles=False,destructive=False)
         a._rebuild(self._obj);context.area.tag_redraw()
     def _curve_update(self,context,event=None,rebuild=False):
