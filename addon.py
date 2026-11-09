@@ -1100,7 +1100,7 @@ class NHGuidedProperties(PropertyGroup):
     groups: CollectionProperty(type=groups.NH35HairGroup)
     group_index: IntProperty(get=groups.get_index,set=groups.set_index)
     active_group: IntProperty(default=1,min=1)
-    palette: EnumProperty(name='Палитра',items=[('WARM','Тёплая пастель','Приглушённые тёплые направляющие и точки; персиковое выделение'),('CLASSIC','Прежняя','Светло-голубые направляющие и прежний контраст')],default='WARM')
+    palette: EnumProperty(name='Тема',items=palette.ITEMS,default='WARM')
     brightness: FloatProperty(name="Яркость",default=.8,min=.1,max=2.)
     enabled: BoolProperty(default=False)
     live: BoolProperty(name='Live',default=True)
@@ -1113,7 +1113,7 @@ class NHGuidedProperties(PropertyGroup):
     rows: IntProperty(name='Детализация по длине',default=12,min=2,max=160,description='Общая плотность рядов: короткие пряди получают меньше шагов, длинные больше')
     detail_length: FloatProperty(default=0.,min=0.,options={'HIDDEN'})
     show_tint: BoolProperty(name='Подсветка зоны',default=True)
-    tint: FloatVectorProperty(name='Цвет зоны',size=3,subtype='COLOR',min=0.0,max=1.0,default=palette.WARM.tint,get=palette.tint_get,set=palette.tint_set)
+    tint: FloatVectorProperty(name='Цвет зоны',size=3,subtype='COLOR',min=0.0,max=1.0,default=palette.WARM.tint,get=palette.tint_get,set=palette.tint_set,options={'HIDDEN'})
     opacity: FloatProperty(name='Непрозрачность',default=palette.WARM.tint_strength,min=0,max=0.65,subtype='FACTOR',get=palette.strength_get,set=palette.strength_set)
 
 
@@ -1937,12 +1937,12 @@ def _draw_extra_panels(layout,context,obj,cached,edit):
     props=obj.nh35
     header,body=layout.panel('nyanw_appearance',default_closed=True);header.label(text='Внешний вид',icon='SHADING_SOLID')
     if body is not None:
-        if edit:body.prop(props,'palette',text='Палитра')
+        if edit:body.prop(props,'palette',text='Тема')
         body.prop(props,'smooth_preview',text='Smooth + Sharp');body.prop(props,'follow_matcap',text='MatCap из вида');body.prop(props,'brightness',text='Яркость',slider=True)
         row=body.row(align=True);row.prop(props,'show_wire',text='Сетка');column=row.column();column.enabled=props.show_wire;column.prop(props,'wire_opacity',text='',slider=True)
         if edit:body.prop(props,'show_tint',text='Подсветка сегмента')
         if edit and props.show_tint:
-            row=body.row(align=True);row.prop(props,'tint',text='');row.prop(props,'opacity',text='Сила',slider=True)
+            body.prop(props,'opacity',text='Сила выделения',slider=True)
         if cached.get('appearance_status'):body.label(text=cached['appearance_status'],icon='INFO')
     header,body=layout.panel('nyanw_tools',default_closed=True);header.label(text='Дополнительно',icon='PREFERENCES')
     if body is not None:
@@ -1952,7 +1952,7 @@ def _draw_extra_panels(layout,context,obj,cached,edit):
 
 
 class NYANW35_PT_main(Panel):
-    bl_label='NyanwHair v0.35.26'
+    bl_label='NyanwHair v0.35.27'
     bl_idname='NYANW35_PT_main'
     bl_space_type='VIEW_3D'
     bl_region_type='UI'
@@ -2339,7 +2339,7 @@ def _draw_control_points():
                 if pos is None or not (0<=pos.x<=ctx.region.width and 0<=pos.y<=ctx.region.height):continue
                 if not _point_visible(ctx,world,occlusion,pos):continue
                 group=3+cap_vertices[vert.index] if vert.index in cap_vertices else 2 if vert is active and vert.select else 1 if vert.select else 0
-                if obj.nh35.palette!='CLASSIC' and vert is active and vert.select:group=2
+                if vert is active and vert.select:group=2
                 point_sets[group].append((pos.x,pos.y))
         old_mask = gpu.state.depth_mask_get()
         old_depth = gpu.state.depth_test_get()
@@ -2351,7 +2351,7 @@ def _draw_control_points():
             return [(x+dx*radius,y+dy*radius) for x,y in points for dx,dy in _CIRCLE_OFFSETS]
         if record is None or record[0]!=signature:
             batches=[]
-            for coords,color,radius in zip(point_sets,(*style.points,*style.caps),style.radii):
+            for coords,color,radius in zip(point_sets,(*style.points,*style.cap_points),style.radii):
                 if coords:
                     outline=batch_for_shader(shader,'TRIS',{'pos':circles(coords,radius+style.outline_width)})
                     shade=batch_for_shader(shader,'TRIS',{'pos':circles(coords,radius)})
