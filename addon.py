@@ -1951,7 +1951,7 @@ def _draw_extra_panels(layout,context,obj,cached,edit):
 
 
 class NYANW35_PT_main(Panel):
-    bl_label='NyanwHair v0.35.34'
+    bl_label='NyanwHair v0.35.35'
     bl_idname='NYANW35_PT_main'
     bl_space_type='VIEW_3D'
     bl_region_type='UI'
@@ -2015,6 +2015,10 @@ def _stroke_shader(width=1.,guides=False,normal=(0.,0.,0.),max_clearance=0.):
     if _STROKE_SHADER is None:_STROKE_SHADER={}
     if guides not in _STROKE_SHADER:
         info=gpu.types.GPUShaderCreateInfo()
+        interface=gpu.types.GPUStageInterfaceInfo('nyanwhair_stroke_aa')
+        interface.smooth('VEC3','clipCenter');info.vertex_out(interface)
+        info.typedef_source('struct StrokeViewport { vec4 rect; };')
+        info.uniform_buf(0,'StrokeViewport','strokeViewport')
         info.push_constant('MAT4','viewProjectionMatrix')
         info.push_constant('VEC4','strokeData')
         info.push_constant('VEC4','color')
@@ -2039,15 +2043,32 @@ def _stroke_shader(width=1.,guides=False,normal=(0.,0.,0.),max_clearance=0.):
             float pixelWorld=2.0*w/(max(projectionData.x,0.000001));
             float gradient=abs(projectionData.y*gl_Position.w-gl_Position.z*projectionData.z)/(w*w);
         """+normal_code+"""
-            float padding=pixelWorld*(1.0+0.5*strokeData.w*incline);
+            float padding=pixelWorld*(1.0+(0.5*strokeData.w+0.75)*incline);
             if(projectionData.w>0.0)padding=min(padding,projectionData.w);
             float clearance=gap+padding;
             float minimum=projectionData.w>0.0?min(0.0000001,projectionData.w*gradient):0.0000001;
             gl_Position.z-=max(minimum,clearance*gradient)*gl_Position.w;
+            clipCenter=gl_Position.xyw;
         }""")
-        info.fragment_source("void main(){fragColor=color;}")
-        _STROKE_SHADER[guides]=gpu.shader.create_from_info(info)
-    shader=_STROKE_SHADER[guides];shader.bind()
+        info.fragment_source("""void main(){
+            vec2 center=(clipCenter.xy/max(clipCenter.z,0.00000001)*0.5+0.5)*strokeViewport.rect.zw+strokeViewport.rect.xy;
+            vec2 dx=dFdx(center),dy=dFdy(center);
+            vec2 tangent=dot(dx,dx)>dot(dy,dy)?dx:dy;
+            vec2 offset=gl_FragCoord.xy-center;
+            float distance=dot(tangent,tangent)>0.000001?abs(dot(offset,vec2(-tangent.y,tangent.x)))/length(tangent):length(offset);
+            float aa=dot(tangent,tangent)>0.000001?max(1.0,(abs(tangent.x)+abs(tangent.y))/length(tangent)):1.0;
+            float coverage=clamp((0.5*strokeData.w+0.5*aa-distance)/aa,0.0,min(1.0,strokeData.w/aa));
+            if(coverage<=0.0)discard;
+            fragColor=vec4(color.rgb,color.a*coverage);
+        }""")
+        _STROKE_SHADER[guides]=(gpu.shader.create_from_info(info),gpu.types.GPUUniformBuf(gpu.types.Buffer('FLOAT',4,[0.,0.,1.,1.])),None)
+    shader,viewport_buffer,previous_viewport=_STROKE_SHADER[guides];shader.bind()
+    viewport=tuple(float(v) for v in gpu.state.viewport_get())
+    if previous_viewport!=viewport:
+        viewport_buffer.update(gpu.types.Buffer('FLOAT',4,viewport))
+        _STROKE_SHADER[guides]=(shader,viewport_buffer,viewport)
+    shader.uniform_block('strokeViewport',viewport_buffer)
+    gpu.state.line_width_set(max(1.,math.ceil((width+1.5)*math.sqrt(2.))))
     projection=gpu.matrix.get_projection_matrix();view=gpu.matrix.get_model_view_matrix()
     shader.uniform_float('viewProjectionMatrix',projection@view)
     shader.uniform_float('projectionData',(abs(projection[1][1])*max(1,gpu.state.viewport_get()[3]),projection[2][2],projection[3][2],max_clearance))
@@ -2274,7 +2295,7 @@ def _draw_preview():
                 if overlays and wire and obj.nh35.show_wire and obj.nh35.wire_opacity>0:
                     # Mesh strokes obey the viewport's X-ray toggle.
                     gpu.state.depth_test_set(overlay_depth)
-                    line_shader=_stroke_shader(max_clearance=depth_limit)
+                    line_shader=_stroke_shader(stroke_scale,max_clearance=depth_limit)
                     line_shader.bind()
                     line_shader.uniform_float('color',(*style.wire,obj.nh35.wire_opacity))
                     wire.draw(line_shader)
@@ -2286,7 +2307,6 @@ def _draw_preview():
                     guide_shader=_stroke_shader(style.guide_width*stroke_scale,guides=True,max_clearance=depth_limit)
                     guide_shader.bind()
                     guide_shader.uniform_float('color',style.guide)
-                    gpu.state.line_width_set(style.guide_width*stroke_scale)
                     rails.draw(guide_shader)
                     gpu.state.line_width_set(1.0)
                     gpu.state.depth_test_set('LESS_EQUAL')
@@ -2298,7 +2318,6 @@ def _draw_preview():
                         selected_shader.bind()
                         selected_shader.uniform_float('color',style.selected)
                         gpu.state.depth_test_set(overlay_depth)
-                        gpu.state.line_width_set(style.selected_width*stroke_scale)
                         selected.draw(selected_shader)
                         gpu.state.line_width_set(1.)
                         gpu.state.depth_test_set('LESS_EQUAL')
@@ -2308,7 +2327,7 @@ def _draw_preview():
                         primary=_zone_ui_primary(bm,obj);plan=cached['result'].plans_by_loop.get(tuple(v.index for v in primary.verts)) if primary else None
                         normal=(obj.matrix_world.to_3x3().inverted_safe().transposed()@Vector(plan.normal)).normalized() if plan else Vector()
                         endpoint_shader=_stroke_shader(style.cap_width*stroke_scale,normal=normal,max_clearance=depth_limit);endpoint_shader.bind();endpoint_shader.uniform_float('color',style.caps[side])
-                        gpu.state.depth_test_set(overlay_depth);gpu.state.line_width_set(style.cap_width*stroke_scale)
+                        gpu.state.depth_test_set(overlay_depth)
                         batch_for_shader(endpoint_shader,'LINE_STRIP',{'pos':coords}).draw(endpoint_shader)
                     gpu.state.line_width_set(1.);gpu.state.depth_test_set('LESS_EQUAL')
         if _CUT_PREVIEW and _helpers_visible(ctx):
@@ -2321,7 +2340,7 @@ def _draw_preview():
                 shader_line.uniform_float('color',(.95,.77,.41,1.0));gpu.state.depth_test_set(overlay_depth)
                 if len(coords)>=2:
                     batch=batch_for_shader(shader_line,'LINE_STRIP',{'pos':[tuple(p) for p in coords]})
-                    gpu.state.line_width_set(3.0*cut_scale);batch.draw(shader_line)
+                    batch.draw(shader_line)
                 # Anchor markers belong to the POST_PIXEL overlay.
     except (ReferenceError,RuntimeError,ValueError,TypeError):
         # Object can be invalidated by scene replacement or undo.
