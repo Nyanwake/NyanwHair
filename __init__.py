@@ -1,11 +1,11 @@
-"""NyanwHair 0.35.36 Guided Surfaces (preview)."""
+"""NyanwHair 0.35.37 Guided Surfaces (preview)."""
 bl_info = {
     'name': 'NyanwHair - Guided Surfaces',
     'author': 'NyanWake',
-    'version': (0,35,36),
+    'version': (0,35,37),
     'blender': (5,1,0),
     'location': 'View3D > Sidebar > NyanwHair',
-    'description': 'Guided hair with rounded guide joins, stable depth offsets and distance-scaled markers',
+    'description': 'Guided hair with flow-aligned UV islands and shared or independent Mirror UV',
     'category': 'Mesh',
 }
 

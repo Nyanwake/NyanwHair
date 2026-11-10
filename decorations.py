@@ -10,6 +10,8 @@ def _clone(result,copy_mesh=True):
     for field in fields(out):setattr(out,field.name,getattr(result,field.name))
     if copy_mesh:
         out.vertices=list(result.vertices);out.vertex_keys=list(result.vertex_keys);out.faces=list(result.faces);out.owners=list(result.owners)
+        out.surface_sides=['front']*len(result.faces)
+    out.front_result=result
     out.extra_sharp_edges=set();out.replica_faces=set()
     return out
 
@@ -109,6 +111,7 @@ def _back(out,result,axes=(),previous=None,reuse_geometry=False):
         if v in outer and front in front_map and core.length(core.sub(position,result.vertices[front]))<1e-7:mapping[v]=front_map[front]
         else:mapping[v]=len(out.vertices);out.vertices.append(position);out.vertex_keys.append(('back',back.vertex_keys[v]))
     out.faces.extend(tuple(mapping[v] for v in reversed(face)) for face,owner in back_faces);out.owners.extend(owner for face,owner in back_faces)
+    out.surface_sides.extend(['back']*len(back_faces))
     sharp=appearance.sharp_edges(result)
     out.extra_sharp_edges.update(core.edge_key(front_map[a],front_map[b]) for a,b in sharp if a in front_map and b in front_map)
     out.extra_sharp_edges.update(core.edge_key(mapping[a],mapping[b]) for a,b in appearance.sharp_edges(back) if a in mapping and b in mapping)
@@ -137,6 +140,7 @@ def _back(out,result,axes=(),previous=None,reuse_geometry=False):
             if len(set(clean))<3:continue
             if not forward:clean.reverse()
             out.faces.append(tuple(clean));out.owners.append(owner)
+            out.surface_sides.append('rim')
     return back
 
 
@@ -145,7 +149,7 @@ def build(result,axes=(),previous_back=None,reuse_back=False):
         out=_clone(result,copy_mesh=False);out.back_result=None
         return out
     out=_clone(result);out.back_result=_back(out,result,axes,previous_back,reuse_back)
-    source_vertices=list(out.vertices);source_keys=list(out.vertex_keys);source_faces=list(out.faces);source_owners=list(out.owners)
+    source_vertices=list(out.vertices);source_keys=list(out.vertex_keys);source_faces=list(out.faces);source_owners=list(out.owners);source_sides=list(out.surface_sides)
     sharp=appearance.sharp_edges(out);lookup={};axis_bits=[1<<i for i,value in enumerate(axes) if value]
     seen_faces={frozenset(face) for face in source_faces};masks=[0]
     for bit in axis_bits:masks+=[value|bit for value in list(masks)]
@@ -160,13 +164,14 @@ def build(result,axes=(),previous_back=None,reuse_back=False):
             if key not in lookup:
                 lookup[key]=len(out.vertices);out.vertices.append(tuple(-value if effective&(1<<axis) else value for axis,value in enumerate(p)));out.vertex_keys.append(('mirror',effective,source_keys[i]))
             mapping[i]=lookup[key]
-        for face,owner in zip(source_faces,source_owners):
+        for face,owner,side in zip(source_faces,source_owners,source_sides):
             ring=tuple(mapping[v] for v in face)
             identity=frozenset(ring)
             if identity in seen_faces:continue
             seen_faces.add(identity)
             if mask.bit_count()%2:ring=ring[::-1]
             out.replica_faces.add(len(out.faces));out.faces.append(ring);out.owners.append(owner)
+            out.surface_sides.append(side)
         out.extra_sharp_edges.update(core.edge_key(mapping[a],mapping[b]) for a,b in sharp)
     used=sorted({v for face in out.faces for v in face});remap={v:i for i,v in enumerate(used)}
     out.vertices=[out.vertices[v] for v in used];out.vertex_keys=[out.vertex_keys[v] for v in used];out.faces=[tuple(remap[v] for v in face) for face in out.faces]

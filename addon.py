@@ -1113,6 +1113,9 @@ class NHGuidedProperties(PropertyGroup):
     show_wire: BoolProperty(name='Сетка',default=True,description='Показать рёбра результата; направляющие остаются видимыми')
     wire_opacity: FloatProperty(name='Непрозрачность сетки',default=.22,min=0.,max=1.,subtype='FACTOR')
     smooth_preview: BoolProperty(name='Smooth + Sharp по направляющим',default=True,description='Плавное освещение внутри прядей с резкими границами по направляющим; сохраняется в независимом Mesh')
+    generate_uv: BoolProperty(name='UV при создании Mesh',default=True,description='Развёртка вдоль локонов, объединение плавных сегментов и Seam на границах островов; вычисляется только при создании Mesh')
+    mirror_uv: BoolProperty(name='Mirror UV',default=True,description='UV отражённых локонов совпадают с оригиналом; выключите для отдельных островов отражений')
+    uv_merge_angle: FloatProperty(name='Угол сшивания UV',default=math.radians(35.),min=0.,max=math.radians(75.),subtype='ANGLE',description='Максимальный угол между поверхностями и направлениями прядей для объединения UV; острова сохраняют направление сверху вниз')
     follow_matcap: BoolProperty(name='MatCap из вида',default=True,description='Устаревшее поле; освещение всегда следует 3D-виду',options={'HIDDEN'})
     regular_rows: BoolProperty(name='Ровные квадовые полосы',default=True,description='Устаревшее сохранённое свойство; инструменты используют ровные квадовые полосы')
     rows: IntProperty(name='Детализация по длине',default=12,min=2,max=160,description='Общая плотность рядов: короткие пряди получают меньше шагов, длинные больше')
@@ -1295,17 +1298,25 @@ class NYANW35_OT_bake(Operator):
         _rebuild(src,False)
         cached=_CACHE.get(src.as_pointer())
         from . import decorations
-        result=core.MeshResult();face_groups=[]
+        result=core.MeshResult();face_groups=[];uv_sources=[]
         for uid in groups.ids(src):
             _rebuild(src,True,group_id=uid,_background=True)
             surface=decorations.display(groups.CACHE[src.as_pointer()][uid],src);offset=len(result.vertices)
             result.vertices.extend(surface.vertices);result.vertex_keys.extend(surface.vertex_keys);result.faces.extend(tuple(v+offset for v in f) for f in surface.faces);result.owners.extend(surface.owners);result.rail_samples.update(surface.rail_samples)
             result.extra_sharp_edges=set(getattr(result,'extra_sharp_edges',()))|{core.edge_key(a+offset,b+offset) for a,b in surface.extra_sharp_edges}
             face_groups.extend([uid]*len(surface.faces))
+            if surface.faces:uv_sources.append((uid,surface))
         _CACHE[src.as_pointer()]=groups.CACHE[src.as_pointer()][groups.active_id(src)]
         if not result.faces:
             self.report({'WARNING'},'Нет поверхности для запекания')
             return {'CANCELLED'}
+        uv_data=None
+        if src.nh35.generate_uv:
+            from . import uv
+            try:uv_data=uv.generate(uv_sources,src.matrix_world,angle=src.nh35.uv_merge_angle,mirror_uv=src.nh35.mirror_uv)
+            except (ValueError,KeyError,IndexError) as exc:
+                self.report({'WARNING'},str(exc)+'; UV можно отключить в «Дополнительно»')
+                return {'CANCELLED'}
         me=bpy.data.meshes.new(src.name+'_BakedMesh')
         me.from_pydata(result.vertices,[],result.faces)
         me.update(calc_edges=True)
@@ -1319,6 +1330,12 @@ class NYANW35_OT_bake(Operator):
             attr=me.attributes.new(name='NyanwHair Zone',type='INT',domain='FACE')
             attr.data.foreach_set('value',result.owners)
         group_attr=me.attributes.new(name='NyanwHair Group',type='INT',domain='FACE');group_attr.data.foreach_set('value',face_groups)
+        if uv_data is not None:
+            try:uv.apply(me,uv_data[0],uv_data[1])
+            except (ValueError,RuntimeError) as exc:
+                bpy.data.meshes.remove(me)
+                self.report({'WARNING'},'UV: '+str(exc))
+                return {'CANCELLED'}
         bake=bpy.data.objects.new(src.name+'_Baked',me)
         if src.users_collection: src.users_collection[0].objects.link(bake)
         else: context.scene.collection.objects.link(bake)
@@ -1832,7 +1849,7 @@ class NYANW35_OT_adjust(Operator):
         if self.field=='smooth':
             targets=_smooth_targets(bm,_CACHE.get(obj.as_pointer(),{}).get('result'))
             if not targets:return {'CANCELLED'}
-            weights=_directional_smoothing(bm);value=max(0.,min(1.,sum(weights.get(k,1.) for k in targets)/len(targets)+.05*self.direction))
+            weights=_directional_smoothing(bm);value=round(max(0.,min(1.,sum(weights.get(k,1.) for k in targets)/len(targets)+.1*self.direction)),2)
             return bpy.ops.nyanw35.direction_smoothing('EXEC_DEFAULT',True,value=value)
         faces=_zone_ui_faces(bm,obj)
         if not faces:return {'CANCELLED'}
@@ -1945,13 +1962,15 @@ def _draw_extra_panels(layout,context,obj,cached,edit):
         if cached.get('appearance_status'):body.label(text=cached['appearance_status'],icon='INFO')
     header,body=layout.panel('nyanw_tools',default_closed=True);header.label(text='Дополнительно',icon='PREFERENCES')
     if body is not None:
+        body.prop(props,'generate_uv',text='UV при создании Mesh')
+        if props.generate_uv:body.prop(props,'uv_merge_angle',text='Угол сшивания UV')
         if edit:
             body.prop(context.window_manager.nh35_ui,'flip',text='Перевернуть профиль');body.operator('nyanw35.refresh_layout',text='Обновить раскладку рядов',icon='FILE_REFRESH')
         body.operator('nyanw35.disable',text='Отключить на объекте',icon='X')
 
 
 class NYANW35_PT_main(Panel):
-    bl_label='NyanwHair v0.35.36'
+    bl_label='NyanwHair v0.35.37'
     bl_idname='NYANW35_PT_main'
     bl_space_type='VIEW_3D'
     bl_region_type='UI'
@@ -1965,7 +1984,9 @@ class NYANW35_PT_main(Panel):
             return
         props=obj.nh35;cached=_CACHE.get(obj.as_pointer(),{});result=cached.get('result');ui=context.window_manager.nh35_ui
         if obj.mode!='EDIT':
-            layout.operator('nyanw35.bake',text='Создать Mesh',icon='OUTLINER_OB_MESH')
+            row=layout.row(align=True);row.operator('nyanw35.bake',text='Создать Mesh',icon='OUTLINER_OB_MESH')
+            if any(group.mirror_x or group.mirror_y or group.mirror_z for group in props.groups):
+                option=row.row(align=True);option.enabled=props.generate_uv;option.prop(props,'mirror_uv',text='Mirror UV')
             layout.operator('nyanw35.create_guide',text='Создать новый локон',icon='CURVE_BEZCURVE')
             _draw_extra_panels(layout,context,obj,cached,False)
             return
