@@ -260,7 +260,7 @@ class NYANW35_OT_group_starter(Operator):
         uid=active_id(obj)
         def operation(bm):
             a._prepare_bmesh(bm)
-            verts=[bm.verts.new(p) for p in ((-.4,0,0),(.4,0,0),(.45,0,1),(.2,0,2),(-.2,0,2),(-.45,0,1))]
+            verts=[bm.verts.new(tuple(c*.1 for c in p)) for p in ((-.4,0,0),(.4,0,0),(.45,0,1),(.2,0,2),(-.2,0,2),(-.45,0,1))]
             face=bm.faces.new(verts);face[bm.faces.layers.int[a.L_GROUP]]=uid
             face[bm.faces.layers.int[a.L_ORDER]]=max((f[bm.faces.layers.int[a.L_ORDER]] for f in bm.faces),default=0)+1
             for v in verts:v[bm.verts.layers.int[a.L_VERTEX_GROUP]]=uid
