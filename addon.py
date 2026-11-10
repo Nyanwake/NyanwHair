@@ -6,7 +6,7 @@ No control-element IDs are used. Live does not mutate Blender datablocks.
 import bpy
 import bmesh
 import math
-import traceback
+import logging
 from dataclasses import replace
 from bpy.app.handlers import persistent
 from bpy.props import BoolProperty, FloatProperty, FloatVectorProperty, IntProperty, PointerProperty, EnumProperty, CollectionProperty
@@ -46,8 +46,6 @@ L_SMOOTH_START = 'nh35_smooth_start'
 L_SMOOTH_END = 'nh35_smooth_end'
 L_ORDER = 'nh35_zone_order'  # stable creation order, persisted in source faces
 
-_COLOR_BLUE = (0.56, 0.714, 0.91, 1.0)  # #8FB6E8
-_COLOR_TINT = (0.424, 0.812, 0.769)   # #6CCFC4
 _CACHE = {}
 _RUNNING = False
 _DRAW_HANDLER = None
@@ -1329,7 +1327,6 @@ class NYANW35_OT_bake(Operator):
         src=context.object
         if not is_guide(src): return {'CANCELLED'}
         _rebuild(src,False)
-        cached=_CACHE.get(src.as_pointer())
         from . import decorations
         result=core.MeshResult();face_groups=[];uv_sources=[]
         for uid in groups.ids(src):
@@ -1378,7 +1375,6 @@ class NYANW35_OT_bake(Operator):
         # its GPU preview on top would create z-fighting.  This user-invoked
         # operator is an ordinary undoable Blender action.
         src.nh35.show_preview=False
-        self.report({'INFO'},'Независимый Mesh создан: '+bake.name)
         return {'FINISHED'}
 
 
@@ -1840,7 +1836,6 @@ def _insert_anchor_bmesh(bm,proposal,result,select_result=False):
     # rails.  A bad BMesh split is rejected on the preflight COPY.
     layer=bm.loops.layers.int.get(L_CAP)
     bm.verts.ensure_lookup_table(); bm.verts.index_update()
-    points=[tuple(float(c) for c in vert.co) for vert in bm.verts]
     for face in new_vert.link_faces:
         if not face.is_valid: raise ValueError('Грань исчезла при создании опоры')
         marks={}
@@ -1971,12 +1966,12 @@ class NYANW35_OT_hair_loop(Operator):
                 else:
                     result=_CACHE[self._obj.as_pointer()]['result']
                     _split_control_face(self._obj,proposal['zone'],proposal['t'],result)
-            except Exception as exc:
-                # Keep the full traceback for genuine BMesh/API regressions.
-                # A short operator message alone hides the failing callsite.
-                print('[NyanwHair] Ctrl+R failed:',repr(proposal),flush=True)
-                traceback.print_exc()
+            except (ValueError,RuntimeError,ReferenceError) as exc:
                 self.report({'WARNING'},'Hair Loop: '+str(exc))
+                return {'CANCELLED'}
+            except Exception:
+                logging.getLogger(__name__).exception('Unexpected Hair Loop failure')
+                self.report({'ERROR'},'Hair Loop: неожиданная ошибка; подробности в консоли')
                 return {'CANCELLED'}
             context.area.tag_redraw()
             return {'FINISHED'}
@@ -2002,7 +1997,7 @@ def _draw_extra_panels(layout,context,obj,cached,edit):
 
 
 class NYANW35_PT_main(Panel):
-    bl_label='NyanwHair v0.35.42'
+    bl_label='NyanwHair v1.0.0'
     bl_idname='NYANW35_PT_main'
     bl_space_type='VIEW_3D'
     bl_region_type='UI'
@@ -2275,7 +2270,7 @@ def _gpu_batches(cache,guide,shader):
     overlays=guide==bpy.context.edit_object and cache.get('group_id',1)==groups.active_id(guide) and _helpers_visible(bpy.context)
     signature=(id(result),transform,tint,bool(guide.nh35.smooth_preview),base_color,overlays)
     if cache.get('gpu_signature')==signature:return cache['gpu_batches']
-    old=cache.get('gpu_chunks',{});current={};coords={};normal_coords={}
+    old=cache.get('gpu_chunks',{});current={}
     old_wires=cache.get('gpu_wire_chunks',{});wire_chunks={}
     records=_gpu_mesh_records(cache,result,guide.nh35.smooth_preview)
     import numpy as np
@@ -2287,7 +2282,7 @@ def _gpu_batches(cache,guide,shader):
         cache['gpu_world_normals']=np.ascontiguousarray(np.asarray(cache['gpu_normal_array'],dtype=np.float32)@np.asarray(normal_matrix,dtype=np.float32).T)
         cache['gpu_world_array_signature']=array_signature
     world_vertices=cache['gpu_world_vertices'];world_normals=cache['gpu_world_normals']
-    wire_shader=_stroke_shader()
+    wire_shader=_stroke_shader() if overlays else None
     for key,faces,owners,geometry,owned_edges,edge_key in records:
         colors_key=tuple((owner,tint_strength*(1. if owner==active else .65) if owner in selected else 0.) for owner in owners)
         stamp=(transform,geometry,edge_key,colors_key,tint_color,base_color,overlays)
@@ -2624,6 +2619,7 @@ def _draw_control_points():
 def _ticker():
     if not _RUNNING: return None
     if _UNDOING: return 0.05
+    interval=0.25
     try:
         scene=bpy.context.scene
         if scene is None: return 0.05
@@ -2634,6 +2630,7 @@ def _ticker():
             groups.restore(active);_RESTORE_GROUPS.discard(active.session_uid)
         obj=bpy.context.edit_object
         if obj==active:
+            interval=0.033
             cache=_CACHE.get(obj.as_pointer(),{})
             before=(cache.get('active'),cache.get('zone_selection'),cache.get('zone_selection_explicit'))
             _sync_ui(obj)
@@ -2647,7 +2644,7 @@ def _ticker():
                     if area.type=='VIEW_3D': area.tag_redraw()
     except (ReferenceError,RuntimeError):
         pass
-    return 0.033
+    return interval
 
 
 @persistent

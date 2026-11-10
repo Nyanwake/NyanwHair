@@ -1,5 +1,5 @@
 """Shared-vertex cap extension and open region extrusion on a staged BMesh."""
-import bpy,bmesh
+import bpy
 from mathutils import Vector
 from . import addon as a
 from . import editing as e

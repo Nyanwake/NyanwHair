@@ -1,4 +1,4 @@
-"""NyanwHair 0.35.42: shared curve contracts and independent reverse-sheet widths.
+"""NyanwHair 1.0.0: shared curve contracts and independent reverse-sheet widths.
 
 Pure Python, no Blender IDs or tags on vertices/edges. Blender face corners may
 store the user's chosen end caps; this module only consumes that choice.
@@ -465,7 +465,7 @@ def plan_widths(plans,fixed=None,warnings=None):
 
 
 def generate(points,boundaries,settings=None,rows=12,max_polygons=200000,
-             previous=None,caps=None,reference_length=0.,directional_smoothing=None,local_density=None,point_density=None,layout_lengths=None,regular_rows=False,face_indices=None,edge_evaluator=None,_base_detail=None,_track_production=False):
+             previous=None,caps=None,reference_length=0.,directional_smoothing=None,local_density=None,point_density=None,layout_lengths=None,regular_rows=False,face_indices=None,edge_evaluator=None,_track_production=False):
     points=[tuple(map(float,p)) for p in points]
     settings=list(settings or [ZoneSettings() for _ in boundaries])
     rows=max(2,min(256,int(rows)))
@@ -581,8 +581,8 @@ def generate(points,boundaries,settings=None,rows=12,max_polygons=200000,
                 ca=registry.curve(p.left);cb=registry.curve(p.right)
                 left=registry.boundary(ca);right=registry.boundary(cb)
             else:ca,cb,left,right,body_left,body_right,fractions=registry.pair(p.left,p.right,False)
-            actual_a=[put(key,pos) for key,pos in left]
-            actual_b=[put(key,pos) for key,pos in right]
+            for samples in (left,right):
+                for key,pos in samples:put(key,pos)
             out.guide_curves[p.index]=(tuple(pos for key,pos in left),tuple(pos for key,pos in right))
             out.transitions[p.index]=(len(left)-1,len(right)-1)
             w=widths[p.index]

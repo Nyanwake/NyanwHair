@@ -10,7 +10,7 @@ try:
 except ImportError:
     np=None
 from collections import defaultdict
-from .core import EPS,CURVE_SUBDIVISIONS,sub,add,cross,length,norm,edge_key,newell,mix,dot,mul
+from .core import EPS,CURVE_SUBDIVISIONS,sub,length,edge_key,newell,mix,mul
 
 
 class CurvePath:
@@ -262,7 +262,7 @@ class RailRegistry:
         Longitudinal constraints follow physical length; transverse caps
         favor the same row phase. Junctions do not reset every chain to zero.
         """
-        sections=[];edges=[];signs={};chain_for_edge={edge:c.path for c in chains for edge in c.edges}
+        sections=[];edges=[];chain_for_edge={edge:c.path for c in chains for edge in c.edges}
         ordered=sorted(plans,key=lambda p:(p.settings.order<=0,p.settings.order,p.index))
         for c in chains:
             sign=1.

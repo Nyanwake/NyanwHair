@@ -47,13 +47,15 @@ def _make(guide,selection,points,active,outline,wire,group,strength=.30):
 
 def _load_library(path):
     data=json.loads(Path(path).read_text(encoding='utf-8'))
+    if not isinstance(data,dict):raise ValueError('themes.json must contain an object')
     if data.get('version')!=1:raise ValueError('unsupported themes.json version')
     styles={};items=[];numbers=set()
     for entry in data['themes']:
         ident=entry['id'];number=entry['value']
         if not isinstance(ident,str) or not re.fullmatch('[A-Z][A-Z0-9_]*',ident) or ident in styles:raise ValueError('duplicate or invalid theme id')
-        if type(number) is not int or number<0 or number in numbers:raise ValueError('duplicate or invalid enum value')
+        if type(number) is not int or not 0<=number<=2147483647 or number in numbers:raise ValueError('duplicate or invalid enum value')
         if not isinstance(entry['name'],str) or not entry['name']:raise ValueError('missing theme name')
+        if not isinstance(entry.get('description',''),str):raise ValueError('invalid theme description')
         for key in ('surface','segment','guide','selection','point','outline'):
             if not isinstance(entry[key],str) or not re.fullmatch('#[0-9a-fA-F]{6}',entry[key]):raise ValueError('invalid '+key+' in '+ident)
         strength=entry.get('strength',.46)

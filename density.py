@@ -2,7 +2,7 @@
 import bisect
 import heapq
 import math
-from .core import EPS,edge_key
+from .core import EPS
 
 
 class DensityField:

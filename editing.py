@@ -1,5 +1,4 @@
 """Explicit, transactional boundary, merge and extrusion tools."""
-import math
 import bpy,bmesh
 from bpy.types import Operator,Menu
 from bpy.props import EnumProperty,FloatProperty,FloatVectorProperty,IntProperty
@@ -397,7 +396,7 @@ class NYANW35_OT_extrude(Operator):
         if ctx.edit_object!=self._obj or not a._helpers_visible(ctx) or not self._curve_preview:return
         gpu=a.gpu
         if gpu is None:return
-        depth=gpu.state.depth_test_get();mask=gpu.state.depth_mask_get()
+        depth=gpu.state.depth_test_get();mask=gpu.state.depth_mask_get();blend=gpu.state.blend_get();width=gpu.state.line_width_get()
         try:
             from . import palette
             style=palette.get(self._obj.nh35)
@@ -407,7 +406,7 @@ class NYANW35_OT_extrude(Operator):
             gpu.state.blend_set('ALPHA');gpu.state.depth_test_set('NONE' if a._xray_enabled(ctx) else 'LESS_EQUAL');gpu.state.depth_mask_set(False)
             a._stroke_batch(shader,'LINE_STRIP',{'pos':self._curve_preview}).draw(shader)
         except (ReferenceError,RuntimeError,ValueError):pass
-        finally:gpu.state.depth_test_set(depth);gpu.state.depth_mask_set(mask);gpu.state.line_width_set(1.);gpu.state.blend_set('NONE')
+        finally:gpu.state.depth_test_set(depth);gpu.state.depth_mask_set(mask);gpu.state.line_width_set(width);gpu.state.blend_set(blend)
 
     def _end(self,context,restore):
         try:

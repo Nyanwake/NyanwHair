@@ -1,5 +1,4 @@
 """Cached guide depth bounds derived from the displayed boundary, without scene writes."""
-from bisect import bisect_right
 from mathutils import Vector
 from . import core
 

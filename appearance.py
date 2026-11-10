@@ -1,5 +1,5 @@
 """Corner normals with sharp guide boundaries; GPU-only MatCap resources."""
-from .core import edge_key,add,cross,norm
+from .core import edge_key
 
 
 def sharp_edges(result):
