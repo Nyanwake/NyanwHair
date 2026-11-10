@@ -1,4 +1,5 @@
 """Compact, smooth point density measured along the physical guide graph."""
+from .i18n import tr
 import bisect
 import heapq
 import math
@@ -83,7 +84,7 @@ def redistribute(base,arc_at,factor_at,knots=(),max_samples=400000):
         lo,hi=bounds[start],bounds[i]
         distance=arcs[hi]-arcs[lo];total=mass[hi]-mass[lo]
         count=max(i-start,int((i-start)*total/max(EPS,distance)+.5))
-        if len(output)+count>max_samples:raise ValueError('Превышен лимит локального уплотнения')
+        if len(output)+count>max_samples:raise ValueError(tr('Local density limit exceeded'))
         for j in range(1,count):
             target=mass[lo]+total*j/count
             k=min(hi,max(lo+1,bisect.bisect_left(mass,target,lo,hi+1)))

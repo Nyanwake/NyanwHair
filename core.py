@@ -11,6 +11,7 @@ Invariants:
 - Geometry sampling never changes logical rail paths or source topology.
 """
 from __future__ import annotations
+from .i18n import tr
 import bisect
 import math
 from dataclasses import dataclass, field, replace
@@ -205,7 +206,7 @@ def major_axis(points,loop):
     xs=[sub(points[k],center) for k in loop]
     best=max(((dot(sub(points[a],points[b]),sub(points[a],points[b])),a,b)
               for i,a in enumerate(loop) for b in loop[i+1:]),default=None)
-    if not best or best[0]<EPS: raise ValueError('Все точки зоны совпадают')
+    if not best or best[0]<EPS: raise ValueError(tr('All segment points coincide'))
     direction=norm(sub(points[best[1]],points[best[2]]))
     for _ in range(12):
         v=(0.,0.,0.)
@@ -225,7 +226,7 @@ def auto_caps(points,loop):
     ts=[dot(points[k],axis) for k in loop]
     lo,hi=min(ts),max(ts)
     extent=hi-lo
-    if extent<EPS: raise ValueError('Не удалось определить ось локона')
+    if extent<EPS: raise ValueError(tr('Could not determine the strand axis'))
     options=[]
     for end in (lo,hi):
         choices=[]
@@ -252,16 +253,16 @@ def auto_caps(points,loop):
             if min(len_l,len_r)<EPS: continue
             score=sa+sb+.2*abs(len_l-len_r)/max(len_l,len_r)
             if best is None or score<best[0]: best=(score,a,b)
-    if best is None: raise ValueError('Не найдены две рабочие кривые; укажи торцы зоны')
+    if best is None: raise ValueError(tr('No pair of working guides found; set the segment boundaries'))
     return best[1],best[2]
 
 
 def complete_caps(points,loop,caps=None,hint=None):
     """Resolve automatic slots without dropping a zone or changing its fixed edge."""
     caps=list(caps or (None,None))
-    if len(caps)!=2:raise ValueError('Некорректная пара краёв')
+    if len(caps)!=2:raise ValueError(tr('Invalid boundary pair'))
     if any(c is not None and (c[0] not in ('point','edge') or not 0<=c[1]<len(loop)) for c in caps):
-        raise ValueError('Край сегмента требует уточнения после изменения каркаса')
+        raise ValueError(tr('Segment boundary needs clarification after guide changes'))
     missing=[i for i,c in enumerate(caps) if c is None]
     if not missing:return tuple(caps)
     if hint is not None and hint.boundary==tuple(loop):
@@ -290,7 +291,7 @@ def complete_caps(points,loop,caps=None,hint=None):
         if min(lengths)<EPS:continue
         score=distance*2.3+penalty+.2*abs(lengths[0]-lengths[1])/max(lengths)
         if best is None or score<best[0]:best=(score,tuple(pair))
-    if best is None:raise ValueError('Не удалось автоматически определить противоположный край')
+    if best is None:raise ValueError(tr('Could not detect the opposite boundary'))
     return best[1]
 
 
@@ -307,24 +308,24 @@ def neutral_caps(boundary,caps):
 def plan_face(points,boundary,index,settings,hint=None,caps=None):
     loop=tuple(boundary)
     if len(loop)<3 or len(set(loop))!=len(loop):
-        raise ValueError('Некорректный контур управляющей грани')
+        raise ValueError(tr('Invalid guide-face contour'))
     normal=newell(points,loop)
-    if length(normal)<EPS: raise ValueError('Площадь управляющей грани равна нулю')
+    if length(normal)<EPS: raise ValueError(tr('Guide face has zero area'))
     if caps is not None:
-        if len(caps)!=2:raise ValueError('Некорректная пара краёв')
+        if len(caps)!=2:raise ValueError(tr('Invalid boundary pair'))
         if any(c is None for c in caps):caps=neutral_caps(loop,complete_caps(points,loop,caps,hint))
-        if any(c[0] not in ('point','edge') for c in caps):raise ValueError('Край сегмента требует уточнения после изменения каркаса')
+        if any(c[0] not in ('point','edge') for c in caps):raise ValueError(tr('Segment boundary needs clarification after guide changes'))
         c0,c1=caps
         paths=cap_paths(loop,c0,c1)
-        if not paths: raise ValueError('Сохранённые торцы больше не образуют две кривые')
+        if not paths: raise ValueError(tr('Saved boundaries no longer form two curves'))
     elif hint is not None and hint.boundary==loop:
         c0,c1=hint.start,hint.end
         paths=cap_paths(loop,c0,c1)
-        if not paths: raise ValueError('Нарушено соединение двух кривых')
+        if not paths: raise ValueError(tr('Connection between guides is broken'))
     else:
         c0,c1=auto_caps(points,loop)
         paths=cap_paths(loop,c0,c1)
-    if not paths: raise ValueError('У управляющей грани нет двух непрерывных сторон')
+    if not paths: raise ValueError(tr('Guide face does not have two continuous sides'))
     return FacePlan(index,loop,*paths,c0,c1,normal,settings)
 
 
@@ -402,7 +403,7 @@ def sample_smooth(points,path,count,evaluate,ident):
             distance+=length(sub(p,prev))
             samples.append((distance,p,a,b,t))
             prev=p
-    if distance<EPS: raise ValueError('Нулевая длина рабочей кривой')
+    if distance<EPS: raise ValueError(tr('Working guide has zero length'))
     distances=[p[0] for p in samples]
     output=[]
     for i in range(count+1):
@@ -455,7 +456,7 @@ def plan_widths(plans,fixed=None,warnings=None):
     for owner,value in (fixed or {}).items():constraints[root(owner)].add(value)
     for key,values in constraints.items():
         if len(values)>1:
-            message='Два унаследованных края имеют разную ширину; нужен переход'
+            message=tr('Inherited boundaries have different widths; a transition is required')
             if warnings is None:raise ValueError(message)
             for p in plans:
                 if root(p.index)==key:warnings[p.index]=message
@@ -489,7 +490,7 @@ def generate(points,boundaries,settings=None,rows=12,max_polygons=200000,
         for i,u in enumerate(p.boundary):
             face_owners[edge_key(u,p.boundary[(i+1)%len(p.boundary)])].add(p.index)
     overloaded={x for e,own in face_owners.items() if len(own)>2 for x in own}
-    for i in overloaded: out.warnings[i]='Одно ребро принадлежит трём и более зонам'
+    for i in overloaded: out.warnings[i]=tr('One edge belongs to three or more segments')
     plans=[p for p in plans if p.index not in overloaded]
     if not plans: return out
     # Orient by shared EDGE traversal, never by the angle between face normals.
@@ -516,7 +517,7 @@ def generate(points,boundaries,settings=None,rows=12,max_polygons=200000,
                 desired=signs[i]*parity
                 if j in signs:
                     if signs[j]!=desired:
-                        out.warnings[j]='Неориентируемое соединение зон'
+                        out.warnings[j]=tr('Non-orientable segment connection')
                     continue
                 signs[j]=desired
                 queue.append(j)
@@ -654,7 +655,7 @@ def generate(points,boundaries,settings=None,rows=12,max_polygons=200000,
                 local=tuple(accepted);local_keys=frozenset(local_keys)
             out.accepted_cache[p.boundary]=(raw,valid_flags,local,local_keys)
             out.surface_columns[p.index]=tuple(tuple(column) for column in columns)
-            if len(local)+len(out.faces)>max_polygons:raise ValueError('Превышен лимит полигонов')
+            if len(local)+len(out.faces)>max_polygons:raise ValueError(tr('Polygon limit exceeded'))
             produced.update(local_keys)
             out.faces.extend(local);out.owners.extend([p.index]*len(local))
             out.surface_grids[p.index]=tuple(tuple(row) for row in grid)
@@ -670,7 +671,7 @@ def generate(points,boundaries,settings=None,rows=12,max_polygons=200000,
     out.sampling_cache=registry.geometry_cache
     out.correspondence_cache=registry.map_cache
     out.faces,out.owners=registry.stitch(out.vertices,out.faces,out.owners,vertex_index)
-    if len(out.faces)>max_polygons:raise ValueError('Превышен лимит полигонов после сшивки')
+    if len(out.faces)>max_polygons:raise ValueError(tr('Polygon limit exceeded after stitching'))
     # Connectivity usually survives a drag even though sample parameters do
     # not. Reuse index compaction and owner-edge sets, never vertex positions.
     topology_key=(len(out.vertices),tuple(out.faces),tuple(out.owners))
@@ -722,7 +723,7 @@ def sample_cut_guide(result, zone, t, count=20):
     formulas. This also preserves the zipper correspondence on uneven rails.
     """
     sections=result.surface_sections.get(zone)
-    if not sections:raise ValueError('У зоны нет рассчитанной поверхности')
+    if not sections:raise ValueError(tr('Segment has no generated surface'))
     width=len(sections[0])-1
     x=max(0.,min(float(width),float(t)*width))
     column=min(width-1,int(x));blend=x-column
@@ -731,7 +732,7 @@ def sample_cut_guide(result, zone, t, count=20):
     distances=[0.]
     for a,b in zip(line,line[1:]): distances.append(distances[-1]+length(sub(b,a)))
     total=distances[-1]
-    if total<EPS: raise ValueError('Нулевая длина линии разреза')
+    if total<EPS: raise ValueError(tr('Cut line has zero length'))
     output=[]
     for i in range(count+1):
         target=total*i/max(1,count)

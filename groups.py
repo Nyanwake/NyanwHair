@@ -1,4 +1,5 @@
 """Face-owned hair groups; explicit isolation, cached background surfaces."""
+from .i18n import tr
 import bpy,bmesh,json
 from bpy.types import PropertyGroup,Operator,UIList
 from bpy.props import StringProperty,IntProperty,FloatProperty,FloatVectorProperty,BoolProperty
@@ -50,23 +51,23 @@ def changed(self,context):
 
 class NH35HairGroup(PropertyGroup):
     uid:IntProperty(default=1)
-    name:StringProperty(name='Имя',default='Группа',update=changed)
-    color:FloatVectorProperty(name='Цвет группы',subtype='COLOR',size=3,default=DEFAULT_COLOR,min=0.,max=1.,get=color_get,set=color_set,update=changed)
-    mirror_x:BoolProperty(name='Mirror X',default=False,update=changed,description='Связанное отражение по локальной оси X объекта; редактируется исходная половина')
-    mirror_y:BoolProperty(name='Mirror Y',default=False,update=changed,description='Связанное отражение по локальной оси Y объекта; редактируется исходная половина')
-    mirror_z:BoolProperty(name='Mirror Z',default=False,update=changed,description='Связанное отражение по локальной оси Z объекта; редактируется исходная половина')
+    name:StringProperty(name='Name',default='Group',update=changed)
+    color:FloatVectorProperty(name='Group colour',subtype='COLOR',size=3,default=DEFAULT_COLOR,min=0.,max=1.,get=color_get,set=color_set,update=changed)
+    mirror_x:BoolProperty(name='Mirror X',default=False,update=changed,description="Linked mirror on the object's local X axis; edit the source half")
+    mirror_y:BoolProperty(name='Mirror Y',default=False,update=changed,description="Linked mirror on the object's local Y axis; edit the source half")
+    mirror_z:BoolProperty(name='Mirror Z',default=False,update=changed,description="Linked mirror on the object's local Z axis; edit the source half")
     reference_length:FloatProperty(default=0.,min=0.)
 
 def ensure(obj):
     global _RESTORING
     if not obj.nh35.groups:
         _RESTORING=True
-        try:group=obj.nh35.groups.add();group.uid=1;group.name='Группа 1';group.reference_length=obj.nh35.detail_length
+        try:group=obj.nh35.groups.add();group.uid=1;group.name=tr('Group 1');group.reference_length=obj.nh35.detail_length
         finally:_RESTORING=False
     for group in obj.nh35.groups:
         if group.uid==1 and group.name=='Основная':
             _RESTORING=True
-            try:group.name='Группа 1'
+            try:group.name=tr('Group 1')
             finally:_RESTORING=False
     if active_id(obj) not in ids(obj):obj.nh35.active_group=obj.nh35.groups[0].uid
 
@@ -207,28 +208,28 @@ def all_caches(obj):
     return [stored[uid] for uid in ids(obj) if uid in stored] or ([current] if current else [])
 
 class NYANW35_OT_group(Operator):
-    bl_idname='nyanw35.group';bl_label='Группы волос';bl_options={'REGISTER','UNDO'}
+    bl_idname='nyanw35.group';bl_label='Hair groups';bl_options={'REGISTER','UNDO'}
     action:StringProperty(default='SELECT')
     uid:IntProperty(default=1)
     @classmethod
     def description(cls,context,properties):
-        return {'SELECT':'Переключить редактируемую группу; остальные видны только как поверхность',
-                'ADD':'Добавить пустую независимую группу в этот объект',
-                'MOVE':'Перенести выбранные сегменты в эту группу, разделив общие точки',
-                'REMOVE':'Убрать активную группу, сохранив её сегменты в соседней группе'}.get(properties.action,'Группы волос')
+        return {'SELECT':tr('Switch the editable group; other groups display only their surfaces'),
+                'ADD':tr('Add an empty independent group to this object'),
+                'MOVE':tr('Move selected segments into this group, separating shared points'),
+                'REMOVE':tr('Remove the active group, keeping its segments in a neighbouring group')}.get(properties.action,tr('Hair groups'))
     def execute(self,context):
         from . import addon as a
         obj=context.object
         if not a.is_guide(obj):return {'CANCELLED'}
         ensure(obj);previous=active_id(obj);a._prepare_object(obj)
         if self.action=='ADD':
-            group=obj.nh35.groups.add();group.uid=max(g.uid for g in obj.nh35.groups)+1;group.name='Группа %d'%group.uid;self.uid=group.uid
+            group=obj.nh35.groups.add();group.uid=max(g.uid for g in obj.nh35.groups)+1;group.name=tr('Group %d')%group.uid;self.uid=group.uid
         elif self.action=='REMOVE':
             if len(obj.nh35.groups)<2:return {'CANCELLED'}
             self.uid=next(g.uid for g in obj.nh35.groups if g.uid!=previous)
         if self.uid not in ids(obj):return {'CANCELLED'}
         if self.action in ('MOVE','REMOVE'):
-            if obj.mode!='EDIT':self.report({'WARNING'},'Перенос и удаление группы доступны в Edit Mode');return {'CANCELLED'}
+            if obj.mode!='EDIT':self.report({'WARNING'},tr('Moving and deleting groups requires Edit Mode'));return {'CANCELLED'}
             bm=bmesh.from_edit_mesh(obj.data);chosen={f.index for f in a._zone_ui_faces(bm,obj)}
             def operation(stage):
                 a._prepare_bmesh(stage);stage.faces.index_update();layer=stage.faces.layers.int[a.L_GROUP]
@@ -251,7 +252,7 @@ class NYANW35_OT_group(Operator):
         return {'FINISHED'}
 
 class NYANW35_OT_group_starter(Operator):
-    bl_idname='nyanw35.group_starter';bl_label='Создать локон в группе';bl_options={'REGISTER','UNDO'}
+    bl_idname='nyanw35.group_starter';bl_label='Create strand in group';bl_options={'REGISTER','UNDO'}
     def execute(self,context):
         from . import addon as a,editing
         obj=context.edit_object

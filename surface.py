@@ -1,4 +1,5 @@
 """Flow-aligned columns for curled and locally refined ribbon patches."""
+from .i18n import tr
 import bisect,math
 try:
     import numpy as np
@@ -232,7 +233,7 @@ def _build_patch(plan,width,registry,left_curve,right_curve,left,right,cap_profi
             for k,u in enumerate(us):
                 key,pos=surface.at(u,x)
                 pairs.append((key if key is not None else ('inside',plan.index,k,x),pos))
-        if sum(map(len,columns))+len(pairs)>2*max_polygons:raise ValueError('Превышен лимит точек поверхности')
+        if sum(map(len,columns))+len(pairs)>2*max_polygons:raise ValueError(tr('Surface vertex limit exceeded'))
         columns.append([put(key,pos) for key,pos in pairs]);flows.append(us);coords.append([pos for key,pos in pairs])
     for x in range(width):
         path=geometry_path(coords[x],coords[x+1],flows[x],flows[x+1])

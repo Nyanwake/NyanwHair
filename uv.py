@@ -3,6 +3,7 @@
 Charts retain start-to-end V orientation. Smooth compatible charts may join
 by translation and uniform scale; packing never rotates their flow direction.
 """
+from .i18n import tr
 import math,heapq
 from collections import defaultdict
 import numpy as np
@@ -145,7 +146,7 @@ def generate(surfaces,matrix,angle=math.radians(60.),margin=.008,mirror_uv=True)
                 cap_edge=next((keys[v][0][1:3] for v in face if keys[v][0][0]=='cap'),None)
                 if cap_edge is None:
                     cap_edge=next((core.edge_key(plan.boundary[i],plan.boundary[(i+1)%len(plan.boundary)]) for kind,i in (plan.start,plan.end) if kind=='edge' and all(keys[v][0][0]=='v' and keys[v][0][1] in (plan.boundary[i],plan.boundary[(i+1)%len(plan.boundary)]) for v in face)),None)
-                if cap_edge is None:raise ValueError('UV: не найден торец обратной стороны')
+                if cap_edge is None:raise ValueError(tr('UV: reverse-side boundary not found'))
                 start_cap=plan.start[0]=='edge' and core.edge_key(plan.boundary[plan.start[1]],plan.boundary[(plan.start[1]+1)%len(plan.boundary)])==cap_edge
                 first=plan.left[0 if start_cap else -1]
                 # Welded corners lie halfway across the rim's lens-shaped UV.
@@ -160,7 +161,7 @@ def generate(surfaces,matrix,angle=math.radians(60.),margin=.008,mirror_uv=True)
             else:
                 for v in face:
                     raw,_=keys[v]
-                    if raw not in lookup:raise ValueError('UV: отсутствует координата направляющей сегмента %d'%(owner+1))
+                    if raw not in lookup:raise ValueError(tr('UV: missing guide coordinate for segment %d')%(owner+1))
                     coords[offset+v]=lookup[raw]
             faces.append(tuple(offset+v for v in face));initial.append(coords);kinds.append((gid,owner,side,mask))
             active_faces.append(full)
@@ -193,7 +194,7 @@ def generate(surfaces,matrix,angle=math.radians(60.),margin=.008,mirror_uv=True)
         if area<0:
             for p in coords.values():p[0]=1-p[0]
         if any(_area([tuple(coords[v]) for v in tri])<=1e-14 for f in component for tri in triangles[f]):
-            raise ValueError('UV: исходный сегмент содержит перевёрнутую UV-грань')
+            raise ValueError(tr('UV: the source segment contains a flipped face'))
         # Match physical area and longitudinal arc scale before joining.
         physical_area=sum(core.length(core.cross(core.sub(world[b],world[a]),core.sub(world[c],world[a])))*.5 for f in component for a,b,c in triangles[f])
         uv_area=max(1e-12,sum(abs(_area([tuple(coords[v]) for v in faces[f]])) for f in component))
@@ -270,22 +271,22 @@ def generate(surfaces,matrix,angle=math.radians(60.),margin=.008,mirror_uv=True)
         offset=np.array((box[0],box[1]))+(box[2]-(hi[0]-lo[0]))*.5
         for f in chart['faces']:
             uv_faces[f]=[tuple((chart['uv'][v]-lo+offset)/extent) for v in faces[f]];face_islands[f]=island
-    if any(p is None for p in uv_faces):raise ValueError('UV: неполная развёртка')
+    if any(p is None for p in uv_faces):raise ValueError(tr('UV: incomplete unwrap'))
     for face in uv_faces:
-        if not all(math.isfinite(t) and -1e-6<=t<=1.+1e-6 for p in face for t in p):raise ValueError('UV: координаты за пределами атласа')
-        if _area(face)<=1e-14:raise ValueError('UV: вырожденная или перевёрнутая грань')
+        if not all(math.isfinite(t) and -1e-6<=t<=1.+1e-6 for p in face for t in p):raise ValueError(tr('UV: coordinates outside the atlas'))
+        if _area(face)<=1e-14:raise ValueError(tr('UV: collapsed or flipped face'))
     complete=[None]*len(full_faces);complete_islands=[None]*len(full_faces)
     for active,full in enumerate(active_faces):complete[full]=uv_faces[active];complete_islands[full]=face_islands[active]
     for copied,original in replicas.items():
         lookup=dict(zip(full_keys[original],complete[original]))
         complete[copied]=[lookup[key] for key in full_keys[copied]];complete_islands[copied]=complete_islands[original]
-        if abs(_area(complete[copied]))<=1e-14:raise ValueError('UV: вырожденная грань отражения')
+        if abs(_area(complete[copied]))<=1e-14:raise ValueError(tr('UV: collapsed mirrored face'))
     return complete,complete_islands,{'charts':len(charts),'islands':len(islands),'merged':merged,'mirror_faces':len(replicas),'candidates':len(candidates),'smooth_candidates':len(ordered),'rejected':dict(rejected)}
 
 
 def apply(mesh,uv_faces,face_islands):
     if len(uv_faces)!=len(mesh.polygons) or len(face_islands)!=len(mesh.polygons) or any(len(points)!=polygon.loop_total for polygon,points in zip(mesh.polygons,uv_faces)):
-        raise ValueError('координаты UV не соответствуют полигонам Mesh')
+        raise ValueError(tr('UV coordinates do not match Mesh polygons'))
     layer=mesh.uv_layers.new(name='UVMap')
     for face,points in zip(mesh.polygons,uv_faces):
         for loop,point in zip(face.loop_indices,points):layer.data[loop].uv=point

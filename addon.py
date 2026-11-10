@@ -3,6 +3,7 @@
 Curve directions live on face corners; density values belong to edges or points.
 No control-element IDs are used. Live does not mutate Blender datablocks.
 """
+from .i18n import tr, ui as translated_layout
 import bpy
 import bmesh
 import math
@@ -351,7 +352,7 @@ def _clear_zone_pick():
 
 class NYANW35_OT_pick_zone(Operator):
     bl_idname='nyanw35.pick_zone'
-    bl_label='Активный сегмент под курсором'
+    bl_label='Active segment under cursor'
     bl_options={'INTERNAL'}
 
     @classmethod
@@ -458,7 +459,7 @@ def _selected_cap(face):
     if len(vertices)==2:
         for i,v in enumerate(boundary):
             if {v,boundary[(i+1)%len(boundary)]}==set(vertices):return ('edge',i)
-    raise ValueError('Выдели одну точку или две соседние точки торца активного сегмента')
+    raise ValueError(tr('Select one point or two adjacent boundary points of the active segment'))
 
 
 def _write_caps(face,layer,caps):
@@ -475,7 +476,7 @@ def _write_caps(face,layer,caps):
 
 class NYANW35_OT_refresh_layout(Operator):
     bl_idname='nyanw35.refresh_layout'
-    bl_label='Обновить раскладку рядов'
+    bl_label='Refresh row layout'
     bl_options={'REGISTER','UNDO'}
     @classmethod
     def poll(cls,context):return bool(is_guide(context.object))
@@ -497,9 +498,9 @@ class NYANW35_OT_refresh_layout(Operator):
 
 class NYANW35_OT_set_cap(Operator):
     bl_idname='nyanw35.set_cap'
-    bl_label='Назначить торец сегмента'
+    bl_label='Set segment boundary'
     bl_options={'REGISTER','UNDO','INTERNAL'}
-    side: EnumProperty(items=[('END','Конец','Выбранная точка или ребро — конец сегмента'),('START','Начало','Выбранная точка или ребро — начало сегмента'),('AUTO','Автоматически','Заново определить оба торца по форме')],default='END')
+    side: EnumProperty(items=[('END','End','Selected point or edge is the segment end'),('START','Start','Selected point or edge is the segment start'),('AUTO','Automatic','Detect both boundaries from the shape')],default='END')
     @classmethod
     def poll(cls,context):return bool(is_guide(context.edit_object))
     def execute(self,context):
@@ -507,7 +508,7 @@ class NYANW35_OT_set_cap(Operator):
         bm.verts.index_update();bm.faces.index_update()
         face=_zone_ui_primary(bm,obj) or _active_face(bm,obj)
         if face is None:
-            self.report({'WARNING'},'Выбери активный сегмент');return {'CANCELLED'}
+            self.report({'WARNING'},tr('Select an active segment'));return {'CANCELLED'}
         zone=face.index
         def apply(stage):
             _prepare_bmesh(stage);stage.faces.ensure_lookup_table();stage.verts.index_update()
@@ -524,10 +525,10 @@ class NYANW35_OT_set_cap(Operator):
                     valid=[c for c in candidates if core.cap_paths(boundary,c,selected)]
                     if not valid:
                         valid=[(kind,i) for kind in ('edge','point') for i in range(len(boundary)) if core.cap_paths(boundary,(kind,i),selected)]
-                    if not valid:raise ValueError('Этот торец не образует две непрерывные направляющие')
+                    if not valid:raise ValueError(tr('This boundary does not form two continuous guides'))
                     opposite=max(valid,key=lambda c:core.length(core.sub(core.cap_location(points,boundary,c),core.cap_location(points,boundary,selected))))
                 caps=(opposite,selected) if index else (selected,opposite)
-            if not core.cap_paths(boundary,*caps):raise ValueError('Не удалось задать два независимых торца')
+            if not core.cap_paths(boundary,*caps):raise ValueError(tr('Could not assign two independent boundaries'))
             _write_boundary_pair(face,stage,caps)
         try:_edit_transaction(obj,apply)
         except (ValueError,RuntimeError) as exc:self.report({'WARNING'},str(exc));return {'CANCELLED'}
@@ -679,7 +680,7 @@ def _edit_transaction(obj, operation):
     Live never calls this helper. No staging element wrapper escapes it.
     """
     if obj.data.shape_keys:
-        raise ValueError('Для изменения топологии нужен каркас без Shape Keys')
+        raise ValueError(tr('Topology editing requires guides without Shape Keys'))
     live=bmesh.from_edit_mesh(obj.data)
     stage=live.copy()
     pending=None; backup=None
@@ -727,7 +728,7 @@ def _set_zone(f,bm,field,value):
     layers=bm.faces.layers.int if is_integer else bm.faces.layers.float
     layer=layers.get(name)
     if layer is None:
-        raise RuntimeError('Схема атрибутов не подготовлена до получения BMFace')
+        raise RuntimeError(tr('Attribute schema must be prepared before accessing BMFace'))
     f[layer]=int(value) if is_integer else float(value)
 
 
@@ -798,9 +799,9 @@ def _set_direction_smoothing(self,value):
 
 class NYANW35_OT_direction_smoothing(Operator):
     bl_idname='nyanw35.direction_smoothing'
-    bl_label='Сглаживание выбранных направлений'
+    bl_label='Smooth selected directions'
     bl_options={'REGISTER','UNDO','UNDO_GROUPED'}
-    value: FloatProperty(name='Сглаживание',default=1.,min=0.,max=1.)
+    value: FloatProperty(name='Smoothing',default=1.,min=0.,max=1.)
     def execute(self,context):
         obj=context.edit_object
         if not is_guide(obj):return {'CANCELLED'}
@@ -904,8 +905,8 @@ def _set_point_radius(self,value):
 
 
 class NYANW35_OT_point_density(Operator):
-    bl_idname='nyanw35.point_density';bl_label='Плотность выбранных точек';bl_options={'REGISTER','UNDO','UNDO_GROUPED'}
-    field:EnumProperty(items=[('FACTOR','Сила',''),('RADIUS','Радиус','')],default='FACTOR')
+    bl_idname='nyanw35.point_density';bl_label='Selected point density';bl_options={'REGISTER','UNDO','UNDO_GROUPED'}
+    field:EnumProperty(items=[('FACTOR','Strength',''),('RADIUS','Radius','')],default='FACTOR')
     value:FloatProperty(default=1.,min=.1,max=200.)
     def execute(self,context):
         obj=context.edit_object
@@ -921,7 +922,7 @@ class NYANW35_OT_point_density(Operator):
 
 
 class NYANW35_OT_density_reset(Operator):
-    bl_idname='nyanw35.density_reset';bl_label='Сброс плотности';bl_options={'REGISTER','UNDO'}
+    bl_idname='nyanw35.density_reset';bl_label='Reset density';bl_options={'REGISTER','UNDO'}
     all_points:BoolProperty(default=False)
     def execute(self,context):
         obj=context.edit_object
@@ -960,9 +961,9 @@ def _on_back_change(self,context):
 
 class NYANW35_OT_local_density(Operator):
     bl_idname='nyanw35.local_density'
-    bl_label='Уплотнение выбранных участков'
+    bl_label='Densify selected sections'
     bl_options={'REGISTER','UNDO','UNDO_GROUPED'}
-    value: FloatProperty(name='Множитель плотности',default=1.,min=1.,max=8.)
+    value: FloatProperty(name='Density multiplier',default=1.,min=1.,max=8.)
     def execute(self,context):
         obj=context.edit_object
         if not is_guide(obj):return {'CANCELLED'}
@@ -1065,7 +1066,7 @@ def _rebuild(obj,force=False,lazy=False,group_id=None,_background=False):
         reuse={k:old[k] for k in ('gpu_chunks','gpu_wire_chunks','gpu_rails','gpu_rail_records','gpu_rail_signature','native_selection_stamp','back_result','normal_topology','gpu_layout','preview_normal_groups','preview_axis_sharp','render_parts') if old and k in old}
         cached=dict(selection,**reuse,signature=signature,topology=tuple(full_zones),face_indices=tuple(indices),group_zones=tuple(zones),group_id=uid,object_pointer=key,
                     rows=rows,revision=_SOURCE_REVISION,source_state=state,source_dirty=False,data_pointer=obj.data.as_pointer(),positions=tuple(positions),zones=tuple(full_zones),
-                    result=result,active=active,status='; '.join('Зона %d: %s'%(i+1,v) for i,v in list(sorted(warnings.items()))[:3]) if warnings else '%d зон, %d полигонов'%(len(zones),len(result.faces)),
+                    result=result,active=active,status='; '.join(tr('Segment %d: %s')%(i+1,v) for i,v in list(sorted(warnings.items()))[:3]) if warnings else tr('%d segments, %d polygons')%(len(zones),len(result.faces)),
                     zone_count=len(zones),error_count=len(warnings),unpinned=unpinned)
         stored[uid]=cached
         if not _background:
@@ -1075,7 +1076,7 @@ def _rebuild(obj,force=False,lazy=False,group_id=None,_background=False):
         return True
     except Exception as exc:
         failed=dict(signature=signature,topology=tuple(full_zones),group_zones=tuple(zones),group_id=uid,object_pointer=key,rows=rows,revision=_SOURCE_REVISION,source_state=state,source_dirty=False,
-                    data_pointer=obj.data.as_pointer(),positions=tuple(positions),zones=tuple(full_zones),result=core.MeshResult(),active=-1,status='Ошибка построения: %s'%exc,error_count=-1,zone_count=len(zones),unpinned=unpinned)
+                    data_pointer=obj.data.as_pointer(),positions=tuple(positions),zones=tuple(full_zones),result=core.MeshResult(),active=-1,status=tr('Build error: %s')%exc,error_count=-1,zone_count=len(zones),unpinned=unpinned)
         stored[uid]=failed
         if not _background:_CACHE[key]=failed
         return False
@@ -1136,45 +1137,45 @@ class NHGuidedProperties(PropertyGroup):
     groups: CollectionProperty(type=groups.NH35HairGroup)
     group_index: IntProperty(get=groups.get_index,set=groups.set_index)
     active_group: IntProperty(default=1,min=1)
-    palette: EnumProperty(name='Тема',items=palette.ITEMS,default='WARM')
-    brightness: FloatProperty(name="Яркость",default=.8,min=.1,max=2.)
+    palette: EnumProperty(name='Theme',items=palette.ITEMS,default='WARM')
+    brightness: FloatProperty(name='Brightness',default=.8,min=.1,max=2.)
     enabled: BoolProperty(default=False)
     live: BoolProperty(name='Live',default=True)
-    show_preview: BoolProperty(name='Поверхность',default=True)
-    show_wire: BoolProperty(name='Сетка',default=True,description='Показать рёбра результата; направляющие остаются видимыми')
-    wire_opacity: FloatProperty(name='Непрозрачность сетки',default=.22,min=0.,max=1.,subtype='FACTOR')
-    smooth_preview: BoolProperty(name='Smooth + Sharp по направляющим',default=True,description='Плавное освещение внутри прядей с резкими границами по направляющим; сохраняется в независимом Mesh')
-    generate_uv: BoolProperty(name='UV',default=True,description='Развёртка вдоль локонов, объединение плавных сегментов и Seam на границах островов; вычисляется только при создании Mesh')
-    mirror_uv: BoolProperty(name='Mirror UV',default=True,description='UV отражённых локонов совпадают с оригиналом; выключите для отдельных островов отражений')
-    uv_merge_angle: FloatProperty(name='Угол сшивания UV',default=math.radians(60.),min=0.,max=math.radians(75.),subtype='ANGLE',description='Максимальный угол между поверхностями и направлениями прядей для объединения UV; острова сохраняют направление сверху вниз')
-    follow_matcap: BoolProperty(name='MatCap из вида',default=True,description='Устаревшее поле; освещение всегда следует 3D-виду',options={'HIDDEN'})
-    regular_rows: BoolProperty(name='Ровные квадовые полосы',default=True,description='Устаревшее сохранённое свойство; инструменты используют ровные квадовые полосы')
-    rows: IntProperty(name='Детализация по длине',default=12,min=2,max=160,description='Общая плотность рядов: короткие пряди получают меньше шагов, длинные больше')
+    show_preview: BoolProperty(name='Surface',default=True)
+    show_wire: BoolProperty(name='Wire',default=True,description='Show generated mesh edges; guides remain visible')
+    wire_opacity: FloatProperty(name='Wire opacity',default=.22,min=0.,max=1.,subtype='FACTOR')
+    smooth_preview: BoolProperty(name='Smooth + Sharp guides',default=True,description='Smooth shading within strands with sharp guide boundaries; transferred to the independent Mesh')
+    generate_uv: BoolProperty(name='UV',default=True,description='Unwrap along strands, join compatible segments and mark island seams; calculated only on Mesh conversion')
+    mirror_uv: BoolProperty(name='Mirror UV',default=True,description='Mirrored strands share the original UV; disable for separate mirrored islands')
+    uv_merge_angle: FloatProperty(name='UV stitch angle',default=math.radians(60.),min=0.,max=math.radians(75.),subtype='ANGLE',description='Maximum surface and strand-direction angle for joining UV islands; islands run from top to bottom')
+    follow_matcap: BoolProperty(name='Viewport MatCap',default=True,description='Legacy field; lighting follows the viewport',options={'HIDDEN'})
+    regular_rows: BoolProperty(name='Regular quad strips',default=True,description='Legacy saved field; tools use regular quad strips')
+    rows: IntProperty(name='Length detail',default=12,min=2,max=160,description='Base row density: shorter strands receive fewer rows')
     detail_length: FloatProperty(default=0.,min=0.,options={'HIDDEN'})
-    show_tint: BoolProperty(name='Подсветка зоны',default=True)
-    tint: FloatVectorProperty(name='Цвет зоны',size=3,subtype='COLOR',min=0.0,max=1.0,default=palette.WARM.tint,get=palette.tint_get,set=palette.tint_set,options={'HIDDEN'})
-    opacity: FloatProperty(name='Непрозрачность',default=palette.WARM.tint_strength,min=0,max=0.65,subtype='FACTOR',get=palette.strength_get,set=palette.strength_set)
+    show_tint: BoolProperty(name='Segment tint',default=True)
+    tint: FloatVectorProperty(name='Segment colour',size=3,subtype='COLOR',min=0.0,max=1.0,default=palette.WARM.tint,get=palette.tint_get,set=palette.tint_set,options={'HIDDEN'})
+    opacity: FloatProperty(name='Opacity',default=palette.WARM.tint_strength,min=0,max=0.65,subtype='FACTOR',get=palette.strength_get,set=palette.strength_set)
 
 
 class NHGuidedUISettings(PropertyGroup):
-    detail:IntProperty(name='Детализация',default=12,min=2,max=160,update=_on_ui_change('detail'),description='Плотность полигонов по длине выбранных сегментов; форма направляющих сохраняется')
-    volume:BoolProperty(name='Объём',default=False,update=_on_back_change,description='Замкнутая обратная сторона с собственной шириной и выпуклостью')
-    back_width:IntProperty(name='Ширина обратной стороны',default=2,min=2,max=32,update=_on_ui_change('back_width'),description='Количество колонок обратной стороны; лицевая сетка сохраняется')
-    back_depth:FloatProperty(name='Выпуклость обратной стороны',default=.08,min=0.,max=3.,update=_on_back_change,description='Поперечный профиль обратной стороны; 0 — плоский профиль')
-    density_mode: EnumProperty(name='Центр уплотнения',items=[('POINT','Точка','Плавное уплотнение вокруг активной точки'),('EDGE','Рёбра','Прежний множитель на выбранных рёбрах')],default='POINT')
-    point_radius: FloatProperty(name='Радиус, % длины',min=.1,max=200.,get=_get_point_radius,set=_set_point_radius,description='Расстояние вдоль направляющих в процентах от опорной длины детализации; плавное затухание до обычной сетки')
-    local_density: FloatProperty(name='Множитель плотности',min=1.,max=8.,get=_get_local_density,set=_set_local_density,description='Плотность вокруг всех выбранных точек; форма кривых сохраняется')
-    direction_smoothing: FloatProperty(name='Сглаживание',min=0.,max=1.,get=_get_direction_smoothing,set=_set_direction_smoothing,description='Alt + колесо. 1 — плавная касательная; 0 — направление к соседней точке. Только активный конец выбранных направлений')
-    width: IntProperty(name='Ширина',min=1,max=32,default=2,update=_on_ui_change('width'),description='Колонки поперёк сегмента. Shift + колесо — изменить у выбранных сегментов')
-    bulge: FloatProperty(name='Выпуклость',default=_DEFAULT_BULGE,min=-3,max=3,step=5,precision=3,update=_on_ui_change('bulge'),description='Поперечная выпуклость. Ctrl + колесо — изменить у выбранных сегментов')
-    bias: FloatProperty(name='Распределение',default=0.0,min=-2,max=2,step=5,precision=3,update=_on_ui_change('bias'),description='Распределение колонок по ширине; 0 — равномерно')
-    flip: BoolProperty(name='Перевернуть',default=False,update=_on_ui_change('flip'))
+    detail:IntProperty(name='Detail',default=12,min=2,max=160,update=_on_ui_change('detail'),description='Polygon density along selected segments; guide shape is preserved')
+    volume:BoolProperty(name='Volume',default=False,update=_on_back_change,description='Closed reverse surface with its own width and convexity')
+    back_width:IntProperty(name='Reverse width',default=2,min=2,max=32,update=_on_ui_change('back_width'),description='Reverse-side column count; front topology is preserved')
+    back_depth:FloatProperty(name='Reverse convexity',default=.08,min=0.,max=3.,update=_on_back_change,description='Reverse-side profile; 0 gives a flat profile')
+    density_mode: EnumProperty(name='Density target',items=[('POINT','Point','Smooth density around the active point'),('EDGE','Edges','Legacy multiplier on selected edges')],default='POINT')
+    point_radius: FloatProperty(name='Radius, % of length',min=.1,max=200.,get=_get_point_radius,set=_set_point_radius,description='Distance along guides as a percentage of the reference length; fades smoothly to the regular grid')
+    local_density: FloatProperty(name='Density multiplier',min=1.,max=8.,get=_get_local_density,set=_set_local_density,description='Density around all selected points; curve shape is preserved')
+    direction_smoothing: FloatProperty(name='Smoothing',min=0.,max=1.,get=_get_direction_smoothing,set=_set_direction_smoothing,description='Alt + wheel. 1: smooth tangent; 0: direction toward the next point. Applies to selected guide ends')
+    width: IntProperty(name='Width',min=1,max=32,default=2,update=_on_ui_change('width'),description='Columns across the segment. Shift + wheel changes selected segments')
+    bulge: FloatProperty(name='Convexity',default=_DEFAULT_BULGE,min=-3,max=3,step=5,precision=3,update=_on_ui_change('bulge'),description='Cross-section convexity. Ctrl + wheel changes selected segments')
+    bias: FloatProperty(name='Distribution',default=0.0,min=-2,max=2,step=5,precision=3,update=_on_ui_change('bias'),description='Column distribution across the width; 0 is uniform')
+    flip: BoolProperty(name='Flip',default=False,update=_on_ui_change('flip'))
 
 
 class NYANW35_OT_create_guide(Operator):
     bl_idname='nyanw35.create_guide'
-    bl_label='Создать каркас локонов'
-    bl_description='Создать новый управляющий Mesh с одной гранью-зоной'
+    bl_label='Create hair guides'
+    bl_description='Create a new guide Mesh with one segment'
     bl_options={'REGISTER','UNDO'}
 
     def execute(self,context):
@@ -1220,8 +1221,8 @@ class NYANW35_OT_create_guide(Operator):
 
 class NYANW35_OT_activate(Operator):
     bl_idname='nyanw35.activate'
-    bl_label='Сделать выбранный Mesh каркасом'
-    bl_description='Использовать все существующие грани выбранного Mesh как зоны локонов'
+    bl_label='Use selected Mesh as guides'
+    bl_description='Use every face of the selected Mesh as a hair segment'
     bl_options={'REGISTER','UNDO'}
 
     @classmethod
@@ -1241,8 +1242,8 @@ class NYANW35_OT_activate(Operator):
 
 class NYANW35_OT_disable(Operator):
     bl_idname='nyanw35.disable'
-    bl_label='Отключить на каркасе'
-    bl_description='Отключить аддон на выбранном Mesh и удалить лишь его генерируемый результат'
+    bl_label='Disable on guides'
+    bl_description='Disable the addon on the selected Mesh'
     bl_options={'REGISTER','UNDO'}
 
     def execute(self,context):
@@ -1256,8 +1257,8 @@ class NYANW35_OT_disable(Operator):
 
 class NYANW35_OT_demo(Operator):
     bl_idname='nyanw35.demo'
-    bl_label='Создать две смежные зоны'
-    bl_description='Мини-сцена для проверки общего шва и Merge'
+    bl_label='Create two adjacent segments'
+    bl_description='Example with a shared seam and Merge'
     bl_options={'REGISTER','UNDO'}
 
     def execute(self,context):
@@ -1303,8 +1304,8 @@ class NYANW35_OT_demo(Operator):
 
 class NYANW35_OT_rebuild(Operator):
     bl_idname='nyanw35.rebuild'
-    bl_label='Перестроить'
-    bl_description='Закрепить направления новых зон и пересчитать каркас'
+    bl_label='Rebuild'
+    bl_description='Set directions for new segments and rebuild the guides'
     bl_options={'REGISTER','UNDO'}
     def execute(self,context):
         obj=context.object
@@ -1316,8 +1317,8 @@ class NYANW35_OT_rebuild(Operator):
 
 class NYANW35_OT_bake(Operator):
     bl_idname='nyanw35.bake'
-    bl_label='Сделать независимый Mesh'
-    bl_description='Создать обычную копию результата без связи с NyanwHair'
+    bl_label='Create independent Mesh'
+    bl_description='Create an ordinary Mesh copy independent of NyanwHair'
     bl_options={'REGISTER','UNDO'}
     @classmethod
     def poll(cls,context):
@@ -1338,14 +1339,14 @@ class NYANW35_OT_bake(Operator):
             if surface.faces:uv_sources.append((uid,surface))
         _CACHE[src.as_pointer()]=groups.CACHE[src.as_pointer()][groups.active_id(src)]
         if not result.faces:
-            self.report({'WARNING'},'Нет поверхности для запекания')
+            self.report({'WARNING'},tr('No surface to convert'))
             return {'CANCELLED'}
         uv_data=None
         if src.nh35.generate_uv:
             from . import uv
             try:uv_data=uv.generate(uv_sources,src.matrix_world,angle=src.nh35.uv_merge_angle,mirror_uv=src.nh35.mirror_uv)
             except (ValueError,KeyError,IndexError) as exc:
-                self.report({'WARNING'},str(exc)+'; UV можно отключить под кнопкой «Преобразовать в Mesh»')
+                self.report({'WARNING'},str(exc)+tr('; UV can be disabled below Convert to Mesh'))
                 return {'CANCELLED'}
         me=bpy.data.meshes.new(src.name+'_BakedMesh')
         me.from_pydata(result.vertices,[],result.faces)
@@ -1380,10 +1381,8 @@ class NYANW35_OT_bake(Operator):
 
 class NYANW35_OT_pin_rails(Operator):
     bl_idname='nyanw35.pin_rails'
-    bl_label='Закрепить две рабочие кривые'
-    bl_description=('Выдели два торцевых ребра активной грани. '
-                    'Если не выделены, закрепить текущий авторасчёт. '
-                    'Метки хранятся на углах грани, не на вершинах.')
+    bl_label='Pin two working guides'
+    bl_description=('Select two boundary edges of the active face, or keep the current automatic boundaries. Marks belong to face corners, not vertices.')
     bl_options={'REGISTER','UNDO'}
 
     @classmethod
@@ -1396,7 +1395,7 @@ class NYANW35_OT_pin_rails(Operator):
         _prepare_bmesh(bm)
         f=_active_face(bm,obj)
         if f is None:
-            self.report({'WARNING'},'Выбери управляющую грань')
+            self.report({'WARNING'},tr('Select a guide face'))
             return {'CANCELLED'}
         bm.verts.index_update()
         bm.faces.index_update()
@@ -1417,10 +1416,10 @@ class NYANW35_OT_pin_rails(Operator):
                 self.report({'WARNING'},str(exc))
                 return {'CANCELLED'}
         if not core.cap_paths([v.index for v in f.verts],*choices):
-            self.report({'WARNING'},'Нужны противоположные торцы одной зоны')
+            self.report({'WARNING'},tr('Two opposite boundaries of one segment are required'))
             return {'CANCELLED'}
         layer=bm.loops.layers.int.get(L_CAP)
-        if layer is None: raise RuntimeError('Не подготовлены метки торцов')
+        if layer is None: raise RuntimeError(tr('Boundary marks are not prepared'))
         for loop in loops: loop[layer]=0
         for which,(kind,index) in enumerate(choices):
             loops[index][layer]=(1 if kind=='edge' else 3) if which==0 else (2 if kind=='edge' else 4)
@@ -1481,7 +1480,7 @@ def _restore_cap_records(bm,records,modified_vertex=None,exclude=()):
     containing the captured cap endpoints, not to stale face indices.
     """
     layer=bm.loops.layers.int.get(L_CAP)
-    if layer is None: raise RuntimeError('Не подготовлены метки торцов')
+    if layer is None: raise RuntimeError(tr('Boundary marks are not prepared'))
     excluded=set(exclude)
     faces=(list(modified_vertex.link_faces) if modified_vertex is not None
            else list(bm.faces))
@@ -1506,7 +1505,7 @@ def _restore_cap_records(bm,records,modified_vertex=None,exclude=()):
                 overlap=len(old_vertices.intersection(face.verts))
                 possibilities.append((overlap,face.index,face,positions,loops))
         if not possibilities:
-            raise ValueError('Не удалось сохранить направление соседней зоны')
+            raise ValueError(tr('Could not preserve the neighbouring direction'))
         _,_,face,positions,loops=max(possibilities,key=lambda x:(x[0],-x[1]))
         for loop in loops: loop[layer]=0
         for side,((kind,_,_),index) in enumerate(zip(caps,positions)):
@@ -1606,7 +1605,7 @@ def _split_single_bmesh(bm, zone, t, result, select_result=False):
     bm.faces.ensure_lookup_table()
     bm.faces.index_update()
     if not 0 <= zone < len(bm.faces):
-        raise ValueError('Зона больше не существует')
+        raise ValueError(tr('Segment no longer exists'))
     original_vertices=set(bm.verts)
     layout_records=_layout_lengths(bm,objects=True)
     density_records=_edge_density(bm,objects=True)
@@ -1614,22 +1613,22 @@ def _split_single_bmesh(bm, zone, t, result, select_result=False):
     source = bm.faces[zone]
     plan = result.plans_by_loop.get(tuple(v.index for v in source.verts))
     if plan is None or core.cap_paths(plan.boundary, plan.start, plan.end) is None:
-        raise ValueError('Нет действительной пары рабочих кривых')
+        raise ValueError(tr('No valid pair of working guides'))
     if not 0.001 < t < 0.999:
-        raise ValueError('Разрез слишком близко к границе')
+        raise ValueError(tr('Cut is too close to the boundary'))
     settings = _get_zone(source, bm)
     raw_caps=_read_caps(source,_boundary_layer(bm))
     cap_slots=[raw_caps.index(cap) for cap in (plan.start,plan.end)] if raw_caps else [0,1]
     side_b = {plan.right[0],plan.right[-1]}
     side_index = next((vid for vid in plan.left if vid not in side_b),None)
     if side_index is None:
-        raise ValueError('Нельзя определить левую сторону')
+        raise ValueError(tr('Could not determine the left side'))
     side_vertex = bm.verts[side_index]
     profile = core.sample_cut_guide(result, zone, t,
                   max(2,min(12,max(len(plan.left),len(plan.right))-1)))
     if len(profile) < 3 or any(not all(math.isfinite(float(v)) for v in p)
                                for p in profile):
-        raise ValueError('Неправильная геометрия линии разреза')
+        raise ValueError(tr('Invalid cut-line geometry'))
 
     # Record the source end caps and affected neighbours before ANY BMesh
     # topology edit. The face itself is never referenced after face_split.
@@ -1640,10 +1639,10 @@ def _split_single_bmesh(bm, zone, t, result, select_result=False):
         rv=bm.verts[plan.right[0 if k==0 else -1]]
         edge=None
         if cap[0]=='point':
-            if lv!=rv: raise ValueError('Неправильный точечный торец')
+            if lv!=rv: raise ValueError(tr('Invalid pointed boundary'))
         else:
             edge=_cap_edge(source,lv,rv)
-            if edge is None: raise ValueError('Не найдено торцевое ребро')
+            if edge is None: raise ValueError(tr('Boundary edge not found'))
             for adjacent in edge.link_faces:
                 if adjacent!=source:
                     affected.add(adjacent)
@@ -1657,13 +1656,13 @@ def _split_single_bmesh(bm, zone, t, result, select_result=False):
                             if desc[0]=='edge':
                                 i=desc[1]; boundary=their.boundary
                                 if {boundary[i],boundary[(i+1)%len(boundary)]} == {lv.index,rv.index}:
-                                    raise ValueError('Общий торец требует согласованного разреза соседних зон')
+                                    raise ValueError(tr('A shared boundary requires a coordinated cut of neighbouring segments'))
         end_caps.append((cap[0],lv,rv,edge))
     if end_caps[0][3] is not None and end_caps[0][3]==end_caps[1][3]:
-        raise ValueError('Два торца совпадают')
+        raise ValueError(tr('Both boundaries coincide'))
     neighbor_caps=_cap_records(bm,affected,result)
     if len(neighbor_caps)!=len(affected):
-        raise ValueError('Нельзя надёжно сохранить направление соседней зоны')
+        raise ValueError(tr('Could not reliably preserve the neighbouring direction'))
 
     ends=[]
     for k,(kind,left,right,edge) in enumerate(end_caps):
@@ -1676,15 +1675,15 @@ def _split_single_bmesh(bm, zone, t, result, select_result=False):
             new_vert[bm.verts.layers.float[L_POINT_RADIUS]]=0.
             ends.append(new_vert)
     start,finish=ends
-    if start==finish: raise ValueError('Оба конца разреза совпадают')
+    if start==finish: raise ValueError(tr('Both cut ends coincide'))
     # After cap edge splits, re-discover the face. Its former Python wrapper
     # is not relied on by any subsequent operation.
     candidates=[f for f in bm.faces if f.is_valid and start in f.verts and finish in f.verts]
     if len(candidates)!=1:
-        raise ValueError('Невозможно однозначно найти управляющую грань')
+        raise ValueError(tr('Could not uniquely identify the guide face'))
     target=candidates[0]
     if _cap_edge(target,start,finish) is not None:
-        raise ValueError('Разрез лежит на существующем ребре')
+        raise ValueError(tr('Cut lies on an existing edge'))
     # face_split(coords=...) creates the entire internal rail in ONE native
     # BMesh mutation. The previous implementation subdivided the resulting
     # seam N times with edge_split. Every split could reconstruct both incident
@@ -1693,23 +1692,23 @@ def _split_single_bmesh(bm, zone, t, result, select_result=False):
     created=bmesh.utils.face_split(target,start,finish,
                                    coords=tuple(tuple(p) for p in profile[1:-1]))
     if created is None:
-        raise ValueError('Blender не смог разделить грань')
+        raise ValueError(tr('Blender could not split the face'))
     # `target` and `created[0]` MUST NOT be used after the mutation. Determine
     # the two children by topology from the CURRENT mesh, not by face indices.
     children=tuple(f for f in bm.faces if f.is_valid and
                    start in f.verts and finish in f.verts)
     if len(children)!=2:
-        raise ValueError('У нового ребра должно быть ровно две грани')
+        raise ValueError(tr('The new edge must have exactly two faces'))
     left_child=next((f for f in children if side_vertex in f.verts),None)
     if left_child is None or all(f==left_child for f in children):
-        raise ValueError('Не удалось определить стороны разреза')
+        raise ValueError(tr('Could not determine the cut sides'))
 
     # Neighbours can lose duplicated BMLoop labels when their guide boundary
     # is subdivided. Restore only exact saved endpoints on surviving faces.
     bm.faces.index_update()
     _restore_cap_records(bm,neighbor_caps,exclude=children)
     layer=bm.loops.layers.int.get(L_CAP)
-    if layer is None:raise RuntimeError('Не подготовлены метки торцов')
+    if layer is None:raise RuntimeError(tr('Boundary marks are not prepared'))
     budget=result.effective_widths.get(zone,settings.width)
     left_width,right_width=core.width_budget_split(budget,t)
     # As in the earlier loft tool, a narrower daughter needs less bulge.
@@ -1744,7 +1743,7 @@ def _split_single_bmesh(bm, zone, t, result, select_result=False):
                              (lv in l.edge.verts or rv in l.edge.verts)),None)
                 flag=1 if slot==0 else 2
             if marker is None:
-                raise ValueError('Не удалось перенести торец дочерней зоны')
+                raise ValueError(tr('Could not transfer the child-segment boundary'))
             marker[layer]=flag
         _sync_legacy_face(child,bm)
         _set_zone(child,bm,'width',left_width if child==left_child else right_width)
@@ -1764,7 +1763,7 @@ def _split_single_bmesh(bm, zone, t, result, select_result=False):
         a=flags.get(1) or flags.get(3)
         b=flags.get(2) or flags.get(4)
         if a is None or b is None:
-            raise ValueError('Новая зона потеряла торцевые метки')
+            raise ValueError(tr('New segment lost its boundary marks'))
         caps=((('edge' if a[1]==1 else 'point'),a[0]),
               (('edge' if b[1]==2 else 'point'),b[0]))
         core.plan_face(points,tuple(v.index for v in child.verts),child.index,
@@ -1810,22 +1809,22 @@ def _insert_anchor_bmesh(bm,proposal,result,select_result=False):
     bm.edges.ensure_lookup_table(); bm.edges.index_update()
     bm.faces.ensure_lookup_table(); bm.faces.index_update()
     idx=proposal['edge_index']
-    if not 0<=idx<len(bm.edges):raise ValueError('Исходное ребро исчезло')
+    if not 0<=idx<len(bm.edges):raise ValueError(tr('Source edge disappeared'))
     edge=bm.edges[idx]
     if not edge.is_valid or {v.index for v in edge.verts}!=set(proposal['ends']):
-        raise ValueError('Исходное ребро изменилось')
+        raise ValueError(tr('Source edge has changed'))
     layout_records=_layout_lengths(bm,objects=True)
     density_records=_edge_density(bm,objects=True)
     direction_records=_directional_smoothing(bm,objects=True)
     original_ends=tuple(edge.verts)
     original_faces=list(edge.link_faces)
     if not original_faces:
-        raise ValueError('Выбранное ребро не принадлежит зоне')
+        raise ValueError(tr('Selected edge does not belong to the segment'))
     records=_cap_records(bm,original_faces,result)
     if len(records)!=len(original_faces):
-        raise ValueError('Не удалось определить прежние торцы зон')
+        raise ValueError(tr('Could not determine the previous boundaries'))
     anchor=next((v for v in edge.verts if v.index==proposal['ends'][0]),None)
-    if anchor is None:raise ValueError('Начальная вершина ребра недоступна')
+    if anchor is None:raise ValueError(tr('Start vertex of the edge is unavailable'))
     _,new_vert=bmesh.utils.edge_split(edge,anchor,proposal['t'])
     new_vert.co=Vector(proposal['point_local'])
     new_vert[bm.verts.layers.float[L_POINT_DENSITY]]=0.
@@ -1837,7 +1836,7 @@ def _insert_anchor_bmesh(bm,proposal,result,select_result=False):
     layer=bm.loops.layers.int.get(L_CAP)
     bm.verts.ensure_lookup_table(); bm.verts.index_update()
     for face in new_vert.link_faces:
-        if not face.is_valid: raise ValueError('Грань исчезла при создании опоры')
+        if not face.is_valid: raise ValueError(tr('Face disappeared while inserting a support point'))
         marks={}
         for i,loop in enumerate(face.loops):
             flag=int(loop[layer])
@@ -1846,11 +1845,11 @@ def _insert_anchor_bmesh(bm,proposal,result,select_result=False):
         a=marks.get(1) or marks.get(3)
         b=marks.get(2) or marks.get(4)
         if a is None or b is None:
-            raise ValueError('Опорная точка повредила направление зоны')
+            raise ValueError(tr('Support point damaged the segment direction'))
         caps=((('edge' if a[1]==1 else 'point'),a[0]),
               (('edge' if b[1]==2 else 'point'),b[0]))
         if core.cap_paths(tuple(v.index for v in face.verts),*caps) is None:
-            raise ValueError('Опорная точка изменила рабочие кривые')
+            raise ValueError(tr('Support point changed the working guides'))
     if select_result:
         bm.select_history.clear()
         for vert in bm.verts:vert.select_set(False)
@@ -1864,7 +1863,7 @@ def _insert_anchor_bmesh(bm,proposal,result,select_result=False):
 
 class NYANW35_OT_adjust(Operator):
     bl_idname='nyanw35.adjust'
-    bl_label='NyanwHair: параметры активного локона'
+    bl_label='NyanwHair: active strand parameters'
     bl_options={'REGISTER','UNDO','INTERNAL'}
     field: EnumProperty(items=[('width','Width',''),('bulge','Bulge',''),('smooth','Smoothing',''),('detail','Detail','')])
     direction: IntProperty(default=1)
@@ -1898,12 +1897,12 @@ class NYANW35_OT_adjust(Operator):
 
 class NYANW35_OT_hair_loop(Operator):
     bl_idname='nyanw35.hair_loop'
-    bl_label='Hair Loop: направляющая или опора'
-    bl_description=('Ctrl+R: разрез по продольной линии сетки либо опорная точка на рабочей кривой')
+    bl_label='Hair Loop: guide or support point'
+    bl_description=('Ctrl+R: cut along a longitudinal mesh line or insert a support point on a guide')
     bl_options={'REGISTER','UNDO','BLOCKING'}
-    mode: EnumProperty(items=[('AUTO','Контекстный Hair Loop',''),
-                             ('CUT','Разделить зону',''),
-                             ('POINT','Опорная точка','')],default='AUTO')
+    mode: EnumProperty(items=[('AUTO','Contextual Hair Loop',''),
+                             ('CUT','Split segment',''),
+                             ('POINT','Support point','')],default='AUTO')
 
     @classmethod
     def poll(cls,context):
@@ -1971,7 +1970,7 @@ class NYANW35_OT_hair_loop(Operator):
                 return {'CANCELLED'}
             except Exception:
                 logging.getLogger(__name__).exception('Unexpected Hair Loop failure')
-                self.report({'ERROR'},'Hair Loop: неожиданная ошибка; подробности в консоли')
+                self.report({'ERROR'},tr('Hair Loop: unexpected error; see the console'))
                 return {'CANCELLED'}
             context.area.tag_redraw()
             return {'FINISHED'}
@@ -1980,20 +1979,23 @@ class NYANW35_OT_hair_loop(Operator):
 
 def _draw_extra_panels(layout,context,obj,cached,edit):
     props=obj.nh35
-    header,body=layout.panel('nyanw_appearance',default_closed=True);header.label(text='Внешний вид',icon='SHADING_SOLID')
+    header,body=layout.panel('nyanw_appearance',default_closed=True);header.label(text=tr('Appearance'),icon='SHADING_SOLID')
     if body is not None:
-        if edit:body.prop(props,'palette',text='Тема')
-        body.prop(props,'smooth_preview',text='Smooth + Sharp');body.prop(props,'brightness',text='Яркость',slider=True)
-        row=body.row(align=True);row.prop(props,'show_wire',text='Сетка');column=row.column();column.enabled=props.show_wire;column.prop(props,'wire_opacity',text='',slider=True)
-        if edit:body.prop(props,'show_tint',text='Подсветка сегмента')
+        if edit:body.prop(props,'palette',text=tr('Theme'))
+        body.prop(props,'smooth_preview',text='Smooth + Sharp');body.prop(props,'brightness',text=tr('Brightness'),slider=True)
+        row=body.row(align=True);row.prop(props,'show_wire',text=tr('Wire'));column=row.column();column.enabled=props.show_wire;column.prop(props,'wire_opacity',text='',slider=True)
+        if edit:body.prop(props,'show_tint',text=tr('Segment highlight'))
         if edit and props.show_tint:
-            body.prop(props,'opacity',text='Сила выделения',slider=True)
+            body.prop(props,'opacity',text=tr('Highlight strength'),slider=True)
         if cached.get('appearance_status'):body.label(text=cached['appearance_status'],icon='INFO')
-    header,body=layout.panel('nyanw_tools',default_closed=True);header.label(text='Дополнительно',icon='PREFERENCES')
+    header,body=layout.panel('nyanw_tools',default_closed=True);header.label(text=tr('Additional'),icon='PREFERENCES')
     if body is not None:
+        from . import i18n
+        preferences=context.preferences.addons.get(__package__)
+        if preferences:body.prop(preferences.preferences,'language',text='Language',expand=True)
         if edit:
-            body.prop(context.window_manager.nh35_ui,'flip',text='Перевернуть профиль');body.operator('nyanw35.refresh_layout',text='Обновить раскладку рядов',icon='FILE_REFRESH')
-        body.operator('nyanw35.disable',text='Отключить на объекте',icon='X')
+            body.prop(context.window_manager.nh35_ui,'flip',text=tr('Flip profile'));body.operator('nyanw35.refresh_layout',text=tr('Refresh row layout'),icon='FILE_REFRESH')
+        body.operator('nyanw35.disable',text=tr('Disable on object'),icon='X')
 
 
 class NYANW35_PT_main(Panel):
@@ -2004,27 +2006,27 @@ class NYANW35_PT_main(Panel):
     bl_category='NyanwHair'
 
     def draw(self,context):
-        layout=self.layout;obj=context.object
+        layout=translated_layout(self.layout);obj=context.object
         if not is_guide(obj):
             row=layout.row();row.scale_y=2. if obj is None or obj.mode=='OBJECT' else 1.
-            row.operator('nyanw35.create_guide',text='Создать новый локон',icon='CURVE_BEZCURVE')
-            if obj and obj.type=='MESH' and obj.mode=='OBJECT':layout.operator('nyanw35.activate',text='Использовать выбранный Mesh',icon='CHECKMARK')
+            row.operator('nyanw35.create_guide',text=tr('Create new strand'),icon='CURVE_BEZCURVE')
+            if obj and obj.type=='MESH' and obj.mode=='OBJECT':layout.operator('nyanw35.activate',text=tr('Use selected Mesh'),icon='CHECKMARK')
             return
         props=obj.nh35;cached=_CACHE.get(obj.as_pointer(),{});result=cached.get('result');ui=context.window_manager.nh35_ui
         if obj.mode!='EDIT':
             row=layout.row();row.scale_y=2.
-            row.operator('nyanw35.create_guide',text='Создать новый локон',icon='CURVE_BEZCURVE')
+            row.operator('nyanw35.create_guide',text=tr('Create new strand'),icon='CURVE_BEZCURVE')
             layout.separator(factor=.6,type='LINE')
             row=layout.row();row.scale_y=2.
-            row.operator('nyanw35.bake',text='Преобразовать в Mesh',icon='OUTLINER_OB_MESH')
+            row.operator('nyanw35.bake',text=tr('Convert to Mesh'),icon='OUTLINER_OB_MESH')
             row=layout.row(align=True);row.prop(props,'generate_uv',text='UV')
             option=row.row(align=True);option.enabled=props.generate_uv and any(group.mirror_x or group.mirror_y or group.mirror_z for group in props.groups)
             option.prop(props,'mirror_uv',text='Mirror UV')
-            if props.generate_uv:layout.prop(props,'uv_merge_angle',text='Угол сшивания')
+            if props.generate_uv:layout.prop(props,'uv_merge_angle',text=tr('Stitch angle'))
             _draw_extra_panels(layout,context,obj,cached,False)
             return
         row=layout.row(align=True);row.prop(props,'live',text='Live',toggle=True,icon='PLAY');row.prop(props,'show_preview',text='',icon='HIDE_OFF');row.prop(context.space_data.overlay,'show_overlays',text='',icon='OVERLAY');row.operator('nyanw35.rebuild',text='',icon='FILE_REFRESH')
-        header,body=layout.panel('nyanw_groups',default_closed=True);header.label(text='Группы волос',icon='OUTLINER_COLLECTION')
+        header,body=layout.panel('nyanw_groups',default_closed=True);header.label(text=tr('Hair groups'),icon='OUTLINER_COLLECTION')
         if body is not None:
             body.template_list('NYANW35_UL_groups','',props,'groups',props,'group_index',rows=max(2,min(4,len(props.groups))))
             row=body.row(align=True);row.operator('nyanw35.group',text='',icon='ADD').action='ADD';remove=row.row(align=True);remove.enabled=len(props.groups)>1;remove.operator('nyanw35.group',text='',icon='REMOVE').action='REMOVE'
@@ -2032,31 +2034,31 @@ class NYANW35_PT_main(Panel):
             if active is not None:
                 split=body.split(factor=.32,align=True);split.column(align=True).label(text='Mirror',icon='MOD_MIRROR');axes=split.row(align=True)
                 for axis in 'xyz':axes.prop(active,'mirror_'+axis,text=axis.upper(),toggle=True)
-            else:body.label(text='Нажмите ↻ для подготовки групп')
+            else:body.label(text=tr('Press ↻ to prepare groups'))
         bm=bmesh.from_edit_mesh(obj.data)
-        layout.separator();layout.label(text='Настройки сегмента',icon='FACESEL')
+        layout.separator();layout.label(text=tr('Segment settings'),icon='FACESEL')
         parameters=layout.column(align=True);parameters.enabled=bool(_zone_ui_faces(bm,obj))
-        parameters.prop(ui,'detail',text='Детализация');parameters.prop(ui,'width',text='Ширина');parameters.prop(ui,'bulge',text='Выпуклость');parameters.prop(ui,'bias',text='Распределение')
-        parameters.separator();parameters.prop(ui,'volume',text='Объём',icon='MOD_SOLIDIFY')
+        parameters.prop(ui,'detail',text=tr('Detail'));parameters.prop(ui,'width',text=tr('Width'));parameters.prop(ui,'bulge',text=tr('Convexity'));parameters.prop(ui,'bias',text=tr('Distribution'))
+        parameters.separator();parameters.prop(ui,'volume',text=tr('Volume'),icon='MOD_SOLIDIFY')
         if ui.volume:
-            parameters.prop(ui,'back_width',text='Обратная: ширина');parameters.prop(ui,'back_depth',text='Обратная: выпуклость')
-        if not cached.get('zone_count',0):layout.operator('nyanw35.group_starter',text='Создать локон в группе',icon='ADD')
-        layout.separator();layout.label(text='Края сегмента',icon='EDGESEL')
+            parameters.prop(ui,'back_width',text=tr('Reverse: width'));parameters.prop(ui,'back_depth',text=tr('Reverse: convexity'))
+        if not cached.get('zone_count',0):layout.operator('nyanw35.group_starter',text=tr('Create strand in group'),icon='ADD')
+        layout.separator();layout.label(text=tr('Segment boundaries'),icon='EDGESEL')
         ends=layout.column(align=True);ends.enabled=bool(_zone_ui_faces(bm,obj))
-        for slot,label in [('FIRST','Начало'),('SECOND','Конец')]:
+        for slot,label in [('FIRST',tr('Start')),('SECOND',tr('End'))]:
             row=ends.row(align=True);op=row.operator('nyanw35.boundary',text=label);op.slot=slot;op.clear=False
             op=row.operator('nyanw35.boundary',text='',icon='X');op.slot=slot;op.clear=True
-        layout.separator();layout.label(text='Точки',icon='VERTEXSEL')
-        row=layout.row(align=True);row.enabled=bool(_smooth_targets(bm,result));row.prop(ui,'direction_smoothing',text='Сглаживание',slider=True);row.operator('nyanw35.direction_smoothing',text='',icon='LOOP_BACK').value=1.
-        layout.separator(factor=.4);layout.label(text='Локальная плотность',icon='MOD_SUBSURF')
+        layout.separator();layout.label(text=tr('Points'),icon='VERTEXSEL')
+        row=layout.row(align=True);row.enabled=bool(_smooth_targets(bm,result));row.prop(ui,'direction_smoothing',text=tr('Smoothing'),slider=True);row.operator('nyanw35.direction_smoothing',text='',icon='LOOP_BACK').value=1.
+        layout.separator(factor=.4);layout.label(text=tr('Local density'),icon='MOD_SUBSURF')
         vertices=_point_density_targets(bm,result)
-        column=layout.column(align=True);column.enabled=bool(vertices);column.prop(ui,'local_density',text='Плотность');column.prop(ui,'point_radius',text='Радиус, %')
-        row=layout.row(align=True);selected=row.row(align=True);selected.enabled=bool(vertices);selected.operator('nyanw35.density_reset',text='Сброс').all_points=False
-        row.operator('nyanw35.density_reset',text='Сброс все').all_points=True
+        column=layout.column(align=True);column.enabled=bool(vertices);column.prop(ui,'local_density',text=tr('Density'));column.prop(ui,'point_radius',text=tr('Radius, %'))
+        row=layout.row(align=True);selected=row.row(align=True);selected.enabled=bool(vertices);selected.operator('nyanw35.density_reset',text=tr('Reset')).all_points=False
+        row.operator('nyanw35.density_reset',text=tr('Reset all')).all_points=True
         _draw_extra_panels(layout,context,obj,cached,True)
         errors=cached.get('error_count',0)
-        if errors:layout.label(text='Ошибок зон: %d'%errors,icon='ERROR');layout.label(text=cached.get('status','')[:100])
-        elif result:layout.label(text='%d / %d сегм. · %d полигонов'%(len(_zone_ui_faces(bm,obj)),cached.get('zone_count',0),_preview_polygon_count(cached)))
+        if errors:layout.label(text=tr('Segment errors: %d')%errors,icon='ERROR');layout.label(text=cached.get('status','')[:100])
+        elif result:layout.label(text=tr('%d / %d segments · %d polygons')%(len(_zone_ui_faces(bm,obj)),cached.get('zone_count',0),_preview_polygon_count(cached)))
 
 
 _CIRCLE_OFFSETS=tuple(p for i in range(12) for p in ((0.,0.),(math.cos(2*math.pi*i/12),math.sin(2*math.pi*i/12)),(math.cos(2*math.pi*(i+1)/12),math.sin(2*math.pi*(i+1)/12))))
@@ -2753,7 +2755,11 @@ def _unregister_keys():
 
 def register():
     global _RUNNING,_DRAW_HANDLER,_POINT_HANDLER
+    from . import i18n
+    bpy.utils.register_class(i18n.NHLanguagePreferences)
     for cls in _CLASSES: bpy.utils.register_class(cls)
+    i18n.prepare(_CLASSES);i18n.apply_language()
+    bpy.app.timers.register(i18n.initialize,first_interval=.1)
     bpy.types.Object.nh35=PointerProperty(type=NHGuidedProperties)
     bpy.types.WindowManager.nh35_ui=PointerProperty(type=NHGuidedUISettings)
     for handler_name,handler in (('depsgraph_update_post',_on_scene_update),('load_post',_on_load),
@@ -2800,5 +2806,7 @@ def unregister():
     del bpy.types.WindowManager.nh35_ui
     del bpy.types.Object.nh35
     for cls in reversed(_CLASSES): bpy.utils.unregister_class(cls)
+    from . import i18n
+    i18n.clear();bpy.utils.unregister_class(i18n.NHLanguagePreferences)
     _CACHE.clear();groups.CACHE.clear()
     _UNDO_DISPLAY.clear();_RESTORE_GROUPS.clear()

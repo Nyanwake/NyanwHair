@@ -1,4 +1,5 @@
 """Explicit, transactional boundary, merge and extrusion tools."""
+from .i18n import tr, ui as translated_layout
 import bpy,bmesh
 from bpy.types import Operator,Menu
 from bpy.props import EnumProperty,FloatProperty,FloatVectorProperty,IntProperty
@@ -21,11 +22,11 @@ def assign_vertices(face,bm,slots):
         elif len(marked)==1:caps.append(('point',marked[0]))
         elif len(marked)==2:
             index=next((i for i in marked if (i+1)%len(loops) in marked),None)
-            if index is None:raise ValueError('После операции край перестал быть непрерывным')
+            if index is None:raise ValueError(tr('Boundary is no longer continuous after this operation'))
             caps.append(('edge',index))
-        else:raise ValueError('Эта операция требует края из нескольких рёбер')
+        else:raise ValueError(tr('This operation requires a boundary with several edges'))
     if all(c is not None for c in caps) and not a.core.cap_paths(tuple(v.index for v in face.verts),*caps):
-        raise ValueError('Два края одного сегмента совпали или пересеклись')
+        raise ValueError(tr('Two boundaries of one segment coincide or intersect'))
     a._write_boundary_pair(face,bm,caps)
 
 
@@ -41,15 +42,15 @@ def _select(bm,vertices):
 
 class NYANW35_OT_boundary(Operator):
     bl_idname='nyanw35.boundary'
-    bl_label='Край сегмента'
+    bl_label='Segment boundary'
     bl_options={'REGISTER','UNDO'}
-    slot:EnumProperty(items=[('AUTO','Свободный край',''),('FIRST','Край 1',''),('SECOND','Край 2','')],default='AUTO')
+    slot:EnumProperty(items=[('AUTO','Free boundary',''),('FIRST','Boundary 1',''),('SECOND','Boundary 2','')],default='AUTO')
     clear: bpy.props.BoolProperty(default=False,options={'SKIP_SAVE'})
     @classmethod
     def poll(cls,context):return bool(a.is_guide(context.edit_object))
     @classmethod
     def description(cls,context,properties):
-        return ('Автоматически определить этот край, сохранив противоположный и поверхность сегмента' if properties.clear else 'Назначить выбранную точку или ребро краем сегмента')
+        return (tr('Detect this boundary automatically while preserving the opposite boundary and surface') if properties.clear else tr('Assign a selected point or edge as the segment boundary'))
     def execute(self,context):
         obj=context.edit_object;live=bmesh.from_edit_mesh(obj.data);live.faces.index_update()
         face=a._zone_ui_primary(live,obj) or a._active_face(live,obj)
@@ -64,7 +65,7 @@ class NYANW35_OT_boundary(Operator):
                 if len(overlap)==1:index=overlap[0]
                 elif len(empty)==1:index=empty[0]
                 elif len(empty)==2:index=0
-                else:raise ValueError('Оба края заданы: выбери «Край 1» или «Край 2» для замены')
+                else:raise ValueError(tr('Both boundaries are set: choose Boundary 1 or Boundary 2 to replace one'))
             else:index=0 if self.slot=='FIRST' else 1
             if self.clear:
                 raw=list(a._read_caps(face,a._boundary_layer(bm)) or (None,None));raw[index]=None
@@ -94,11 +95,11 @@ def _mapped(records,mapping,maximum=False):
 def merge_stage(bm,mode,distance,cursor):
     a._prepare_bmesh(bm);bm.verts.index_update();bm.faces.index_update()
     selected=[v for v in bm.verts if v.select]
-    if len(selected)<2:raise ValueError('Выдели хотя бы две точки')
+    if len(selected)<2:raise ValueError(tr('Select at least two points'))
     history=[v for v in bm.select_history if isinstance(v,bmesh.types.BMVert) and v.select]
     if mode=='DISTANCE':mapping=bmesh.ops.find_doubles(bm,verts=selected,dist=distance)['targetmap']
     else:
-        if mode in ('ACTIVE','FIRST','LAST') and not history:raise ValueError('Последней выдели нужную активную точку')
+        if mode in ('ACTIVE','FIRST','LAST') and not history:raise ValueError(tr('Select the desired active point last'))
         target=(history[0] if mode=='FIRST' and history else history[-1] if history else selected[0])
         if mode=='CENTER':position=sum((v.co for v in selected),Vector())/len(selected)
         elif mode=='CURSOR':position=Vector(cursor)
@@ -113,7 +114,7 @@ def merge_stage(bm,mode,distance,cursor):
     selected_after={mapping.get(v,v) for v in selected}
     order=bm.faces.layers.int[a.L_ORDER]
     saved={int(face[order]):tuple(frozenset(mapping.get(v,v) for v in slot) for slot in boundary_vertices(face,bm)) for face in bm.faces}
-    if any(slots[0] and slots[1] and slots[0].intersection(slots[1]) for slots in saved.values()):raise ValueError('Нельзя объединить два края одного сегмента в одну точку')
+    if any(slots[0] and slots[1] and slots[0].intersection(slots[1]) for slots in saved.values()):raise ValueError(tr('Cannot merge both boundaries of one segment into one point'))
     directions=_mapped(a._directional_smoothing(bm,True),mapping)
     density=_mapped(a._edge_density(bm,True),mapping,True)
     layout=_mapped(a._layout_lengths(bm,True),mapping,True)
@@ -129,7 +130,7 @@ def merge_stage(bm,mode,distance,cursor):
         if slots is not None:assign_vertices(face,bm,slots)
     a._restore_directions(bm,directions);a._restore_density(bm,density);a._restore_layout(bm,layout)
     for target,(gain,radius) in values.items():target[point_gain]=gain;target[point_radius]=radius
-    if any(len(e.link_faces)>2 for e in bm.edges):raise ValueError('Слияние создаёт три поверхности на одном ребре')
+    if any(len(e.link_faces)>2 for e in bm.edges):raise ValueError(tr('Merge would join three surfaces on one edge'))
     _select(bm,list(selected_after))
 
 
@@ -158,11 +159,11 @@ class NYANW35_OT_merge(Operator):
 class NYANW35_MT_merge(Menu):
     bl_label='Merge'
     def draw(self,context):
-        self.layout.operator_context='INVOKE_DEFAULT'
+        translated_layout(self.layout).operator_context='INVOKE_DEFAULT'
         bm=bmesh.from_edit_mesh(context.edit_object.data)
         has_history=any(isinstance(v,bmesh.types.BMVert) and v.select for v in bm.select_history)
         for mode,label in [('CENTER','At Center'),('ACTIVE','At Active'),('FIRST','At First'),('LAST','At Last'),('CURSOR','At Cursor'),('DISTANCE','By Distance')]:
-            row=self.layout.row();row.enabled=mode not in ('ACTIVE','FIRST','LAST') or has_history
+            row=translated_layout(self.layout).row();row.enabled=mode not in ('ACTIVE','FIRST','LAST') or has_history
             op=row.operator('nyanw35.merge',text=label);op.mode=mode
 
 
@@ -179,19 +180,19 @@ def single_extrude_stage(bm,result,offset):
     a._prepare_bmesh(bm,result);bm.verts.index_update();bm.faces.index_update()
     selected=[v for v in bm.verts if v.select]
     if len(selected) not in (1,2):
-        raise ValueError('Выбери свободный край, ребро ответвления или грань для E-Face')
+        raise ValueError(tr('Select a free boundary, branch edge or face for E-Face'))
     directions=a._directional_smoothing(bm,True);density=a._edge_density(bm,True);layout=a._layout_lengths(bm,True)
     edge=bm.edges.get(tuple(selected)) if len(selected)==2 else None
-    if len(selected)==2 and edge is None:raise ValueError('Выбери одно ребро')
+    if len(selected)==2 and edge is None:raise ValueError(tr('Select one edge'))
     owners=list(edge.link_faces) if edge else list(selected[0].link_faces)
-    if not owners:raise ValueError('Для ответвления выбери граничное ребро существующего сегмента')
-    if len(owners)!=1:raise ValueError('Ребро уже соединяет две поверхности. Выбери свободное граничное ребро')
+    if not owners:raise ValueError(tr('Select a boundary edge of an existing segment to branch'))
+    if len(owners)!=1:raise ValueError(tr('Edge already joins two surfaces. Select a free boundary edge'))
     face=owners[0]
     caps=a._read_caps(face,a._boundary_layer(bm))
-    if not caps or any(c is None or c[0] not in ('edge','point') for c in caps):raise ValueError('Сначала укажи оба края сегмента')
+    if not caps or any(c is None or c[0] not in ('edge','point') for c in caps):raise ValueError(tr('Set both segment boundaries first'))
     slots=list(boundary_vertices(face,bm));chosen=frozenset(selected)
     cap_index=next((i for i,s in enumerate(slots) if s==chosen),None)
-    if edge is None and cap_index is None:raise ValueError('Точка должна быть отмеченным свободным краем')
+    if edge is None and cap_index is None:raise ValueError(tr('Point must be a marked free boundary'))
     ring=list(face.verts);old_edges=tuple(face.edges)
     attributes=[(layer,face[layer]) for layers in (bm.faces.layers.int,bm.faces.layers.float,bm.faces.layers.string) for layer in layers.values()]
     material=face.material_index;smooth=face.smooth
@@ -211,7 +212,7 @@ def single_extrude_stage(bm,result,offset):
             first=selected[0];i=ring.index(first);old=first.co.copy()
             default_direction=old-(ring[i-1].co+ring[(i+1)%len(ring)].co)*.5
             across=(ring[(i+1)%len(ring)].co-ring[i-1].co)*.15
-            if across.length<1e-8:raise ValueError('Не удалось раскрыть точечный кончик')
+            if across.length<1e-8:raise ValueError(tr('Could not open the pointed tip'))
             first.co=old-across;second=bm.verts.new(old+across)
             neighbor=ring[(i+1)%len(ring)]
             def move_corner(records):
@@ -242,7 +243,7 @@ def single_extrude_stage(bm,result,offset):
         v[bm.verts.layers.float[a.L_POINT_DENSITY]]=0.;v[bm.verts.layers.float[a.L_POINT_RADIUS]]=0.
     a._restore_directions(bm,directions);a._restore_density(bm,density);a._restore_layout(bm,layout)
     _select(bm,[one,two]);bm.normal_update();bm.verts.index_update();bm.faces.index_update()
-    if offset.length>1e-8 and a.core.length(a.core.newell([tuple(v.co) for v in bm.verts],tuple(v.index for v in new.verts)))<a.core.EPS:raise ValueError('Выбери направление, создающее ненулевую поверхность')
+    if offset.length>1e-8 and a.core.length(a.core.newell([tuple(v.co) for v in bm.verts],tuple(v.index for v in new.verts)))<a.core.EPS:raise ValueError(tr('Choose a direction that creates a nonzero surface'))
     return dict(mode=mode,indices=(one.index,two.index),bases=(tuple(one.co-offset),tuple(two.co-offset)),anchor=tuple(origin),direction=tuple(default_direction.normalized() if default_direction.length else Vector((0,0,1))))
 
 
@@ -268,17 +269,17 @@ def validate_stage(bm,obj):
         reference_length=(groups.settings(obj).reference_length if groups.settings(obj) else obj.nh35.detail_length),directional_smoothing=a._directional_smoothing(bm),local_density=a._edge_density(bm),
         point_density=a._point_density(bm),layout_lengths=a._layout_lengths(bm),regular_rows=True,face_indices=[f.index for f in faces])
     if result.warnings:raise ValueError(next(iter(result.warnings.values())))
-    if not result.faces:raise ValueError('Не удалось построить поверхность')
+    if not result.faces:raise ValueError(tr('Could not build the surface'))
 
 
 _ACTIVE=set()
 class NYANW35_OT_extrude(Operator):
     bl_idname='nyanw35.extrude'
-    bl_label='Умное вытягивание локона'
+    bl_label='Smart strand extrusion'
     bl_options={'REGISTER','UNDO','BLOCKING'}
-    offset:FloatVectorProperty(name='Смещение',subtype='TRANSLATION',default=(0.,0.,.25))
-    curve_points:IntProperty(name='Промежуточные точки',default=0,min=0,max=64)
-    curve_bend:FloatVectorProperty(name='Изгиб',subtype='TRANSLATION',default=(0.,0.,0.))
+    offset:FloatVectorProperty(name='Offset',subtype='TRANSLATION',default=(0.,0.,.25))
+    curve_points:IntProperty(name='Intermediate points',default=0,min=0,max=64)
+    curve_bend:FloatVectorProperty(name='Bend',subtype='TRANSLATION',default=(0.,0.,0.))
     @classmethod
     def poll(cls,context):return bool(a.is_guide(context.edit_object))
     def execute(self,context):
@@ -297,7 +298,7 @@ class NYANW35_OT_extrude(Operator):
         try:
             data=a._edit_transaction(obj,operation);committed=True
             a._prepare_object(obj);a._rebuild(obj,True)
-            if data['mode']!='WIRE' and a._CACHE[obj.as_pointer()]['error_count']:raise ValueError('Не удалось построить поверхность')
+            if data['mode']!='WIRE' and a._CACHE[obj.as_pointer()]['error_count']:raise ValueError(tr('Could not build the surface'))
         except (ValueError,RuntimeError,ReferenceError) as exc:
             if committed:restore_backup(obj,backup,selection);a._CACHE.pop(obj.as_pointer(),None);a._rebuild(obj,True)
             self.report({'WARNING'},str(exc));return {'CANCELLED'}
@@ -322,11 +323,11 @@ class NYANW35_OT_extrude(Operator):
         return {'RUNNING_MODAL'}
     def _status(self,context):
         if getattr(self,'_curve_phase',False):
-            context.area.header_text_set('Изгиб · промежуточных точек: %d · мышь: изгиб · колесо: точки · ЛКМ / Enter · Esc'%self.curve_points);return
-        label={'EXTEND':'Удлинение','BRANCH':'Ответвление','VOLUME':'E-Face','WIRE':'Каркас'}.get(self._data['mode'],'Вытягивание')
+            context.area.header_text_set(tr('Bend · intermediate points: %d · mouse: bend · wheel: points · LMB / Enter · Esc')%self.curve_points);return
+        label={'EXTEND':tr('Extend'),'BRANCH':tr('Branch'),'VOLUME':'E-Face','WIRE':tr('Guide wire')}.get(self._data['mode'],tr('Extrude'))
         if self._data.get('count',1)>1:label+=' ×%d'%self._data['count']
-        extra=' · колесо: изгиб' if self._data['mode']=='WIRE' else ''
-        context.area.header_text_set(label+' · мышь / X Y Z / число'+extra+' · ЛКМ / Enter · Esc')
+        extra=tr(' · wheel: bend') if self._data['mode']=='WIRE' else ''
+        context.area.header_text_set(label+tr(' · mouse / X Y Z / number')+extra+tr(' · LMB / Enter · Esc'))
     def _move(self,context,event):
         mouse=Vector((event.mouse_region_x,event.mouse_region_y));delta=view3d_utils.region_2d_to_location_3d(context.region,context.region_data,mouse,self._anchor)-self._start
         if self._axis:
@@ -436,7 +437,7 @@ class NYANW35_OT_extrude(Operator):
             if self._delta.length<1e-8:self._end(context,True);return {'CANCELLED'}
             try:
                 a._prepare_object(self._obj);a._rebuild(self._obj,True)
-                if self._data['mode']!='WIRE' and a._CACHE[self._obj.as_pointer()]['error_count']:raise ValueError('Вытягивание даёт недопустимую поверхность')
+                if self._data['mode']!='WIRE' and a._CACHE[self._obj.as_pointer()]['error_count']:raise ValueError(tr('Extrusion creates an invalid surface'))
             except (ValueError,RuntimeError,ReferenceError) as exc:self.report({'WARNING'},str(exc));self._end(context,True);return {'CANCELLED'}
             self.offset=self._delta;self._end(context,False);return {'FINISHED'}
         if self._curve_phase:

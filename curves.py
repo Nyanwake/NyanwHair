@@ -1,4 +1,5 @@
 """Chord-parameterized cubic spline network, independent of mesh sampling."""
+from .i18n import tr
 from collections import defaultdict
 from .core import EPS,add,sub,mul,dot,length,norm,edge_key,_plan_priority,mix
 
@@ -111,7 +112,7 @@ class CurveNetwork:
         data=self.coefficients.get((a,b))
         if data is None:
             data=self.coefficients.get((b,a));t=1.-t
-        if data is None:raise ValueError('Ребро не принадлежит направляющей')
+        if data is None:raise ValueError(tr('Edge does not belong to the guide'))
         p0,p1,m0,m1=data
         tt=t*t;ttt=tt*t
         return add(add(mul(p0,2*ttt-3*tt+1),mul(p1,-2*ttt+3*tt)),

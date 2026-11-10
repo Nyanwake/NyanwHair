@@ -1,4 +1,5 @@
 """A single shared-cap cut schedule, committed through the existing transaction."""
+from .i18n import tr
 import math
 import bmesh
 from mathutils import Vector
@@ -25,7 +26,7 @@ def network(result,zone,t):
             for other,a,b in owners[core.edge_key(left,right)]:
                 wanted=fraction if a<b else 1.-fraction
                 if other in targets:
-                    if abs(targets[other]-wanted)>1e-7:raise ValueError('Замкнутый ряд требует несовместимых положений разреза')
+                    if abs(targets[other]-wanted)>1e-7:raise ValueError(tr('A closed loop requires incompatible cut positions'))
                 else:targets[other]=wanted;queue.append(other)
     cache[key]=targets
     return targets
@@ -48,7 +49,7 @@ def split(bm,zone,t,result,select_result=False):
     a._prepare_bmesh(bm,result)
     for seq in (bm.verts,bm.edges,bm.faces):seq.ensure_lookup_table();seq.index_update()
     schedule=network(result,zone,t);plans={p.index:p for p in result.plans_by_loop.values()}
-    if any(not .001<value<.999 for value in schedule.values()):raise ValueError('Разрез слишком близко к границе')
+    if any(not .001<value<.999 for value in schedule.values()):raise ValueError(tr('Cut is too close to the boundary'))
     original=set(bm.verts);order=bm.faces.layers.int[a.L_ORDER];vertices={v.index:v for v in bm.verts}
     directions=a._directional_smoothing(bm,True);density=a._edge_density(bm,True);layout=a._layout_lengths(bm,True)
     jobs=[];cap_jobs={};affected=set();source_faces=set()
@@ -56,7 +57,7 @@ def split(bm,zone,t,result,select_result=False):
         face=bm.faces[index];source_faces.add(face);p=plans[index];settings=a._get_zone(face,bm)
         raw=a._read_caps(face,a._boundary_layer(bm));slots=[raw.index(cap) for cap in (p.start,p.end)]
         profile=core.sample_cut_guide(result,index,value,max(2,min(12,max(len(p.left),len(p.right))-1)))
-        if any(not all(math.isfinite(v) for v in point) for point in profile):raise ValueError('Неправильная геометрия разреза')
+        if any(not all(math.isfinite(v) for v in point) for point in profile):raise ValueError(tr('Invalid cut geometry'))
         ends=[]
         for end,(kind,i) in enumerate((p.start,p.end)):
             left=vertices[p.left[-1 if end else 0]];right=vertices[p.right[-1 if end else 0]]
@@ -64,7 +65,7 @@ def split(bm,zone,t,result,select_result=False):
             ends.append((kind,left,right,edge))
             if edge is not None:
                 physical=value if left.index<right.index else 1.-value
-                if edge in cap_jobs and abs(cap_jobs[edge][0]-physical)>1e-7:raise ValueError('Общий край требует двух разных разрезов')
+                if edge in cap_jobs and abs(cap_jobs[edge][0]-physical)>1e-7:raise ValueError(tr('The shared boundary requires two different cuts'))
                 cap_jobs.setdefault(edge,(physical,profile[-1 if end else 0]))
                 affected.update(bm.edges.get((left,right)).link_faces)
         # Match the original fitting used by the single-zone split.
@@ -76,10 +77,10 @@ def split(bm,zone,t,result,select_result=False):
                 if distance>core.EPS:factors[side].append(size*fraction*fraction/distance)
         gains=[sorted(values)[len(values)//2] if values else .5 for values in factors]
         side=next((vertices[i] for i in p.left if i not in (p.right[0],p.right[-1])),None)
-        if side is None:raise ValueError('Не удалось определить стороны разреза')
+        if side is None:raise ValueError(tr('Could not determine the cut sides'))
         jobs.append(dict(index=index,identity=int(face[order]),settings=settings,ends=ends,slots=slots,profile=profile,side=side,value=value,gains=gains))
     affected.difference_update(source_faces);neighbor_caps=a._cap_records(bm,affected,result)
-    if len(neighbor_caps)!=len(affected):raise ValueError('Не удалось сохранить края соседей')
+    if len(neighbor_caps)!=len(affected):raise ValueError(tr('Could not preserve neighbouring boundaries'))
     created={};split_records=[]
     for edge,(fraction,position) in cap_jobs.items():
         left,right=(vertices[i] for i in edge);source=bm.edges.get((left,right))
@@ -89,13 +90,13 @@ def split(bm,zone,t,result,select_result=False):
         ends=[left if kind=='point' else created[edge] for kind,left,right,edge in job['ends']]
         start,finish=ends
         candidates=[f for f in bm.faces if int(f[order])==job['identity'] and start in f.verts and finish in f.verts]
-        if len(candidates)!=1:raise ValueError('Не удалось найти исходную зону разреза')
+        if len(candidates)!=1:raise ValueError(tr('Could not find the source segment'))
         profile=list(job['profile']);profile[0]=tuple(start.co);profile[-1]=tuple(finish.co)
-        if bmesh.utils.face_split(candidates[0],start,finish,coords=profile[1:-1]) is None:raise ValueError('Blender не смог разделить зону')
+        if bmesh.utils.face_split(candidates[0],start,finish,coords=profile[1:-1]) is None:raise ValueError(tr('Blender could not split the segment'))
         children=[f for f in bm.faces if int(f[order])==job['identity']]
-        if len(children)!=2:raise ValueError('Разрез должен создавать две зоны')
+        if len(children)!=2:raise ValueError(tr('The cut must create two segments'))
         left_child=next((f for f in children if job['side'] in f.verts),None)
-        if left_child is None:raise ValueError('Не удалось определить стороны разреза')
+        if left_child is None:raise ValueError(tr('Could not determine the cut sides'))
         widths=core.width_budget_split(job['settings'].width,job['value'])
         for face in children:
             side=0 if face is left_child else 1;face[order]=job['identity'] if side==0 else next_order

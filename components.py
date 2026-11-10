@@ -1,4 +1,5 @@
 """Reuse independent control components without changing the surface generator."""
+from .i18n import tr
 from collections import defaultdict
 from . import core
 
@@ -65,9 +66,9 @@ def generate(points,boundaries,settings=None,rows=12,max_polygons=200000,previou
     for plan in all_plans:
         part=by_owner[plan.index];remap=remaps[id(part)]
         for v in part.production[plan.index]:
-            if remap[v]>=0:raise ValueError('Повторный индекс компонента')
+            if remap[v]>=0:raise ValueError(tr('Duplicate component index'))
             remap[v]=len(out.vertices);out.vertices.append(part.vertices[v]);out.vertex_keys.append(part.vertex_keys[v])
-    if any(v<0 for remap in remaps.values() for v in remap):raise ValueError('Неполный порядок сборки компонентов')
+    if any(v<0 for remap in remaps.values() for v in remap):raise ValueError(tr('Incomplete component assembly order'))
     faces=defaultdict(list)
     for part in parts:
         remap=remaps[id(part)]
@@ -77,7 +78,7 @@ def generate(points,boundaries,settings=None,rows=12,max_polygons=200000,previou
         out.surface_columns.update((owner,tuple(tuple(remap[v] for v in column) for column in columns)) for owner,columns in part.surface_columns.items())
         out.surface_grids.update((owner,tuple(tuple(remap[v] if v is not None else None for v in row) for row in grid)) for owner,grid in part.surface_grids.items())
     for plan in all_plans:out.faces.extend(faces[plan.index]);out.owners.extend([plan.index]*len(faces[plan.index]))
-    if len(out.faces)>max_polygons or sum(out.samples_per_edge.values())>2*max_polygons:raise ValueError('Превышен лимит полигонов или точек группы')
+    if len(out.faces)>max_polygons or sum(out.samples_per_edge.values())>2*max_polygons:raise ValueError(tr('Group polygon or sample limit exceeded'))
     for name in ('directional_smoothing','local_density','point_density'):setattr(out,name,dict(kwargs.get(name) or {}))
     out.edge_evaluator=_Network(parts,out.source_points,out.directional_smoothing);out.parts=tuple(parts);out.component_cache=current;out.reused_components=sum(1 for part in parts if any(part is v[1] for v in old.values()));out.reused_patches=reused
     return out

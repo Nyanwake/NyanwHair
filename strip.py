@@ -1,4 +1,5 @@
 """A common row grid between two rails, with local border transitions."""
+from .i18n import tr
 import math
 from .core import EPS,add,sub,mul,dot,cross,length,norm,mix,bias_cross_position,edge_key
 from .surface import _rotate
@@ -28,7 +29,7 @@ def build_strip(plan,width,registry,ca,cb,left,right,profiles,put,emit,max_polyg
         fractions=[(station(fa,i/count)+station(fb,i/count))*.5 for i in range(count+1)]
         body_a=left if len(left)==count+1 else [ca.at(station(fa,i/count)) for i in range(count+1)]
         body_b=right if len(right)==count+1 else [cb.at(station(fb,i/count)) for i in range(count+1)]
-        if len(body_a)*(width+1)>2*max_polygons:raise ValueError('Превышен лимит точек полосы')
+        if len(body_a)*(width+1)>2*max_polygons:raise ValueError(tr('Strip vertex limit exceeded'))
         centers=[mul(add(a,b),.5) for (_,a),(_,b) in zip(body_a,body_b)]
         tangents=[norm(sub(centers[min(count,i+1)],centers[max(0,i-1)])) for i in range(count+1)]
         normals=[];old_tangent=tangents[0];previous_normal=plan.normal
@@ -66,7 +67,7 @@ def build_strip(plan,width,registry,ca,cb,left,right,profiles,put,emit,max_polyg
             fa=flows_a if x==0 else fractions;fb=flows_b if x==width-1 else fractions
             for (i,j),(ni,nj) in zip((path:=zipper_flows(fa,fb)),path[1:]):
                 faces.append((columns[x][i],columns[x+1][j],columns[x+1][nj],columns[x][ni]))
-        if len(faces)>max_polygons:raise ValueError('Превышен лимит полигонов полосы')
+        if len(faces)>max_polygons:raise ValueError(tr('Strip polygon limit exceeded'))
         recipe=(tuple(points),tuple(faces),tuple(sections),tuple(tuple(c) for c in columns),tuple(grid))
     cache[plan.boundary]=(signature,recipe)
     points,faces,sections,columns,grid=recipe
