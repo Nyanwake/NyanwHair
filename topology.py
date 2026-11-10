@@ -3,6 +3,7 @@
 The curve evaluator is supplied by core. Topological sample identity is a
 source vertex or an oriented parameter on a source edge, never a position.
 """
+from .i18n import tr
 import bisect
 import math
 try:
@@ -35,7 +36,7 @@ class CurvePath:
             distances=np.linalg.norm(np.diff(positions,axis=1),axis=2)
             arcs=np.concatenate((np.zeros((len(coefficients),1)),np.cumsum(distances,axis=1)),axis=1)
             self.tables=arcs.tolist();self.offsets=np.concatenate(([0.],np.cumsum(arcs[:,-1]))).tolist();self.total=self.offsets[-1]
-            if self.total<EPS:raise ValueError('Нулевая длина направляющей')
+            if self.total<EPS:raise ValueError(tr('Guide has zero length'))
             return
         subdivisions=CURVE_SUBDIVISIONS
         for a,b in zip(path,path[1:]):
@@ -44,7 +45,7 @@ class CurvePath:
             for p,q in zip(positions,positions[1:]):arc.append(arc[-1]+length(sub(q,p)))
             self.tables.append(arc); self.offsets.append(self.offsets[-1]+arc[-1])
         self.total=self.offsets[-1]
-        if self.total<EPS:raise ValueError('Нулевая длина направляющей')
+        if self.total<EPS:raise ValueError(tr('Guide has zero length'))
 
     def parameter(self,key):
         if key[0]=='v':return float(self.vertices[key[1]]) if key[1] in self.vertices else None
@@ -56,7 +57,7 @@ class CurvePath:
 
     def fraction(self,key):
         s=self.parameter(key)
-        if s is None:raise ValueError('Точка не принадлежит направляющей')
+        if s is None:raise ValueError(tr('Point does not belong to the guide'))
         i=min(len(self.tables)-1,int(s));t=s-i
         subdivisions=CURVE_SUBDIVISIONS
         x=max(0.,min(float(subdivisions),t*subdivisions))
@@ -181,7 +182,7 @@ class RailRegistry:
                 fractions=[lo]+sorted(fractions)+[hi]
                 intervals=len(fractions)-1
                 allocated+=intervals
-                if allocated>2*max_samples:raise ValueError('Превышен лимит точек детализации')
+                if allocated>2*max_samples:raise ValueError(tr('Detail sample limit exceeded'))
                 # A small curvature safeguard at low detail, independent of
                 # support count. Straight parts keep their sparse spacing.
                 def refine(a,b,depth=0):
@@ -200,7 +201,7 @@ class RailRegistry:
                     adaptive.append(hi)
                 self.row_cache[row_key]=(row_signature,tuple(adaptive))
                 allocated+=len(adaptive)-len(fractions)
-                if allocated>2*max_samples:raise ValueError('Превышен лимит точек детализации')
+                if allocated>2*max_samples:raise ValueError(tr('Detail sample limit exceeded'))
                 sections.append([curve,first,last,adaptive])
         self.final_sampling_cache={};old_final=getattr(previous,'final_sampling_cache',{})
         for curve,first,last,adaptive in sections:
@@ -210,7 +211,7 @@ class RailRegistry:
             saved=old_final.get(row_key)
             if saved and saved[0]==final_signature:
                 allocated+=len(saved[1])-len(adaptive)
-                if allocated>2*max_samples:raise ValueError('Превышен лимит локального уплотнения')
+                if allocated>2*max_samples:raise ValueError(tr('Local density limit exceeded'))
                 self.final_sampling_cache[row_key]=saved
                 self._register_samples(curve,first,last,saved[1])
                 continue
@@ -230,18 +231,18 @@ class RailRegistry:
                         edge_i=min(len(curve.path)-2,max(0,bisect.bisect_right(curve.offsets,(a+b)*.5*curve.total)-1))
                         factor=self.density.get(edge_key(curve.path[edge_i],curve.path[edge_i+1]),1.)
                         count=max(1,int(math.ceil(factor*(b-a)/(end-start)-1e-8)))
-                        if allocated+len(expanded)+count+1-len(adaptive)>2*max_samples:raise ValueError('Превышен лимит локального уплотнения')
+                        if allocated+len(expanded)+count+1-len(adaptive)>2*max_samples:raise ValueError(tr('Local density limit exceeded'))
                         expanded.extend(a+(b-a)*i/count for i in range(count))
                 expanded.append(adaptive[-1])
                 allocated+=len(expanded)-len(adaptive)
                 adaptive=expanded
-                if allocated>2*max_samples:raise ValueError('Превышен лимит локального уплотнения')
+                if allocated>2*max_samples:raise ValueError(tr('Local density limit exceeded'))
             if self.point_field.affected(curve):
                 from .density import redistribute
                 refined=redistribute(adaptive,lambda u:u*curve.total,
                     lambda u:self.point_field.at(curve,u),self.point_field.profile(curve)[1],2*max_samples)
                 allocated+=len(refined)-len(adaptive);adaptive=refined
-                if allocated>2*max_samples:raise ValueError('Превышен лимит локального уплотнения')
+                if allocated>2*max_samples:raise ValueError(tr('Local density limit exceeded'))
             self.final_sampling_cache[row_key]=(final_signature,tuple(adaptive))
             self._register_samples(curve,first,last,adaptive)
 
@@ -461,6 +462,6 @@ def _triangulate(points,polygon):
             if any(sign*area(a,b,v)>=-1e-12 and sign*area(b,c,v)>=-1e-12 and
                    sign*area(c,a,v)>=-1e-12 for v in polygon if v not in (a,b,c)):continue
             output.append((a,b,c));polygon.pop(i);break
-        else:raise ValueError('Не удалось локально сшить сложный контур')
+        else:raise ValueError(tr('Could not stitch the complex contour locally'))
     if len(polygon)==3:output.append(tuple(polygon))
     return output

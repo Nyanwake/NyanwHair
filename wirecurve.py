@@ -1,4 +1,5 @@
 """A temporary quadratic Bezier wire, sampled at approximately equal arc length."""
+from .i18n import tr
 import bisect
 from mathutils import Vector
 
@@ -21,10 +22,10 @@ def rebuild(bm,start_index,end_index,old_indices,coords):
     from . import addon as a,editing
     bm.verts.ensure_lookup_table();start=bm.verts[start_index];end=bm.verts[end_index]
     old=[bm.verts[i] for i in old_indices]
-    if any(v.link_faces for v in old):raise ValueError('Точки текущей кривой уже принадлежат поверхности')
+    if any(v.link_faces for v in old):raise ValueError(tr('Curve points already belong to a surface'))
     if not old:
         edge=bm.edges.get((start,end))
-        if edge is None or edge.link_faces:raise ValueError('Ребро текущей кривой изменилось')
+        if edge is None or edge.link_faces:raise ValueError(tr('The curve edge has changed'))
         bm.edges.remove(edge)
     for vertex in old:bm.verts.remove(vertex)
     inside=[];uid=start[bm.verts.layers.int[a.L_VERTEX_GROUP]]

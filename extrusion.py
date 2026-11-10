@@ -1,4 +1,5 @@
 """Shared-vertex cap extension and open region extrusion on a staged BMesh."""
+from .i18n import tr
 import bpy
 from mathutils import Vector
 from . import addon as a
@@ -33,7 +34,7 @@ def _finish(bm,offset,moving,origin,direction,mode,count,records):
         vertex[bm.verts.layers.float[a.L_POINT_DENSITY]]=0.
         vertex[bm.verts.layers.float[a.L_POINT_RADIUS]]=0.
     e._select(bm,list(moving));bm.normal_update();bm.verts.index_update();bm.faces.index_update()
-    if any(len(edge.link_faces)>2 for edge in bm.edges):raise ValueError('Вытягивание создаёт три поверхности на одном ребре')
+    if any(len(edge.link_faces)>2 for edge in bm.edges):raise ValueError(tr('Extrusion would join three surfaces on one edge'))
     return dict(mode=mode,count=count,indices=tuple(v.index for v in moving),bases=tuple(tuple(v.co-offset) for v in moving),anchor=tuple(origin),direction=tuple(direction.normalized() if direction.length else Vector((0,0,1))))
 
 
@@ -84,7 +85,7 @@ def _extend(bm,targets,offset,result):
         neighbors=sorted(neighbors,key=lambda v:v.index);origin=tip.co.copy()
         carrier=max(range(len(neighbors)),key=lambda i:(len(bm.edges.get((tip,neighbors[i])).link_faces),-neighbors[i].index))
         rows=[];span=sum((v.co-origin).length for v in neighbors)/len(neighbors)
-        if span<1e-8:raise ValueError('Не удалось раскрыть точечный кончик')
+        if span<1e-8:raise ValueError(tr('Could not open the pointed tip'))
         curves=[_edge_curve(result,tip,neighbor) for neighbor in neighbors]
         for i,(neighbor,curve) in enumerate(zip(neighbors,curves)):
             base=tip if i==carrier else bm.verts.new(origin)
@@ -159,7 +160,7 @@ def _volume(bm,result,offset,faces=(),band=None):
         for source in faces:
             attrs=_attributes(source,bm);normal+=source.normal;old_edges.update(source.edges);removed.append(source)
             plan=result.plans_by_loop.get(tuple(v.index for v in source.verts))
-            if plan is None:raise ValueError('У выбранного сегмента нет действительной разметки')
+            if plan is None:raise ValueError(tr('The selected segment has no valid layout'))
             caps=e.boundary_vertices(source,bm)
             for loop in source.loops:
                 if sum(f in region for f in loop.edge.link_faces)==2:continue
@@ -167,7 +168,7 @@ def _volume(bm,result,offset,faces=(),band=None):
                 default=plan.settings.width if frozenset((one,two)) in caps else 1
                 width=_edge_count(result,one,two,default)
                 walls.append((one,two,attrs,width));root.update((one,two))
-    if not walls:raise ValueError('Не найден открытый контур основания')
+    if not walls:raise ValueError(tr('No open base contour found'))
     origin=sum((v.co for v in root),Vector())/len(root)
     moving={v:bm.verts.new(v.co+offset) for v in sorted(root,key=lambda v:v.index)}
     candidates={v for source in removed for v in source.verts}
@@ -235,5 +236,5 @@ def extrude(bm,result,offset):
         right=[i for i,key in enumerate(a.core.physical_edges(plan.right)) if key in selected_edges]
         if len(left)==len(right)==1:bands.append((face,plan,left[0],right[0]))
     if len(bands)==1:return _volume(bm,result,offset,band=bands[0])
-    if len(bands)>1:raise ValueError('Для E-Face выбери одну пару противоположных рёбер или используй режим граней')
+    if len(bands)>1:raise ValueError(tr('For E-Face, select one pair of opposite edges or use Face mode'))
     return e.single_extrude_stage(bm,result,offset)

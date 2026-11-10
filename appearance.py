@@ -1,4 +1,5 @@
 """Corner normals with sharp guide boundaries; GPU-only MatCap resources."""
+from .i18n import tr
 from .core import edge_key
 
 
@@ -141,7 +142,7 @@ def bind(context,follow_matcap=True,brightness=.8):
     textures=_MATCAPS[path]
     if textures is None:
         if None not in _MATCAPS:_MATCAPS[None]=_dummy()
-        textures=_MATCAPS[None];status='MatCap недоступен: используется студийный свет'
+        textures=_MATCAPS[None];status=tr('MatCap unavailable: using studio lighting')
     surface.uniform_sampler('matcapDiffuse',textures[0]);surface.uniform_sampler('matcapSpecular',textures[1])
     surface.uniform_float('lighting',(float(bool(path and status is None)),float(shading.show_specular_highlight),brightness,float(shading.type=='SOLID' and shading.light=='FLAT')))
     return surface,status

@@ -1,4 +1,5 @@
 """Progressive cross-row transitions with exact inherited cap samples."""
+from .i18n import tr
 import math
 from .core import EPS,add,sub,mul,dot,cross,length,norm,mix,bias_cross_position,edge_key
 from .surface import _rotate
@@ -65,7 +66,7 @@ def _regular_transition(plan,width,ca,cb,left,right,caps,max_polygons):
     borders=[[vertex(key,pos) for key,pos in samples] for samples in (left,right)]
     fa=[ca.fraction(key) for key,pos in left];fb=[cb.fraction(key) for key,pos in right]
     count=max(1,int(((len(left)-1)+(len(right)-1))*.5+.5))
-    if (count+1)*(max([width]+[len(cap)-1 for cap in caps if cap])+1)>2*max_polygons:raise ValueError('Превышен лимит точек перехода ширины')
+    if (count+1)*(max([width]+[len(cap)-1 for cap in caps if cap])+1)>2*max_polygons:raise ValueError(tr('Width-transition vertex limit exceeded'))
     def station(values,t):
         offset=t*(len(values)-1);i=min(len(values)-2,int(offset));blend=offset-i
         return values[i]*(1.-blend)+values[i+1]*blend
@@ -136,7 +137,7 @@ def _regular_transition(plan,width,ca,cb,left,right,caps,max_polygons):
     for one,two,fu,fv in ((borders[0],first,fa,flows),(last,borders[1],flows,fb)):
         path=zipper_flows(fu,fv)
         for (i,j),(ni,nj) in zip(path,path[1:]):faces.append((one[i],two[j],two[nj],one[ni]))
-    if len(faces)>max_polygons:raise ValueError('Превышен лимит полигонов перехода ширины')
+    if len(faces)>max_polygons:raise ValueError(tr('Width-transition polygon limit exceeded'))
     return tuple(points),tuple(faces),tuple(sections),tuple(tuple(c) for c in columns),tuple(rows)
 
 
@@ -162,7 +163,7 @@ def build_transition(plan,width,registry,ca,cb,left,right,profiles,put,emit,max_
         fa=[mapping.fraction(ca,k) if mapping else ca.fraction(k) for k,p in left]
         fb=[mapping.fraction(cb,k) if mapping else cb.fraction(k) for k,p in right]
         path=zipper_flows(fa,fb)
-        if len(path)*(max([width]+[len(cap)-1 for cap in caps if cap])+1)>2*max_polygons:raise ValueError('Превышен лимит точек перехода ширины')
+        if len(path)*(max([width]+[len(cap)-1 for cap in caps if cap])+1)>2*max_polygons:raise ValueError(tr('Width-transition vertex limit exceeded'))
         centers=[mul(add(left[i][1],right[j][1]),.5) for i,j in path]
         tangents=[norm(sub(centers[min(len(path)-1,i+1)],centers[max(0,i-1)])) for i in range(len(path))]
         normals=[];previous_normal=plan.normal;old_tangent=tangents[0]
@@ -204,7 +205,7 @@ def build_transition(plan,width,registry,ca,cb,left,right,profiles,put,emit,max_
             sections.append(tuple(section))
         for k,path in enumerate(_coherent_paths(fractions)):
             for (i,j),(ni,nj) in zip(path,path[1:]):faces.append((rows[k][i],rows[k][ni],rows[k+1][nj],rows[k+1][j]))
-        if len(faces)>max_polygons:raise ValueError('Превышен лимит полигонов перехода ширины')
+        if len(faces)>max_polygons:raise ValueError(tr('Width-transition polygon limit exceeded'))
         columns=[]
         for x in range(width+1):
             column=[]
