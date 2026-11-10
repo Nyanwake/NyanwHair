@@ -73,7 +73,7 @@ def shader():
         info.push_constant('MAT4','viewProjectionMatrix');info.push_constant('MAT3','viewRotation');info.push_constant('VEC4','lighting')
         info.vertex_in(0,'VEC3','pos');info.vertex_in(1,'VEC3','normal');info.vertex_in(2,'VEC4','color');info.vertex_in(3,'VEC3','base');info.vertex_out(interface)
         info.sampler(0,'FLOAT_2D','matcapDiffuse');info.sampler(1,'FLOAT_2D','matcapSpecular');info.fragment_out(0,'VEC4','fragColor')
-        info.vertex_source('void main(){gl_Position=viewProjectionMatrix*vec4(pos,1.0);viewNormal=viewRotation*normal;tint=color;baseColor=base;}')
+        info.vertex_source('void main(){gl_Position=viewProjectionMatrix*vec4(pos,1.0);viewNormal=normalize(viewRotation*normal);tint=color;baseColor=base;}')
         info.fragment_source('''
         void main(){
             vec3 n=normalize(viewNormal)*(gl_FrontFacing?1.0:-1.0);
