@@ -1,5 +1,7 @@
 """Six display palettes, shared marker geometry; no scene or GPU resources."""
-from dataclasses import dataclass
+from dataclasses import dataclass,replace
+from pathlib import Path
+import json,colorsys,re
 
 @dataclass(frozen=True)
 class Palette:
@@ -43,23 +45,44 @@ def _make(guide,selection,points,active,outline,wire,group,strength=.30):
         guide_width=4.,selected_width=5.,cap_width=4.5,
         tint=_rgb(selection),tint_strength=strength)
 
-# Keep the stored identifiers from 0.35.26 (WARM=0, CLASSIC=1).
-CLASSIC=_make('#527FA3','#DDFDF8','#D7E3EC','#FFFFFF','#303B44','#343A40','#B3C9D8',.46)
-WARM=_make('#A26151','#D1F6E5','#F0D7BC','#FFFFFF','#403631','#3D3531','#D6C1AA',.46)
-RED=_make('#E28C83','#FFE3A1','#F6CEBB','#FFFFFF','#4D2B31','#472D30','#EBD2CD')
-PURPLE=_make('#8465B3','#F0E6FF','#D8C9EB','#FFFFFF','#3D3449','#3C3543','#BDAFD2',.46)
-GREEN=_make('#B4D6B3','#DCFFE2','#E4EED7','#FFFFFF','#303D35','#343E36','#DEE9D8')
+def _load_library(path):
+    data=json.loads(Path(path).read_text(encoding='utf-8'))
+    if data.get('version')!=1:raise ValueError('unsupported themes.json version')
+    styles={};items=[];numbers=set()
+    for entry in data['themes']:
+        ident=entry['id'];number=entry['value']
+        if not isinstance(ident,str) or not re.fullmatch('[A-Z][A-Z0-9_]*',ident) or ident in styles:raise ValueError('duplicate or invalid theme id')
+        if type(number) is not int or number<0 or number in numbers:raise ValueError('duplicate or invalid enum value')
+        if not isinstance(entry['name'],str) or not entry['name']:raise ValueError('missing theme name')
+        for key in ('surface','segment','guide','selection','point','outline'):
+            if not isinstance(entry[key],str) or not re.fullmatch('#[0-9a-fA-F]{6}',entry[key]):raise ValueError('invalid '+key+' in '+ident)
+        strength=entry.get('strength',.46)
+        if not isinstance(strength,(float,int)) or not 0<=strength<=.65:raise ValueError('invalid selection strength')
+        style=_make(entry['guide'],entry['selection'],entry['point'],'#FFFFFF',entry['outline'],'#000000',entry['surface'],strength)
+        styles[ident]=replace(style,tint=_rgb(entry['segment']))
+        items.append((ident,entry['name'],entry.get('description',''),number));numbers.add(number)
+    # Existing enum numbers are part of the saved-file format.
+    for ident,number in (('WARM',0),('CLASSIC',1),('RED',2),('PURPLE',3),('GREEN',4),('BLENDER',5)):
+        if not any(e[0]==ident and e[3]==number for e in items):raise ValueError('missing or renumbered built-in theme '+ident)
+    return styles,items
 
-BLENDER=_make('#000000','#FF9900','#000000','#FFFFFF','#202020','#202020','#A6A6A6')
 
-PALETTES={'BLENDER':BLENDER,'CLASSIC':CLASSIC,'WARM':WARM,'RED':RED,'PURPLE':PURPLE,'GREEN':GREEN}
-# Explicit enum numbers preserve old saved values even though the menu is reordered.
-ITEMS=[('CLASSIC','Светлый','Голубовато-серая поверхность, синие направляющие и светлое бирюзовое выделение',1),
-       ('WARM','Тёплый','Кремово-песочная поверхность, терракотовые направляющие и светлое мятное выделение',0),
-       ('RED','Красный','Кораллово-красные направляющие, золотистое выделение и винный контур',2),
-       ('PURPLE','Фиолетовый','Лавандовая поверхность, фиолетовые направляющие и светлое лиловое выделение',3),
-       ('GREEN','Зелёный','Мягкие зелёные направляющие и выразительное зелёное выделение',4),
-       ('BLENDER','Блендер','Серый объект и цвета редактирования текущей темы Blender',5)]
+try:PALETTES,ITEMS=_load_library(Path(__file__).with_name('themes.json'))
+except (OSError,ValueError,KeyError,TypeError) as exc:
+    # An edited library must not prevent old guide objects from opening.
+    print('[NyanwHair] themes.json: '+str(exc)+'; using fallback palette')
+    fallback=_make('#A26151','#F9DDC0','#F0D7BC','#FFFFFF','#403631','#000000','#D6C1AA',.46)
+    PALETTES={name:fallback for name in ('WARM','CLASSIC','RED','PURPLE','GREEN','BLENDER')}
+    ITEMS=[(name,name,'Fallback: check themes.json',i) for i,name in enumerate(PALETTES)]
+CLASSIC,WARM,RED,PURPLE,GREEN,BLENDER=(PALETTES[name] for name in ('CLASSIC','WARM','RED','PURPLE','GREEN','BLENDER'))
+
+
+def wire_color(group):
+    """Darker, more saturated group color; independent of geometry buffers."""
+    rgb=tuple(12.92*c if c<=.0031308 else 1.055*max(0.,c)**(1/2.4)-.055 for c in group)
+    h,s,v=colorsys.rgb_to_hsv(*rgb)
+    rgb=colorsys.hsv_to_rgb(h,min(1.,s*1.4),v*.55)
+    return tuple(c/12.92 if c<=.04045 else ((c+.055)/1.055)**2.4 for c in rgb)
 
 _NATIVE=None
 

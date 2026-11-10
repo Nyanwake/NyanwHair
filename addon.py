@@ -1838,7 +1838,7 @@ class NYANW35_OT_adjust(Operator):
     bl_idname='nyanw35.adjust'
     bl_label='NyanwHair: параметры активного локона'
     bl_options={'REGISTER','UNDO','INTERNAL'}
-    field: EnumProperty(items=[('width','Width',''),('bulge','Bulge',''),('smooth','Smoothing','')])
+    field: EnumProperty(items=[('width','Width',''),('bulge','Bulge',''),('smooth','Smoothing',''),('detail','Detail','')])
     direction: IntProperty(default=1)
     @classmethod
     def poll(cls,context): return bool(is_guide(context.edit_object))
@@ -1857,6 +1857,7 @@ class NYANW35_OT_adjust(Operator):
         for face in faces:
             data=_get_zone(face,bm)
             if self.field=='width':value=max(1,min(32,data.width+(1 if self.direction>0 else -1)))
+            elif self.field=='detail':value=max(2,min(160,(data.detail or obj.nh35.rows)+(1 if self.direction>0 else -1)))
             else:value=round(max(-3.,min(3.,data.bulge+.03*(1 if self.direction>0 else -1))),4)
             if value!=getattr(data,self.field):_set_zone(face,bm,self.field,value);changed=True
         if not changed:return {'CANCELLED'}
@@ -1970,7 +1971,7 @@ def _draw_extra_panels(layout,context,obj,cached,edit):
 
 
 class NYANW35_PT_main(Panel):
-    bl_label='NyanwHair v0.35.37'
+    bl_label='NyanwHair v0.35.38'
     bl_idname='NYANW35_PT_main'
     bl_space_type='VIEW_3D'
     bl_region_type='UI'
@@ -2348,7 +2349,7 @@ def _draw_preview():
                     gpu.state.depth_test_set(overlay_depth)
                     line_shader=_stroke_shader(stroke_scale,max_clearance=depth_limit)
                     line_shader.bind()
-                    line_shader.uniform_float('color',(*style.wire,obj.nh35.wire_opacity))
+                    line_shader.uniform_float('color',(*palette.wire_color(groups.color(obj,cached.get('group_id',1))),obj.nh35.wire_opacity))
                     wire.draw(line_shader)
                     gpu.state.depth_test_set('LESS_EQUAL')
                 if overlays and rails:
@@ -2586,9 +2587,8 @@ def _register_keys():
     kmi=km.keymap_items.new('nyanw35.hair_loop','R','PRESS',ctrl=True)
     kmi.properties.mode='AUTO'
     _KEYMAPS.append((km,kmi))
-    for field,mod in (('width','shift'),('bulge','ctrl'),('smooth','alt')):
+    for field,modifiers in (('detail',{'ctrl':True,'shift':True}),('width',{'shift':True}),('bulge',{'ctrl':True}),('smooth',{'alt':True})):
         for button,sign in (('WHEELUPMOUSE',1),('WHEELDOWNMOUSE',-1)):
-            modifiers={mod:True}
             kmi=km.keymap_items.new('nyanw35.adjust',button,'PRESS',**modifiers)
             kmi.properties.field=field
             kmi.properties.direction=sign

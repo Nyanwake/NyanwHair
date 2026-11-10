@@ -5,6 +5,57 @@ from .surface import _rotate
 from .ribbon import zipper_flows
 
 
+def _limit_row_changes(values,body):
+    """Spread reductions over available rows, keeping inherited endpoints exact."""
+    values=list(values);steps=len(values)-1
+    if steps<2:return values
+    budget=abs(values[0]-body)+abs(values[-1]-body)
+    step=max(1,math.ceil(budget/steps))
+    for i in range(1,steps):values[i]=max(values[i-1]-step,min(values[i-1]+step,values[i]))
+    for i in range(steps-1,0,-1):values[i]=max(values[i+1]-step,min(values[i+1]+step,values[i]))
+    return values
+
+
+def _coherent_paths(fractions):
+    """Fit a consistent left- or right-indexed transition track across a run.
+
+    Keep the minimum triangle count and monotone correspondence. Fall back
+    to the local zipper if a track would substantially worsen alignment.
+    """
+    paths=[zipper_flows(a,b) for a,b in zip(fractions,fractions[1:])]
+    def path_at(a,b,j):
+        swap=len(a)<len(b);nb=min(len(a),len(b))-1
+        path=[(i,i) for i in range(j+1)]+[(j+1,j)]+[(i+1,i) for i in range(j+1,nb+1)]
+        return [(b,a) for a,b in path] if swap else path
+    def cost(k,path):
+        a,b=fractions[k:k+2]
+        return sum((a[i]-b[j])**2 for i,j in path)
+    runs=[];run=[];direction=0
+    for k,(a,b) in enumerate(zip(fractions,fractions[1:])):
+        delta=len(b)-len(a)
+        if not delta:continue
+        sign=1 if delta>0 else -1
+        if abs(delta)!=1 or min(len(a),len(b))<2:
+            if run:runs.append(run);run=[]
+            direction=0;continue
+        if run and direction!=sign:runs.append(run);run=[]
+        run.append(k);direction=sign
+    if run:runs.append(run)
+    for run in runs:
+        if len(run)<2:continue
+        limit=min(min(len(fractions[k]),len(fractions[k+1]))-1 for k in run)
+        best=None
+        for reverse in (False,True):
+            for offset in range(limit+1):
+                trial=[path_at(fractions[k],fractions[k+1],min(len(fractions[k]),len(fractions[k+1]))-1-offset if reverse else offset) for k in run]
+                score=sum(cost(k,path) for k,path in zip(run,trial))
+                if best is None or score<best[0]-1e-12:best=(score,trial)
+        baseline=sum(cost(k,paths[k]) for k in run)
+        if best[0]<=max(1e-12,baseline)*2.:
+            for k,path in zip(run,best[1]):paths[k]=path
+    return paths
+
+
 def _regular_transition(plan,width,ca,cb,left,right,caps,max_polygons):
     """Fair interior rows; unequal border budgets affect only the rim strips."""
     points=[];faces=[];indices={}
@@ -39,6 +90,7 @@ def _regular_transition(plan,width,ca,cb,left,right,caps,max_polygons):
         value=body+(counts[0]-width)*(1.-smooth(u/.4))+(counts[1]-width)*smooth((u-.6)/.4)
         row_counts.append(max(2,int(value+.5)))
     row_counts[0]=counts[0];row_counts[-1]=counts[1]
+    row_counts=_limit_row_changes(row_counts,width)
     rows=[];inner=[];fractions=[];sections=[]
     # Grid border entries are references to existing shared rail samples.
     import bisect
@@ -69,8 +121,7 @@ def _regular_transition(plan,width,ca,cb,left,right,caps,max_polygons):
         for x in range(width+1):
             value=x/width*n;j=min(n-1,int(value));section.append(mix(coords[j],coords[j+1],value-j))
         sections.append(tuple(section))
-    for k in range(count):
-        path=zipper_flows(fractions[k],fractions[k+1])
+    for k,path in enumerate(_coherent_paths(fractions)):
         for (i,j),(ni,nj) in zip(path,path[1:]):faces.append((inner[k][i],inner[k][ni],inner[k+1][nj],inner[k+1][j]))
     columns=[borders[0]]
     for x in range(1,width):
@@ -98,7 +149,7 @@ def build_transition(plan,width,registry,ca,cb,left,right,profiles,put,emit,max_
             if plan.left[0 if cap==plan.start else -1]!=edge[0]:keys=keys[::-1];positions=positions[::-1]
             caps.append(tuple(zip(keys,positions)))
         else:caps.append(None)
-    signature=('width_fair',plan,width,ca.geometry_signature,cb.geometry_signature,tuple(left),tuple(right),tuple(caps),mapping is not None)
+    signature=('width_coherent',plan,width,ca.geometry_signature,cb.geometry_signature,tuple(left),tuple(right),tuple(caps),mapping is not None)
     old=previous.get(plan.boundary);reused=bool(old and old[0]==signature)
     if reused:recipe=old[1]
     elif mapping is None and width>=2 and all(cap is None or len(cap)>=3 for cap in caps):
@@ -127,10 +178,7 @@ def build_transition(plan,width,registry,ca,cb,left,right,profiles,put,emit,max_
             u=(fa[i]+fb[j])*.5
             row_counts.append(max(1,int(width+(counts[0]-width)*(1.-smooth(u/.4))+(counts[1]-width)*smooth((u-.6)/.4)+.5)))
         row_counts[0]=counts[0];row_counts[-1]=counts[1]
-        change=max(1,math.ceil(max(abs(counts[0]-width),abs(counts[1]-width))/max(1,math.ceil((len(path)-1)*.4))))
-        if abs(counts[1]-counts[0])<=change*(len(path)-1):
-            for k in range(1,len(path)-1):row_counts[k]=max(row_counts[k-1]-change,min(row_counts[k-1]+change,row_counts[k]))
-            for k in range(len(path)-2,0,-1):row_counts[k]=max(row_counts[k+1]-change,min(row_counts[k+1]+change,row_counts[k]))
+        row_counts=_limit_row_changes(row_counts,width)
         rows=[];sections=[];coordinates=[];fractions=[]
         for k,(i,j) in enumerate(path):
             u=(fa[i]+fb[j])*.5
@@ -154,8 +202,8 @@ def build_transition(plan,width,registry,ca,cb,left,right,profiles,put,emit,max_
             for x in range(width+1):
                 value=x/width*count;index=min(count-1,int(value));section.append(mix(coords[index],coords[index+1],value-index))
             sections.append(tuple(section))
-        for k in range(len(rows)-1):
-            for (i,j),(ni,nj) in zip((path:=zipper_flows(fractions[k],fractions[k+1])),path[1:]):faces.append((rows[k][i],rows[k][ni],rows[k+1][nj],rows[k+1][j]))
+        for k,path in enumerate(_coherent_paths(fractions)):
+            for (i,j),(ni,nj) in zip(path,path[1:]):faces.append((rows[k][i],rows[k][ni],rows[k+1][nj],rows[k+1][j]))
         if len(faces)>max_polygons:raise ValueError('Превышен лимит полигонов перехода ширины')
         columns=[]
         for x in range(width+1):

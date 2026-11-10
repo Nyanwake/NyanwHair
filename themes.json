@@ -1,0 +1,79 @@
+{
+  "version": 1,
+  "themes": [
+    {
+      "id": "CLASSIC",
+      "value": 1,
+      "name": "Голубая",
+      "description": "Голубая поверхность и синие направляющие",
+      "surface": "#bacfde",
+      "segment": "#cde2e7",
+      "guide": "#73a0c2",
+      "selection": "#DDFDF8",
+      "point": "#D7E3EC",
+      "outline": "#303B44"
+    },
+    {
+      "id": "WARM",
+      "value": 0,
+      "name": "Тёплый",
+      "description": "Кремовая поверхность и персиковое выделение",
+      "surface": "#D6C1AA",
+      "segment": "#e1d8c1",
+      "guide": "#A26151",
+      "selection": "#f9ddc0",
+      "point": "#F0D7BC",
+      "outline": "#403631"
+    },
+    {
+      "id": "RED",
+      "value": 2,
+      "name": "Красный",
+      "description": "Персиковая поверхность и красные направляющие",
+      "surface": "#fcd0c6",
+      "segment": "#f9ddc0",
+      "guide": "#a15b5f",
+      "selection": "#FFE3A1",
+      "point": "#F6CEBB",
+      "outline": "#4D2B31",
+      "strength": 0.3
+    },
+    {
+      "id": "PURPLE",
+      "value": 3,
+      "name": "Фиолетовый",
+      "description": "Лавандовая поверхность и лиловое выделение",
+      "surface": "#BDAFD2",
+      "segment": "#F0E6FF",
+      "guide": "#8465B3",
+      "selection": "#F0E6FF",
+      "point": "#D8C9EB",
+      "outline": "#3D3449"
+    },
+    {
+      "id": "GREEN",
+      "value": 4,
+      "name": "Зелёный",
+      "description": "Зелёная поверхность и светлое жёлтое выделение",
+      "surface": "#d7f2cf",
+      "segment": "#eafbe7",
+      "guide": "#aacda5",
+      "selection": "#fbffbf",
+      "point": "#E4EED7",
+      "outline": "#303D35"
+    },
+    {
+      "id": "BLENDER",
+      "value": 5,
+      "name": "Блендер",
+      "description": "Цвета редактирования текущей темы Blender",
+      "surface": "#A6A6A6",
+      "segment": "#FF9900",
+      "guide": "#000000",
+      "selection": "#FF9900",
+      "point": "#000000",
+      "outline": "#202020",
+      "strength": 0.3
+    }
+  ]
+}
