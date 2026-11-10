@@ -1997,6 +1997,17 @@ class NYANW35_OT_hair_loop(Operator):
 
 def _draw_extra_panels(layout,context,obj,cached,edit):
     props=obj.nh35
+    if edit:
+        header,body=layout.panel('nyanw_hotkeys',default_closed=True);header.label(text=tr('Hotkeys'),icon='EVENT_K')
+        if body is not None:
+            buttons=body.grid_flow(row_major=True,columns=2,even_columns=True,even_rows=True,align=True)
+            buttons.operator_context='INVOKE_REGION_WIN';buttons.scale_y=2.
+            buttons.operator('nyanw35.extrude',text=tr('Extrude · E'),icon='CURVE_BEZCURVE').from_panel=True
+            buttons.operator('nyanw35.hair_loop',text='Loop · Ctrl+R',icon='EDGESEL').mode='AUTO'
+            buttons.operator('nyanw35.merge_menu',text=tr('Merge')+' · M',icon='AUTOMERGE_ON')
+            buttons.operator('mesh.rip_move',text=tr('Rip')+' · V',icon='MOD_EDGESPLIT')
+            buttons.operator('mesh.edge_face_add',text=tr('Fill')+' · F',icon='FACESEL')
+            buttons.operator('wm.call_menu',text=tr('Delete')+' · X',icon='TRASH').name='VIEW3D_MT_edit_mesh_delete'
     header,body=layout.panel('nyanw_appearance',default_closed=True);header.label(text=tr('Appearance'),icon='SHADING_SOLID')
     if body is not None:
         if edit:body.prop(props,'palette',text=tr('Theme'))
