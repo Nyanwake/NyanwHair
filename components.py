@@ -19,7 +19,7 @@ def _freeze(value):
 
 
 def generate(points,boundaries,settings=None,rows=12,max_polygons=200000,previous=None,**kwargs):
-    """Keep the group's common density scale; invalidate on every real input.
+    """Keep the group's physical reference, but solve detail per component.
 
     Shared control vertices define a component, including point junctions.
     Incomplete/ambiguous inputs use the original generator as a whole.
@@ -41,7 +41,6 @@ def generate(points,boundaries,settings=None,rows=12,max_polygons=200000,previou
     groups=defaultdict(list)
     for i in range(len(boundaries)):groups[find(i)].append(i)
     if len(groups)<2 or any(n>2 for n in edge_owners.values()):return fallback()
-    base=min(o.detail if o.detail>0 else max(2,min(256,int(rows))) for o in options)
     old=getattr(previous,'component_cache',{});current={};parts=[];reused=0
     for members in groups.values():
         used=sorted({v for i in members for v in boundaries[i]});used_set=set(used)
@@ -50,17 +49,17 @@ def generate(points,boundaries,settings=None,rows=12,max_polygons=200000,previou
             local[name]={e:value for e,value in (kwargs.get(name) or {}).items() if e[0] in used_set and e[1] in used_set}
         local['point_density']={v:value for v,value in (kwargs.get('point_density') or {}).items() if v in used_set}
         key=tuple((indices[i],tuple(boundaries[i])) for i in members)
-        signature=(tuple(tuple(float(c) for c in points[v]) for v in used),tuple(options[i] for i in members),_freeze(local['caps']),int(rows),base,float(kwargs['reference_length']),max_polygons,
+        signature=(tuple(tuple(float(c) for c in points[v]) for v in used),tuple(options[i] for i in members),_freeze(local['caps']),int(rows),float(kwargs['reference_length']),max_polygons,
             tuple(tuple(sorted(local[name].items())) for name in ('directional_smoothing','local_density','point_density','layout_lengths')))
         saved=old.get(key)
         if saved and saved[0]==signature:part=saved[1];reused+=len(members)
         else:
-            part=core.generate(points,[boundaries[i] for i in members],[options[i] for i in members],rows,max_polygons,previous=saved[1] if saved else None,_base_detail=base,_track_production=True,**local)
+            part=core.generate(points,[boundaries[i] for i in members],[options[i] for i in members],rows,max_polygons,previous=saved[1] if saved else None,_track_production=True,**local)
         if part.warnings:return fallback()
         current[key]=(signature,part);parts.append(part)
     # Merge in the original per-plan production order, even when components
     # are interleaved in the face list. Native Mesh/UV indices remain stable.
-    out=core.MeshResult();out.source_points=tuple(tuple(float(c) for c in p) for p in points);out.regular_rows=bool(kwargs['regular_rows']);out.base_rows=max(2,min(256,int(rows)));out.reference_length=float(kwargs['reference_length']);out.target_spacing=out.reference_length/base
+    out=core.MeshResult();out.source_points=tuple(tuple(float(c) for c in p) for p in points);out.regular_rows=bool(kwargs['regular_rows']);out.base_rows=max(2,min(256,int(rows)));out.reference_length=float(kwargs['reference_length']);out.target_spacing=min(part.target_spacing for part in parts)
     by_owner={owner:part for part in parts for owner in part.face_paths};all_plans=sorted((p for part in parts for p in part.plans_by_loop.values()),key=core._plan_priority)
     remaps={id(part):[-1]*len(part.vertices) for part in parts}
     for plan in all_plans:

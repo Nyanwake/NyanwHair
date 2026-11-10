@@ -41,10 +41,15 @@ def _back(out,result,axes=(),previous=None,reuse_geometry=False):
     # Reuse the same controls, curve dependencies, length detail and density.
     # Only transverse resolution and convexity belong to the reverse sheet.
     settings=[replace(p.settings,width=max(2,p.settings.back_width or p.settings.width),bulge=-p.settings.back,back=0.,back_enabled=False,back_simple=False) for p in plans]
-    back=previous if reuse_geometry and previous is not None else core.generate(result.source_points,[p.boundary for p in plans],settings,rows=result.base_rows,
+    from . import components
+    # The full Mesh/UV path must use the same independent row schedules as
+    # the per-component preview, including the reverse sheet.
+    independent=bool(getattr(result,'parts',()))
+    generate=components.generate if independent else core.generate
+    back=previous if reuse_geometry and previous is not None else generate(result.source_points,[p.boundary for p in plans],settings,rows=result.base_rows,
         caps=[(p.start,p.end) for p in plans],face_indices=[p.index for p in plans],previous=previous or result,
         reference_length=result.reference_length,directional_smoothing=result.directional_smoothing,
-        local_density=result.local_density,point_density=result.point_density,layout_lengths=result.layout_lengths,regular_rows=result.regular_rows,edge_evaluator=result.edge_evaluator)
+        local_density=result.local_density,point_density=result.point_density,layout_lengths=result.layout_lengths,regular_rows=result.regular_rows,edge_evaluator=None if independent else result.edge_evaluator)
     enabled.intersection_update(back.owners)
     front_faces=[(f,o) for f,o in zip(result.faces,result.owners) if o in enabled]
     back_faces=[(f,o) for f,o in zip(back.faces,back.owners) if o in enabled]

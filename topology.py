@@ -137,6 +137,7 @@ class RailRegistry:
             for edge,(i,a,b) in c.edges.items():self.layout_lengths.setdefault(edge,c.tables[i][-1])
         self.reference_length=reference_length if reference_length>EPS else max((c.total for c in chains),default=1.)
         self.spacing=self.reference_length/rows
+        self.edge_details=dict(edge_details or {})
         from .density import DensityField
         self.point_field=DensityField(chains,point_density,self.reference_length)
         mandatory={v for p in plans for rail in (p.left,p.right) for v in (rail[0],rail[-1])}
@@ -151,20 +152,33 @@ class RailRegistry:
         self.row_cache={};old_rows=getattr(previous,'row_cache',{})
         allocated=0;sections=[]
         for curve in chains:
+            spacing=self.spacing
             stops=[(0.,curve.path[0])]
             stops.extend((curve.fraction(('v',v)),v) for v in curve.path[1:-1] if v in mandatory)
             stops.append((1.,curve.path[-1]))
             stops.sort()
             for (lo,first),(hi,last) in zip(stops,stops[1:]):
                 phase,phase_difference,direction=self.phases[curve.path,first,last]
-                desired=direction*(hi-lo)*curve.total/self.spacing
+                # Integrate the requested detail directly. Refining a coarse
+                # group-wide grid multiplied its curvature safeguards and
+                # made a low-detail branch add rows to unrelated strands.
+                knots=[lo]+[u for offset in curve.offsets[1:-1] if lo<(u:=offset/curve.total)<hi]+[hi]
+                mass=[0.]
+                def detail_at(u):
+                    i=min(len(curve.path)-2,max(0,bisect.bisect_right(curve.offsets,u*curve.total)-1))
+                    return self.edge_details.get(edge_key(curve.path[i],curve.path[i+1]),1.)
+                for a,b in zip(knots,knots[1:]):mass.append(mass[-1]+(b-a)*curve.total/spacing*detail_at((a+b)*.5))
+                desired=direction*mass[-1]
                 span=phase_difference+math.floor(desired-phase_difference+.5)
                 if span*desired<=0. or abs(span)<.2:span=desired
-                ends=sorted((phase,phase+span))
-                lower=math.ceil(ends[0]);upper=math.floor(ends[1])
-                fractions=[lo+(k-phase)/span*(hi-lo) for k in range(lower,upper+1)]
-                margin=.28*self.spacing/curve.total
-                fractions=[lo]+sorted(u for u in fractions if lo+margin<u<hi-margin)+[hi]
+                ends=sorted((phase,phase+span));lower=math.ceil(ends[0]);upper=math.floor(ends[1])
+                fractions=[]
+                for k in (range(lower,upper+1) if abs(span)>EPS else ()):
+                    target=(k-phase)/span*mass[-1]
+                    if not .28<target<mass[-1]-.28:continue
+                    i=min(len(knots)-2,max(0,bisect.bisect_right(mass,target)-1))
+                    fractions.append(knots[i]+(target-mass[i])/max(EPS,mass[i+1]-mass[i])*(knots[i+1]-knots[i]))
+                fractions=[lo]+sorted(fractions)+[hi]
                 intervals=len(fractions)-1
                 allocated+=intervals
                 if allocated>2*max_samples:raise ValueError('Превышен лимит точек детализации')
@@ -173,11 +187,11 @@ class RailRegistry:
                 def refine(a,b,depth=0):
                     middle=(a+b)*.5
                     pa=curve.at(a)[1];pb=curve.at(b)[1];pm=curve.at(middle)[1]
-                    if depth<6 and length(sub(pm,mix(pa,pb,.5)))>self.spacing*.065:
+                    if depth<6 and length(sub(pm,mix(pa,pb,.5)))>spacing/max(EPS,detail_at(middle))*.065:
                         return refine(a,middle,depth+1)[:-1]+refine(middle,b,depth+1)
                     return [a,b]
                 row_key=(curve.path,first,last)
-                row_signature=(curve.geometry_signature,self.spacing,lo,hi,phase,phase_difference,direction)
+                row_signature=(curve.geometry_signature,spacing,lo,hi,phase,phase_difference,direction,tuple(detail_at((a+b)*.5) for a,b in zip(knots,knots[1:])))
                 old=old_rows.get(row_key)
                 if old and old[0]==row_signature:adaptive=list(old[1])
                 else:
@@ -200,14 +214,6 @@ class RailRegistry:
                 self.final_sampling_cache[row_key]=saved
                 self._register_samples(curve,first,last,saved[1])
                 continue
-            if any((edge_details or {}).get(edge,1.)>1.+1e-7 for edge in curve.edges):
-                from .density import redistribute
-                def factor(u):
-                    i=min(len(curve.path)-2,max(0,bisect.bisect_right(curve.offsets,u*curve.total)-1))
-                    return (edge_details or {}).get(edge_key(curve.path[i],curve.path[i+1]),1.)
-                knots=[offset/curve.total for offset in curve.offsets[1:-1]]
-                refined=redistribute(adaptive,lambda u:u*curve.total,factor,knots,2*max_samples)
-                allocated+=len(refined)-len(adaptive);adaptive=refined
             if any(self.density.get(edge,1.)>1. for edge in curve.edges):
                 # Preserve every original sample. Insert only inside
                 # selected source-edge intervals, sharing their identities.
@@ -317,6 +323,9 @@ class RailRegistry:
             start=phases[path,a];difference=phases[path,b]-start
             result[path,a,b]=(start,difference,1. if desired>=0 else -1.)
         return result
+
+    def plan_spacing(self,plan):
+        return self.reference_length/(plan.settings.detail if plan.settings.detail>0 else self.rows)
 
     def curve(self,path):
         path=tuple(path)

@@ -208,7 +208,7 @@ def _build_patch(plan,width,registry,left_curve,right_curve,left,right,cap_profi
             us=[mapping.fraction(curve,key) for key,pos in samples]
             pairs=samples
         else:
-            us=_column(surface,x,registry.spacing,registry.density)
+            us=_column(surface,x,registry.plan_spacing(plan),registry.density)
             if registry.point_field.affected(left_curve) or registry.point_field.affected(right_curve):
                 from .density import redistribute
                 positions=[surface.at(u,x)[1] for u in surface.u];arc=[0.]
@@ -254,7 +254,7 @@ def build_patch(plan,width,registry,left_curve,right_curve,left,right,cap_profil
             edge=edge_key(plan.boundary[i],plan.boundary[(i+1)%len(plan.boundary)])
             caps.append((edge,tuple(cap_profiles[edge]),tuple(registry.cap_keys.get(edge,()))))
     edges=set(left_curve.edges)|set(right_curve.edges)
-    signature=('adaptive',plan,width,registry.spacing,left_curve.geometry_signature,right_curve.geometry_signature,
+    signature=('adaptive',plan,width,registry.plan_spacing(plan),left_curve.geometry_signature,right_curve.geometry_signature,
         tuple(left),tuple(right),tuple(caps),tuple(sorted((e,registry.density[e]) for e in edges if e in registry.density)),
         tuple(registry.point_field.profile(left_curve)[0]),tuple(registry.point_field.profile(right_curve)[0]))
     old=(previous or {}).get(plan.boundary)

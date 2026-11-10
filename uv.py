@@ -118,7 +118,7 @@ def _shape_score(uv,tri,world):
     return float(values[0]/max(1e-12,values[-1]))
 
 
-def generate(surfaces,matrix,angle=math.radians(35.),margin=.008,mirror_uv=True):
+def generate(surfaces,matrix,angle=math.radians(60.),margin=.008,mirror_uv=True):
     """Return face-corner UVs and face-island IDs, in bake traversal order."""
     faces=[];world=[];charts=[];initial=[];kinds=[]
     full_faces=[];full_keys=[];active_faces=[];replicas={}

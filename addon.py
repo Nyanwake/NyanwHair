@@ -1146,7 +1146,7 @@ class NHGuidedProperties(PropertyGroup):
     smooth_preview: BoolProperty(name='Smooth + Sharp по направляющим',default=True,description='Плавное освещение внутри прядей с резкими границами по направляющим; сохраняется в независимом Mesh')
     generate_uv: BoolProperty(name='UV',default=True,description='Развёртка вдоль локонов, объединение плавных сегментов и Seam на границах островов; вычисляется только при создании Mesh')
     mirror_uv: BoolProperty(name='Mirror UV',default=True,description='UV отражённых локонов совпадают с оригиналом; выключите для отдельных островов отражений')
-    uv_merge_angle: FloatProperty(name='Угол сшивания UV',default=math.radians(35.),min=0.,max=math.radians(75.),subtype='ANGLE',description='Максимальный угол между поверхностями и направлениями прядей для объединения UV; острова сохраняют направление сверху вниз')
+    uv_merge_angle: FloatProperty(name='Угол сшивания UV',default=math.radians(60.),min=0.,max=math.radians(75.),subtype='ANGLE',description='Максимальный угол между поверхностями и направлениями прядей для объединения UV; острова сохраняют направление сверху вниз')
     follow_matcap: BoolProperty(name='MatCap из вида',default=True,description='Устаревшее поле; освещение всегда следует 3D-виду',options={'HIDDEN'})
     regular_rows: BoolProperty(name='Ровные квадовые полосы',default=True,description='Устаревшее сохранённое свойство; инструменты используют ровные квадовые полосы')
     rows: IntProperty(name='Детализация по длине',default=12,min=2,max=160,description='Общая плотность рядов: короткие пряди получают меньше шагов, длинные больше')
@@ -1346,7 +1346,7 @@ class NYANW35_OT_bake(Operator):
             from . import uv
             try:uv_data=uv.generate(uv_sources,src.matrix_world,angle=src.nh35.uv_merge_angle,mirror_uv=src.nh35.mirror_uv)
             except (ValueError,KeyError,IndexError) as exc:
-                self.report({'WARNING'},str(exc)+'; UV можно отключить под кнопкой «Создать Mesh»')
+                self.report({'WARNING'},str(exc)+'; UV можно отключить под кнопкой «Преобразовать в Mesh»')
                 return {'CANCELLED'}
         me=bpy.data.meshes.new(src.name+'_BakedMesh')
         me.from_pydata(result.vertices,[],result.faces)
@@ -1994,14 +1994,13 @@ def _draw_extra_panels(layout,context,obj,cached,edit):
         if cached.get('appearance_status'):body.label(text=cached['appearance_status'],icon='INFO')
     header,body=layout.panel('nyanw_tools',default_closed=True);header.label(text='Дополнительно',icon='PREFERENCES')
     if body is not None:
-        if props.generate_uv:body.prop(props,'uv_merge_angle',text='Угол сшивания UV')
         if edit:
             body.prop(context.window_manager.nh35_ui,'flip',text='Перевернуть профиль');body.operator('nyanw35.refresh_layout',text='Обновить раскладку рядов',icon='FILE_REFRESH')
         body.operator('nyanw35.disable',text='Отключить на объекте',icon='X')
 
 
 class NYANW35_PT_main(Panel):
-    bl_label='NyanwHair v0.35.40'
+    bl_label='NyanwHair v0.35.41'
     bl_idname='NYANW35_PT_main'
     bl_space_type='VIEW_3D'
     bl_region_type='UI'
@@ -2010,16 +2009,21 @@ class NYANW35_PT_main(Panel):
     def draw(self,context):
         layout=self.layout;obj=context.object
         if not is_guide(obj):
-            layout.operator('nyanw35.create_guide',text='Создать новый локон',icon='CURVE_BEZCURVE')
+            row=layout.row();row.scale_y=2. if obj is None or obj.mode=='OBJECT' else 1.
+            row.operator('nyanw35.create_guide',text='Создать новый локон',icon='CURVE_BEZCURVE')
             if obj and obj.type=='MESH' and obj.mode=='OBJECT':layout.operator('nyanw35.activate',text='Использовать выбранный Mesh',icon='CHECKMARK')
             return
         props=obj.nh35;cached=_CACHE.get(obj.as_pointer(),{});result=cached.get('result');ui=context.window_manager.nh35_ui
         if obj.mode!='EDIT':
-            layout.operator('nyanw35.bake',text='Создать Mesh',icon='OUTLINER_OB_MESH')
+            row=layout.row();row.scale_y=2.
+            row.operator('nyanw35.create_guide',text='Создать новый локон',icon='CURVE_BEZCURVE')
+            layout.separator(factor=.6,type='LINE')
+            row=layout.row();row.scale_y=2.
+            row.operator('nyanw35.bake',text='Преобразовать в Mesh',icon='OUTLINER_OB_MESH')
             row=layout.row(align=True);row.prop(props,'generate_uv',text='UV')
             option=row.row(align=True);option.enabled=props.generate_uv and any(group.mirror_x or group.mirror_y or group.mirror_z for group in props.groups)
             option.prop(props,'mirror_uv',text='Mirror UV')
-            layout.operator('nyanw35.create_guide',text='Создать новый локон',icon='CURVE_BEZCURVE')
+            if props.generate_uv:layout.prop(props,'uv_merge_angle',text='Угол сшивания')
             _draw_extra_panels(layout,context,obj,cached,False)
             return
         row=layout.row(align=True);row.prop(props,'live',text='Live',toggle=True,icon='PLAY');row.prop(props,'show_preview',text='',icon='HIDE_OFF');row.prop(context.space_data.overlay,'show_overlays',text='',icon='OVERLAY');row.operator('nyanw35.rebuild',text='',icon='FILE_REFRESH')

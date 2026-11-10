@@ -1,4 +1,4 @@
-"""NyanwHair 0.35.40: shared curve contracts and independent reverse-sheet widths.
+"""NyanwHair 0.35.41: shared curve contracts and independent reverse-sheet widths.
 
 Pure Python, no Blender IDs or tags on vertices/edges. Blender face corners may
 store the user's chosen end caps; this module only consumes that choice.
@@ -533,11 +533,14 @@ def generate(points,boundaries,settings=None,rows=12,max_polygons=200000,
     out.local_density=dict(local_density or {})
     out.point_density=dict(point_density or {})
     details={p.index:p.settings.detail if p.settings.detail>0 else rows for p in plans}
-    base=min(details.values(),default=rows) if _base_detail is None else _base_detail
+    # Detail is an absolute sampling rate on each physical rail edge.
+    # A shared edge takes the denser owner; unrelated edges never change
+    # their base grid when a segment elsewhere becomes coarser.
+    base=rows
     edge_details={}
     for p in plans:
         for rail in (p.left,p.right):
-            for edge in physical_edges(rail):edge_details[edge]=max(edge_details.get(edge,1.),details[p.index]/base)
+            for edge in physical_edges(rail):edge_details[edge]=max(edge_details.get(edge,0.),details[p.index]/base)
     registry=RailRegistry(points,evaluate,base,plans,reference_length,max_polygons,out.local_density,out.point_density,previous,layout_lengths,edge_details)
     rail_edges={edge for p in plans for rail in (p.left,p.right) for edge in physical_edges(rail)}
     interfaces={};cap_widths={}
