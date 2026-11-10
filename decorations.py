@@ -40,7 +40,7 @@ def _back(out,result,axes=(),previous=None,reuse_geometry=False):
     if not enabled:return None
     # Reuse the same controls, curve dependencies, length detail and density.
     # Only transverse resolution and convexity belong to the reverse sheet.
-    settings=[replace(p.settings,width=max(2,p.settings.back_width or p.settings.width),bulge=-p.settings.back,back=0.,back_enabled=False,back_simple=False) for p in plans]
+    settings=[replace(p.settings,width=max(2,p.settings.back_width or p.settings.width),bulge=-p.settings.back,back=0.,back_enabled=False,back_simple=False,volume_points=()) for p in plans]
     from . import components
     # The full Mesh/UV path must use the same independent row schedules as
     # the per-component preview, including the reverse sheet.
@@ -108,8 +108,13 @@ def _back(out,result,axes=(),previous=None,reuse_geometry=False):
     for i,(face,owner) in enumerate(zip(result.faces,result.owners)):
         if owner in enabled:out.faces[i]=tuple(front_map[v] for v in face)
     mapping={}
+    point_volume={v:value for p in plans if p.index in enabled for v,value in p.settings.volume_points}
+    if point_volume:
+        from . import volume
+        thickness,anchors=volume.profile(result,back,graph,point_volume)
     for v in graph:
         position=list(core.sub(back.vertices[v],core.mul(core.norm(normals[v]),heights.get(v,0.))))
+        if point_volume and v in anchors:position=list(core.mix(anchors[v],position,thickness.get(v,1.)))
         for axis,on in enumerate(axes):
             if on and abs(back.vertices[v][axis])<1e-7:position[axis]=0.
         position=tuple(position);front=front_lookup.get(back.vertex_keys[v])

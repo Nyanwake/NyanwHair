@@ -2,6 +2,12 @@
 from .i18n import tr
 from collections import defaultdict
 from . import core
+from dataclasses import replace
+from copy import copy
+
+
+def _front_settings(options):
+    return tuple(replace(o,back=0.,back_enabled=None,back_width=0,back_simple=False,volume_points=()) for o in options)
 
 
 class _Network:
@@ -54,6 +60,10 @@ def generate(points,boundaries,settings=None,rows=12,max_polygons=200000,previou
             tuple(tuple(sorted(local[name].items())) for name in ('directional_smoothing','local_density','point_density','layout_lengths')))
         saved=old.get(key)
         if saved and saved[0]==signature:part=saved[1];reused+=len(members)
+        elif saved and saved[0][:1]+saved[0][2:]==signature[:1]+signature[2:] and _front_settings(saved[0][1])==_front_settings(signature[1]):
+            part=copy(saved[1]);current_options={indices[i]:options[i] for i in members}
+            part.plans_by_loop={loop:replace(p,settings=current_options[p.index]) for loop,p in part.plans_by_loop.items()}
+            reused+=len(members)
         else:
             part=core.generate(points,[boundaries[i] for i in members],[options[i] for i in members],rows,max_polygons,previous=saved[1] if saved else None,_track_production=True,**local)
         if part.warnings:return fallback()

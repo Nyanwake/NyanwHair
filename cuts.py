@@ -92,7 +92,11 @@ def split(bm,zone,t,result,select_result=False):
         candidates=[f for f in bm.faces if int(f[order])==job['identity'] and start in f.verts and finish in f.verts]
         if len(candidates)!=1:raise ValueError(tr('Could not find the source segment'))
         profile=list(job['profile']);profile[0]=tuple(start.co);profile[-1]=tuple(finish.co)
+        before_cut=set(bm.verts)
         if bmesh.utils.face_split(candidates[0],start,finish,coords=profile[1:-1]) is None:raise ValueError(tr('Blender could not split the segment'))
+        from . import volume
+        for vertex in bm.verts:
+            if vertex not in before_cut:vertex[bm.verts.layers.float[a.L_POINT_VOLUME]]=volume.seed(result,job['index'],tuple(vertex.co))
         children=[f for f in bm.faces if int(f[order])==job['identity']]
         if len(children)!=2:raise ValueError(tr('The cut must create two segments'))
         left_child=next((f for f in children if job['side'] in f.verts),None)
