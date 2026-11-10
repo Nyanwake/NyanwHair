@@ -119,6 +119,59 @@ def _shape_score(uv,tri,world):
     return float(values[0]/max(1e-12,values[-1]))
 
 
+def _valid_chart(coords,component,triangles):
+    return all(_area([tuple(coords[v]) for v in tri])>1e-14 for f in component for tri in triangles[f])
+
+
+def _relax_chart(coords,component,triangles):
+    """Repair only folded charts with a positive-weight disk parameterization."""
+    incidence=defaultdict(int);graph=defaultdict(set)
+    for f in component:
+        for tri in triangles[f]:
+            for a,b in zip(tri,tri[1:]+tri[:1]):
+                incidence[core.edge_key(a,b)]+=1;graph[a].add(b);graph[b].add(a)
+    border={v for edge,count in incidence.items() if count==1 for v in edge}
+    if len(border)<3:return None
+    interior=sorted(set(graph)-border);ids={v:i for i,v in enumerate(interior)}
+    rows=[];columns=[];fixed=[]
+    for a in interior:
+        for b in graph[a]:
+            if b in ids:rows.append(ids[a]);columns.append(ids[b])
+            else:fixed.append((ids[a],b))
+    rows=np.asarray(rows,dtype=np.intp);columns=np.asarray(columns,dtype=np.intp)
+    diagonal=np.asarray([len(graph[v]) for v in interior],dtype=float)
+    def solve(boundary):
+        out={v:p.copy() for v,p in coords.items()};out.update(boundary)
+        if not interior:return out
+        rhs=np.zeros((len(interior),2))
+        for i,v in fixed:rhs[i]+=boundary[v]
+        def product(x):
+            return diagonal[:,None]*x-np.stack([np.bincount(rows,weights=x[columns,axis],minlength=len(interior)) for axis in range(2)],axis=1)
+        x=np.asarray([out[v] for v in interior]);r=rhs-product(x);z=r/diagonal[:,None];direction=z.copy();energy=np.sum(r*z,axis=0)
+        for _ in range(min(2000,max(32,4*len(interior)))):
+            if np.max(np.abs(r))<1e-12:break
+            applied=product(direction);denom=np.sum(direction*applied,axis=0)
+            alpha=np.divide(energy,denom,out=np.zeros(2),where=np.abs(denom)>1e-30)
+            x+=direction*alpha;r-=applied*alpha;z=r/diagonal[:,None];new_energy=np.sum(r*z,axis=0)
+            beta=np.divide(new_energy,energy,out=np.zeros(2),where=np.abs(energy)>1e-30)
+            direction=z+direction*beta;energy=new_energy
+        out.update((v,x[i]) for v,i in ids.items())
+        return out
+    boundary={v:coords[v].copy() for v in border}
+    trial=solve(boundary)
+    if _valid_chart(trial,component,triangles):return trial
+    # Collinear boundary-only triangles need a slightly rounded outline.
+    # Start with a tiny adjustment; a convex ellipse is the final disk fallback.
+    points=np.asarray(list(boundary.values()));center=points.mean(axis=0);radii=np.maximum(1e-8,np.ptp(points,axis=0)*.5)
+    delta=(points-center)/radii;lengths=np.linalg.norm(delta,axis=1)
+    if np.any(lengths<1e-12):return None
+    rounded=center+delta/lengths[:,None]*radii
+    for strength in (.01,.1,1.):
+        trial=solve({v:(1.-strength)*p+strength*q for (v,p),q in zip(boundary.items(),rounded)})
+        if _valid_chart(trial,component,triangles):return trial
+    return None
+
+
 def generate(surfaces,matrix,angle=math.radians(60.),margin=.008,mirror_uv=True):
     """Return face-corner UVs and face-island IDs, in bake traversal order."""
     faces=[];world=[];charts=[];initial=[];kinds=[]
@@ -193,8 +246,10 @@ def generate(surfaces,matrix,angle=math.radians(60.),margin=.008,mirror_uv=True)
         area=sum(_area([tuple(coords[v]) for v in faces[f]]) for f in component)
         if area<0:
             for p in coords.values():p[0]=1-p[0]
-        if any(_area([tuple(coords[v]) for v in tri])<=1e-14 for f in component for tri in triangles[f]):
-            raise ValueError(tr('UV: the source segment contains a flipped face'))
+        if not _valid_chart(coords,component,triangles):
+            repaired=_relax_chart(coords,component,triangles)
+            if repaired is None:raise ValueError(tr('UV: the source segment contains a flipped face'))
+            coords=repaired
         # Match physical area and longitudinal arc scale before joining.
         physical_area=sum(core.length(core.cross(core.sub(world[b],world[a]),core.sub(world[c],world[a])))*.5 for f in component for a,b,c in triangles[f])
         uv_area=max(1e-12,sum(abs(_area([tuple(coords[v]) for v in faces[f]])) for f in component))

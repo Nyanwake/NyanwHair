@@ -1383,6 +1383,8 @@ class NYANW35_OT_bake(Operator):
                 bpy.data.meshes.remove(me)
                 self.report({'WARNING'},'UV: '+str(exc))
                 return {'CANCELLED'}
+        for edge in me.edges:
+            if core.edge_key(*edge.vertices) in sharp:edge.use_seam=True
         bake=bpy.data.objects.new(src.name+'_Baked',me)
         if src.users_collection: src.users_collection[0].objects.link(bake)
         else: context.scene.collection.objects.link(bake)
