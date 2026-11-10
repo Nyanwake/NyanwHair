@@ -160,13 +160,14 @@ def _cap_profiles(points,plans,widths,evaluate,cap_widths=None):
 
 
 def newell(points,loop):
-    n=(0.,0.,0.)
+    n=(0.,0.,0.);origin=points[loop[0]];scale_square=0.
     for i,a in enumerate(loop):
-        p,q=points[a],points[loop[(i+1)%len(loop)]]
+        p,q=sub(points[a],origin),sub(points[loop[(i+1)%len(loop)]],origin)
+        scale_square=max(scale_square,dot(p,p))
         n=add(n, ((p[1]-q[1])*(p[2]+q[2]),
                   (p[2]-q[2])*(p[0]+q[0]),
                   (p[0]-q[0])*(p[1]+q[1])))
-    return norm(n)
+    return norm(mul(n,1./scale_square)) if scale_square>EPS*EPS else (0.,0.,0.)
 
 
 def cap_paths(loop,c0,c1):
@@ -206,7 +207,9 @@ def major_axis(points,loop):
     xs=[sub(points[k],center) for k in loop]
     best=max(((dot(sub(points[a],points[b]),sub(points[a],points[b])),a,b)
               for i,a in enumerate(loop) for b in loop[i+1:]),default=None)
-    if not best or best[0]<EPS: raise ValueError(tr('All segment points coincide'))
+    if not best or best[0]<EPS*EPS: raise ValueError(tr('All segment points coincide'))
+    # Solve in strand-relative coordinates: covariance scales cubically.
+    xs=[mul(x,1./math.sqrt(best[0])) for x in xs]
     direction=norm(sub(points[best[1]],points[best[2]]))
     for _ in range(12):
         v=(0.,0.,0.)
@@ -638,7 +641,9 @@ def generate(points,boundaries,settings=None,rows=12,max_polygons=200000,
                 components=(a-b)*np.roll(a+b,-1,axis=1)
                 # Newell x uses y,z; y uses z,x; z uses x,y.
                 vectors=np.add.reduceat(np.roll(components,-1,axis=1),offsets,axis=0)
-                valid=np.einsum('ij,ij->i',vectors,vectors)>EPS*EPS
+                edge_square=np.einsum('ij,ij->i',a-b,a-b)
+                scale_square=np.maximum.reduceat(edge_square,offsets)
+                valid=np.einsum('ij,ij->i',vectors,vectors)>(EPS*scale_square)**2
             else:valid=[length(newell(out.vertices,face))>=EPS for face in local]
             valid_flags=cached_valid if cached_valid is not None else tuple(bool(v) for v in valid)
             if entry:out.valid_cache[p.boundary]=(entry[1],valid_flags)

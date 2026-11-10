@@ -1186,6 +1186,7 @@ class NYANW35_OT_create_guide(Operator):
         points=[(.08,0,0),(-.34,0,.75),(-.73,0,1.65),
                 (-.72,0,2.48),(-.38,0,3.35),(.39,0,3.35),
                 (.73,0,2.50),(.72,0,1.64),(.37,0,.75)]
+        points=[tuple(c*.1 for c in point) for point in points]
         me.from_pydata(points,[],[tuple(range(len(points)))])
         me.update()
         bm=bmesh.new()
@@ -1210,27 +1211,6 @@ class NYANW35_OT_create_guide(Operator):
         for o in context.selected_objects: o.select_set(False)
         guide.select_set(True)
         context.view_layer.objects.active=guide
-        guide.nh35.enabled=True
-        guide.nh35.show_preview=True
-        guide.display_type='WIRE'
-        guide.show_in_front=False
-        _prepare_object(guide)
-        _rebuild(guide,True)
-        return {'FINISHED'}
-
-
-class NYANW35_OT_activate(Operator):
-    bl_idname='nyanw35.activate'
-    bl_label='Use selected Mesh as guides'
-    bl_description='Use every face of the selected Mesh as a hair segment'
-    bl_options={'REGISTER','UNDO'}
-
-    @classmethod
-    def poll(cls,context):
-        return bool(context.object and context.object.type=='MESH' and context.object.mode=='OBJECT')
-
-    def execute(self,context):
-        guide=context.object
         guide.nh35.enabled=True
         guide.nh35.show_preview=True
         guide.display_type='WIRE'
@@ -2010,7 +1990,6 @@ class NYANW35_PT_main(Panel):
         if not is_guide(obj):
             row=layout.row();row.scale_y=2. if obj is None or obj.mode=='OBJECT' else 1.
             row.operator('nyanw35.create_guide',text=tr('Create new strand'),icon='CURVE_BEZCURVE')
-            if obj and obj.type=='MESH' and obj.mode=='OBJECT':layout.operator('nyanw35.activate',text=tr('Use selected Mesh'),icon='CHECKMARK')
             return
         props=obj.nh35;cached=_CACHE.get(obj.as_pointer(),{});result=cached.get('result');ui=context.window_manager.nh35_ui
         if obj.mode!='EDIT':
@@ -2719,7 +2698,7 @@ def _on_undo_post(_dummy):
 from . import editing
 
 _CLASSES=groups.CLASSES+(NHGuidedProperties,NHGuidedUISettings,NYANW35_OT_direction_smoothing,NYANW35_OT_local_density,NYANW35_OT_point_density,NYANW35_OT_density_reset,NYANW35_OT_set_cap,NYANW35_OT_refresh_layout,
-          NYANW35_OT_create_guide,NYANW35_OT_activate,NYANW35_OT_disable,
+          NYANW35_OT_create_guide,NYANW35_OT_disable,
           NYANW35_OT_demo,NYANW35_OT_rebuild,NYANW35_OT_bake,
           NYANW35_OT_pin_rails, NYANW35_OT_adjust,NYANW35_OT_pick_zone,
           NYANW35_OT_hair_loop,NYANW35_PT_main)+editing.CLASSES

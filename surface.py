@@ -126,12 +126,12 @@ def _bad_quad(a0,a1,b0,b1):
     p=[a0,b0,b1,a1]
     first=cross(sub(p[1],p[0]),sub(p[2],p[0]));second=cross(sub(p[2],p[0]),sub(p[3],p[0]))
     area_a=length(first);area_b=length(second)
-    if area_a>EPS and area_b>EPS and dot(first,second)<.25*area_a*area_b:return True
+    if area_a>0. and area_b>0. and dot(first,second)<.25*area_a*area_b:return True
     normal=add(first,second);area=length(normal)
     edges=[sub(p[(i+1)%4],p[i]) for i in range(4)]
     for i in range(4):
         signed=dot(cross(edges[i],edges[(i+1)%4]),normal)
-        if signed<0 and signed<-.015*max(EPS,length(edges[i])*length(edges[(i+1)%4])*area):return True
+        if signed<0 and signed<-.015*length(edges[i])*length(edges[(i+1)%4])*area:return True
     return False
 
 
