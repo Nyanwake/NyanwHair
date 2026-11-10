@@ -279,6 +279,7 @@ class NYANW35_OT_extrude(Operator):
     bl_idname='nyanw35.extrude'
     bl_label='Smart strand extrusion'
     bl_options={'REGISTER','UNDO','BLOCKING'}
+    from_panel:bpy.props.BoolProperty(default=False,options={'HIDDEN','SKIP_SAVE'})
     offset:FloatVectorProperty(name='Offset',subtype='TRANSLATION',default=(0.,0.,.25))
     curve_points:IntProperty(name='Intermediate points',default=0,min=0,max=64)
     curve_bend:FloatVectorProperty(name='Bend',subtype='TRANSLATION',default=(0.,0.,0.))
@@ -319,6 +320,9 @@ class NYANW35_OT_extrude(Operator):
         except (ValueError,RuntimeError,ReferenceError) as exc:
             self._backup.free();self._backup=None;self.report({'WARNING'},str(exc));return {'CANCELLED'}
         self._anchor=obj.matrix_world@Vector(self._data['anchor'])
+        if self.from_panel:
+            projected=view3d_utils.location_3d_to_region_2d(context.region,context.region_data,self._anchor)
+            if projected is not None:self._mouse=projected
         self._default_direction=(obj.matrix_world.to_3x3()@Vector(self._data['direction'])).normalized()
         self._start=view3d_utils.region_2d_to_location_3d(context.region,context.region_data,self._mouse,self._anchor)
         _ACTIVE.add(self);context.window_manager.modal_handler_add(self);self._status(context)
