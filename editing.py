@@ -394,7 +394,7 @@ class NYANW35_OT_extrude(Operator):
 
     def _curve_draw(self):
         ctx=bpy.context
-        if ctx.edit_object!=self._obj or not a._helpers_visible(ctx) or not self._curve_preview:return
+        if ctx.edit_object!=self._obj or not a._helpers_visible(ctx) or self._obj.nh35.transparency>=1. or not self._curve_preview:return
         gpu=a.gpu
         if gpu is None:return
         depth=gpu.state.depth_test_get();mask=gpu.state.depth_mask_get();blend=gpu.state.blend_get();width=gpu.state.line_width_get()
@@ -403,7 +403,7 @@ class NYANW35_OT_extrude(Operator):
             style=palette.get(self._obj.nh35)
             from . import strokes
             scale,limit=strokes.view_style(a._CACHE.get(self._obj.as_pointer(),{}),self._obj,ctx)
-            shader=a._stroke_shader(style.selected_width*scale,max_clearance=limit);shader.bind();shader.uniform_float('color',style.selected)
+            shader=a._stroke_shader(style.selected_width*scale,max_clearance=limit);shader.bind();shader.uniform_float('color',palette.preview_color(self._obj.nh35,style.selected))
             gpu.state.blend_set('ALPHA');gpu.state.depth_test_set('NONE' if a._xray_enabled(ctx) else 'LESS_EQUAL');gpu.state.depth_mask_set(False)
             a._stroke_batch(shader,'LINE_STRIP',{'pos':self._curve_preview}).draw(shader)
         except (ReferenceError,RuntimeError,ValueError):pass

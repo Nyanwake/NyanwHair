@@ -78,13 +78,13 @@ def shader():
         info.fragment_source('''
         void main(){
             vec3 n=normalize(viewNormal)*(gl_FrontFacing?1.0:-1.0);
-            float intensity=lighting.w>.5?1.0:.75+.25*abs(dot(n,normalize(vec3(.31,.43,.85))));
+            float intensity=lighting.w>=0.0?1.0:.75+.25*abs(dot(n,normalize(vec3(.31,.43,.85))));
             vec3 base=baseColor*intensity*(lighting.z/.8);
             if(lighting.x>.5){
                 vec2 uv=clamp(n.xy*.5+.5,vec2(.001),vec2(.999));
                 base=(baseColor*texture(matcapDiffuse,uv).rgb+lighting.y*texture(matcapSpecular,uv).rgb)*lighting.z;
             }
-            fragColor=vec4(mix(base,tint.rgb,tint.a),1.0);
+            fragColor=vec4(mix(base,tint.rgb,tint.a),abs(lighting.w));
         }''')
         _SHADER=gpu.shader.create_from_info(info)
     return _SHADER
@@ -126,7 +126,7 @@ def _textures(path):
     return texture(diffuse),texture(specular)
 
 
-def bind(context,follow_matcap=True,brightness=.8):
+def bind(context,follow_matcap=True,brightness=.8,opacity=1.):
     import gpu
     surface=shader();surface.bind()
     view=gpu.matrix.get_model_view_matrix();surface.uniform_float('viewProjectionMatrix',gpu.matrix.get_projection_matrix()@view);surface.uniform_float('viewRotation',view.to_3x3())
@@ -144,7 +144,10 @@ def bind(context,follow_matcap=True,brightness=.8):
         if None not in _MATCAPS:_MATCAPS[None]=_dummy()
         textures=_MATCAPS[None];status=tr('MatCap unavailable: using studio lighting')
     surface.uniform_sampler('matcapDiffuse',textures[0]);surface.uniform_sampler('matcapSpecular',textures[1])
-    surface.uniform_float('lighting',(float(bool(path and status is None)),float(shading.show_specular_highlight),brightness,float(shading.type=='SOLID' and shading.light=='FLAT')))
+    # Share the existing scalar: sign selects Flat, magnitude fades the preview.
+    # This keeps push constants within the portable 128-byte budget.
+    flat=shading.type=='SOLID' and shading.light=='FLAT'
+    surface.uniform_float('lighting',(float(bool(path and status is None)),float(shading.show_specular_highlight),brightness,opacity if flat else -opacity))
     return surface,status
 
 
