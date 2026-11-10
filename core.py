@@ -1,4 +1,4 @@
-"""NyanwHair 0.35.39: shared curve contracts and independent reverse-sheet widths.
+"""NyanwHair 0.35.40: shared curve contracts and independent reverse-sheet widths.
 
 Pure Python, no Blender IDs or tags on vertices/edges. Blender face corners may
 store the user's chosen end caps; this module only consumes that choice.
@@ -96,6 +96,13 @@ class MeshResult:
     sampling_cache: dict=field(default_factory=dict,repr=False)
     correspondence_cache: dict=field(default_factory=dict,repr=False)
     patch_cache: dict=field(default_factory=dict,repr=False)
+    final_sampling_cache: dict=field(default_factory=dict,repr=False)
+    valid_cache: dict=field(default_factory=dict,repr=False)
+    production: dict=field(default_factory=dict,repr=False)
+    assembly_cache: object=field(default=None,repr=False,compare=False)
+    emission_cache: dict=field(default_factory=dict,repr=False)
+    accepted_cache: dict=field(default_factory=dict,repr=False)
+    plan_order: tuple=()
     reused_patches: int=0
 
 
@@ -458,7 +465,7 @@ def plan_widths(plans,fixed=None,warnings=None):
 
 
 def generate(points,boundaries,settings=None,rows=12,max_polygons=200000,
-             previous=None,caps=None,reference_length=0.,directional_smoothing=None,local_density=None,point_density=None,layout_lengths=None,regular_rows=False,face_indices=None,edge_evaluator=None):
+             previous=None,caps=None,reference_length=0.,directional_smoothing=None,local_density=None,point_density=None,layout_lengths=None,regular_rows=False,face_indices=None,edge_evaluator=None,_base_detail=None,_track_production=False):
     points=[tuple(map(float,p)) for p in points]
     settings=list(settings or [ZoneSettings() for _ in boundaries])
     rows=max(2,min(256,int(rows)))
@@ -526,7 +533,7 @@ def generate(points,boundaries,settings=None,rows=12,max_polygons=200000,
     out.local_density=dict(local_density or {})
     out.point_density=dict(point_density or {})
     details={p.index:p.settings.detail if p.settings.detail>0 else rows for p in plans}
-    base=min(details.values(),default=rows)
+    base=min(details.values(),default=rows) if _base_detail is None else _base_detail
     edge_details={}
     for p in plans:
         for rail in (p.left,p.right):
@@ -562,7 +569,10 @@ def generate(points,boundaries,settings=None,rows=12,max_polygons=200000,
             vertex_index[key]=len(out.vertices)
             out.vertices.append(pos)
         return vertex_index[key]
-    for p in sorted(plans,key=_plan_priority):
+    production={};ordered=sorted(plans,key=_plan_priority)
+    out.plan_order=tuple(p.boundary for p in ordered);prefix_same=out.plan_order==getattr(previous,'plan_order',())
+    for p in ordered:
+        first_vertex=len(out.vertices)
         try:
             if regular_rows:
                 ca=registry.curve(p.left);cb=registry.curve(p.right)
@@ -584,6 +594,13 @@ def generate(points,boundaries,settings=None,rows=12,max_polygons=200000,
                 if len(set(face))<3:return
                 if reverse:face.reverse()
                 local.append(tuple(face))
+            def emit_bulk(faces,remap):
+                old=getattr(previous,'emission_cache',{}).get(p.boundary);mapping_key=tuple(remap)
+                if old and old[0]==faces and old[1]==mapping_key and old[2]==reverse:local.extend(old[3])
+                else:
+                    for face in faces:emit([remap[v] for v in face])
+                out.emission_cache[p.boundary]=(faces,mapping_key,reverse,tuple(local))
+            emit.bulk=emit_bulk
             mapping=registry.maps.get((ca.path,cb.path))
             density_here=any(registry.density.get(edge,1.)>1. for curve in (ca,cb) for edge in curve.edges)
             start_width,body_width,end_width=out.width_transitions[p.index]
@@ -603,10 +620,13 @@ def generate(points,boundaries,settings=None,rows=12,max_polygons=200000,
                 sections,columns,grid,reused=build_strip(p,w,registry,ca,cb,left,right,cap_profiles,put,emit,max_polygons,
                     out.patch_cache,getattr(previous,'patch_cache',{}))
                 out.reused_patches+=reused
+            entry=out.patch_cache.get(p.boundary);old_valid=getattr(previous,'valid_cache',{}).get(p.boundary)
+            cached_valid=old_valid[1] if reused and old_valid and entry and old_valid[0] is entry[1] and len(old_valid[1])==len(local) else None
             # Batch Newell validation instead of Python vector operations for
             # every edge of every output polygon, on every pointer movement.
             from .topology import np
-            if np is not None and local:
+            if cached_valid is not None:valid=cached_valid
+            elif np is not None and local:
                 offsets=[];aa=[];bb=[]
                 for face in local:
                     offsets.append(len(aa));aa.extend(face);bb.extend(face[1:]+face[:1])
@@ -616,13 +636,20 @@ def generate(points,boundaries,settings=None,rows=12,max_polygons=200000,
                 vectors=np.add.reduceat(np.roll(components,-1,axis=1),offsets,axis=0)
                 valid=np.einsum('ij,ij->i',vectors,vectors)>EPS*EPS
             else:valid=[length(newell(out.vertices,face))>=EPS for face in local]
-            accepted=[]
-            for face,keep in zip(local,valid):
-                if not keep:continue
-                signature=tuple(sorted(face))
-                if signature in produced or signature in local_keys:continue
-                local_keys.add(signature);accepted.append(face)
-            local=accepted
+            valid_flags=cached_valid if cached_valid is not None else tuple(bool(v) for v in valid)
+            if entry:out.valid_cache[p.boundary]=(entry[1],valid_flags)
+            raw=tuple(local);prior=getattr(previous,'accepted_cache',{}).get(p.boundary)
+            if prefix_same and prior and prior[0]==raw and prior[1]==valid_flags:
+                local=prior[2];local_keys=prior[3]
+            else:
+                prefix_same=False;accepted=[]
+                for face,keep in zip(local,valid_flags):
+                    if not keep:continue
+                    signature=tuple(sorted(face))
+                    if signature in produced or signature in local_keys:continue
+                    local_keys.add(signature);accepted.append(face)
+                local=tuple(accepted);local_keys=frozenset(local_keys)
+            out.accepted_cache[p.boundary]=(raw,valid_flags,local,local_keys)
             out.surface_columns[p.index]=tuple(tuple(column) for column in columns)
             if len(local)+len(out.faces)>max_polygons:raise ValueError('Превышен лимит полигонов')
             produced.update(local_keys)
@@ -632,27 +659,33 @@ def generate(points,boundaries,settings=None,rows=12,max_polygons=200000,
             out.rail_samples[p.index]=(tuple(left),tuple(right))
             registry.register(ca,left);registry.register(cb,right)
         except (ValueError,IndexError,ZeroDivisionError) as exc:
-            out.warnings[p.index]=str(exc)
+            out.warnings[p.index]=str(exc);prefix_same=False
+        if _track_production:production[p.index]=tuple(range(first_vertex,len(out.vertices)))
+    out.final_sampling_cache=registry.final_sampling_cache
     out.phase_cache=registry.phase_cache
     out.row_cache=registry.row_cache
     out.sampling_cache=registry.geometry_cache
     out.correspondence_cache=registry.map_cache
     out.faces,out.owners=registry.stitch(out.vertices,out.faces,out.owners,vertex_index)
     if len(out.faces)>max_polygons:raise ValueError('Превышен лимит полигонов после сшивки')
-    # Keep baked meshes free of unused reference/degenerate positions.
-    used=sorted({v for face in out.faces for v in face})
-    remap={old:new for new,old in enumerate(used)}
-    keys={vid:key for key,vid in vertex_index.items()}
-    out.vertex_keys=[keys[v] for v in used]
-    out.vertices=[out.vertices[v] for v in used]
-    out.faces=[tuple(remap[v] for v in face) for face in out.faces]
+    # Connectivity usually survives a drag even though sample parameters do
+    # not. Reuse index compaction and owner-edge sets, never vertex positions.
+    topology_key=(len(out.vertices),tuple(out.faces),tuple(out.owners))
+    old_assembly=getattr(previous,'assembly_cache',None)
+    if old_assembly and old_assembly[0]==topology_key:
+        _,used,remap,compact_faces,owner_edges=old_assembly
+    else:
+        used=sorted({v for face in out.faces for v in face});remap={old:new for new,old in enumerate(used)}
+        compact_faces=[tuple(remap[v] for v in face) for face in out.faces]
+        owner_edges=defaultdict(set)
+        for face,owner in zip(compact_faces,out.owners):owner_edges[owner].update(edge_key(a,b) for a,b in zip(face,face[1:]+face[:1]))
+    keys=tuple(vertex_index)
+    out.vertex_keys=[keys[v] for v in used];out.vertices=[out.vertices[v] for v in used];out.faces=compact_faces
+    out.assembly_cache=(topology_key,used,remap,compact_faces,owner_edges)
     out.surface_grids={zone:tuple(tuple(remap.get(v) if v is not None else None for v in row) for row in grid)
                        for zone,grid in out.surface_grids.items()}
     out.surface_columns={zone:tuple(tuple(remap[v] for v in column if v in remap) for column in columns)
                          for zone,columns in out.surface_columns.items()}
-    owner_edges=defaultdict(set)
-    for face,owner in zip(out.faces,out.owners):
-        owner_edges[owner].update(edge_key(a,b) for a,b in zip(face,face[1:]+face[:1]))
     for zone,columns in out.surface_columns.items():
         w=len(columns)-1
         out.cut_lines[zone]={}
@@ -660,6 +693,7 @@ def generate(points,boundaries,settings=None,rows=12,max_polygons=200000,
             line=columns[x]
             if len(line)>1 and all(a==b or edge_key(a,b) in owner_edges[zone] for a,b in zip(line,line[1:])):
                 out.cut_lines[zone][x/w]=tuple(out.vertices[v] for v in line)
+    if _track_production:out.production={owner:tuple(remap[v] for v in values if v in remap) for owner,values in production.items()}
     out.samples_per_edge={edge:max(0,len(stations)-1) for edge,stations in registry.stations.items()}
     return out
 

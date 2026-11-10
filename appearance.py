@@ -11,9 +11,9 @@ def sharp_edges(result):
     return sharp|set(getattr(result,"extra_sharp_edges",()))
 
 
-def corner_normals(result,smooth=True,topology=None):
+def corner_normals(result,smooth=True,topology=None,packed=False):
     old=getattr(result,'normal_cache',None)
-    if old and old[0]==smooth:return old[1]
+    if old and old[0]==smooth:return old[1] if packed else tuple(tuple(tuple(v) for v in face) for face in old[1])
     import numpy as np
     faces=result.faces
     if not faces:
@@ -54,10 +54,10 @@ def corner_normals(result,smooth=True,topology=None):
     else:
         size=np.linalg.norm(areas,axis=1);areas/=np.where(size>1e-10,size,1.)[:,None];areas[size<=1e-10]=0.
         values=areas[face_ids]
-    values=list(map(tuple,values.tolist()))
-    output=tuple(tuple(values[offset:offset+len(face)]) for offset,face in zip(offsets,faces))
+    result.normal_array=values
+    output=tuple(values[offset:offset+len(face)] for offset,face in zip(offsets,faces))
     result.normal_topology=topology;result.normal_cache=(smooth,output)
-    return output
+    return output if packed else tuple(tuple(tuple(v) for v in face) for face in output)
 
 
 _SHADER=None

@@ -15,7 +15,7 @@ from mathutils import Vector
 from mathutils.bvhtree import BVHTree
 from bpy_extras import view3d_utils
 
-from . import core,groups,palette
+from . import core,groups,palette,components
 
 try:
     import gpu
@@ -156,9 +156,34 @@ def _selection_zone(bm, hovered, preferred=-1):
     return preferred if 0<=preferred<len(bm.faces) else -1
 
 
+def _render_caches(obj):
+    """Separate immutable geometry caches for disconnected control islands."""
+    records=[]
+    for parent in groups.all_caches(obj):
+        parts=getattr(parent['result'],'parts',())
+        if not parts:
+            parent.pop('render_parts',None);records.append(parent);continue
+        previous=parent.get('render_parts',{});current={}
+        for part in parts:
+            key=tuple((p.index,p.boundary) for p in part.plans_by_loop.values())
+            child=previous.get(key)
+            if child is None:child={}
+            elif child.get('result') is not part:child=dict(child)
+            child.update(result=part,group_id=parent.get('group_id',1),object_pointer=parent['object_pointer'],positions=parent['positions'],
+                active=parent.get('active',-1),zone_selection=parent.get('zone_selection',frozenset()),zone_selection_explicit=parent.get('zone_selection_explicit',False),_parent_cache_id=id(parent))
+            current[key]=child;records.append(child)
+        parent['render_parts']=current
+    return records
+
+
+def _preview_polygon_count(cache):
+    records=cache.get('render_parts',{}).values() or (cache,)
+    return sum(len(record.get('preview_result',record['result']).faces)*len(getattr(record.get('preview_result',record['result']),'preview_masks',(0,))) for record in records)
+
+
 def _ray_zone(cache,origin,direction):
     from . import decorations
-    obj=bpy.context.edit_object;records=groups.all_caches(obj) if is_guide(obj) and cache.get('object_pointer')==obj.as_pointer() else [cache]
+    obj=bpy.context.edit_object;records=_render_caches(obj) if is_guide(obj) and cache.get('object_pointer')==obj.as_pointer() else [cache]
     nearest=None
     for record in records:
         result=decorations.preview(record,obj) if is_guide(obj) and record.get('object_pointer')==obj.as_pointer() else record['result']
@@ -173,7 +198,7 @@ def _ray_zone(cache,origin,direction):
                 if nearest is None or distance<nearest[0]:nearest=(distance,record,result,index,mask)
     if nearest is None:return None
     distance,record,result,index,mask=nearest
-    if record is not cache or mask or index in getattr(result,'replica_faces',()):return None
+    if (record is not cache and record.get('_parent_cache_id')!=id(cache)) or mask or index in getattr(result,'replica_faces',()):return None
     return result.owners[index]
 
 
@@ -261,7 +286,8 @@ def _near_control_component(ctx,obj,xy,cache):
             screen=view3d_utils.location_3d_to_region_2d(ctx.region,ctx.region_data,world)
             if screen is not None and (screen-mouse).length<=9. and _point_visible(ctx,world):return True
     if mode[1]:
-        segments_to_check=list(cache.get('rail_segments',{}).values())
+        parts=cache.get('render_parts',{}).values() or (cache,)
+        segments_to_check=[line for part in parts for line in part.get('rail_segments',{}).values()]
         bm=bmesh.from_edit_mesh(obj.data)
         segments_to_check.extend([tuple(obj.matrix_world@edge.verts[0].co),tuple(obj.matrix_world@edge.verts[1].co)] for edge in bm.edges if not edge.hide)
         for segments in segments_to_check:
@@ -374,9 +400,10 @@ def _selected_guide_batch(cache,bm,vertex_mode):
     keys=_selected_guide_edges(bm,cache['result'],vertex_mode)
     signature=(cache.get('gpu_signature'),keys)
     if cache.get('selected_signature')!=signature:
-        coords=[p for edge in keys for p in cache.get('rail_segments',{}).get(edge,())]
-        data={name:[value for edge in keys for value in cache.get('rail_attributes',{}).get(edge,{}).get(name,())] for name in ('pos','normalA','normalB','curveGap')}
-        cache['selected_batch']=_stroke_batch(_stroke_shader(guides=True),'LINES',data) if coords else None
+        import numpy as np
+        parts=[cache['rail_attributes'][edge] for edge in keys if edge in cache.get('rail_attributes',{})]
+        data={name:np.concatenate([part[name] for part in parts]) for name in ('pos','normalA','normalB','curveGap')} if parts else {}
+        cache['selected_batch']=_stroke_batch(_stroke_shader(guides=True),'LINES',data) if parts else None
         cache['selected_signature']=signature
     return cache.get('selected_batch')
 
@@ -1022,20 +1049,20 @@ def _rebuild(obj,force=False,lazy=False,group_id=None,_background=False):
     previous=old['result'] if old and old.get('group_zones')==tuple(zones) and old.get('face_indices')==tuple(indices) else None
     try:
         prior_signature=old.get('signature') if old else None
-        if prior_signature and prior_signature!=signature and prior_signature[:-1]==signature[:-1] and tuple(v[:7] for v in prior_signature[-1])==tuple(v[:7] for v in signature[-1]):
+        if old and not getattr(old['result'],'parts',()) and prior_signature and prior_signature!=signature and prior_signature[:-1]==signature[:-1] and tuple(v[:7] for v in prior_signature[-1])==tuple(v[:7] for v in signature[-1]):
             # Back-only edits change metadata, not front geometry or curves.
             from copy import copy
             result=copy(old['result']);current=dict(zip(indices,options))
             result.plans_by_loop={loop:replace(plan,settings=current[plan.index]) for loop,plan in result.plans_by_loop.items()}
         else:
-            result=core.generate(positions,zones,options,rows,previous=previous,caps=[core.neutral_caps(loop,c) for loop,c in zip(zones,caps)],reference_length=reference,directional_smoothing=smoothing,local_density=density,point_density=point_density,layout_lengths=layout_lengths,regular_rows=True,face_indices=indices)
+            result=components.generate(positions,zones,options,rows,previous=previous,caps=[core.neutral_caps(loop,c) for loop,c in zip(zones,caps)],reference_length=reference,directional_smoothing=smoothing,local_density=density,point_density=point_density,layout_lengths=layout_lengths,regular_rows=True,face_indices=indices)
         warnings=result.warnings;selection={}
         if old and old.get('zone_selection_explicit'):
             lookup=_zone_lookup(result);keys=frozenset(k for k in old.get('zone_selection',()) if k in lookup)
             selected=next((_zone_key(p) for p in old['result'].plans_by_loop.values() if p.index==old.get('active',-1)),None)
             active=lookup.get(selected,min((lookup[k] for k in keys),default=-1));selection={'zone_selection':keys,'zone_selection_explicit':True}
         if active not in indices:active=indices[0] if indices else -1
-        reuse={k:old[k] for k in ('gpu_chunks','gpu_rails','gpu_rail_records','gpu_rail_signature','native_selection_stamp','back_result','normal_topology','gpu_layout','preview_normal_groups','preview_axis_sharp') if old and k in old}
+        reuse={k:old[k] for k in ('gpu_chunks','gpu_wire_chunks','gpu_rails','gpu_rail_records','gpu_rail_signature','native_selection_stamp','back_result','normal_topology','gpu_layout','preview_normal_groups','preview_axis_sharp','render_parts') if old and k in old}
         cached=dict(selection,**reuse,signature=signature,topology=tuple(full_zones),face_indices=tuple(indices),group_zones=tuple(zones),group_id=uid,object_pointer=key,
                     rows=rows,revision=_SOURCE_REVISION,source_state=state,source_dirty=False,data_pointer=obj.data.as_pointer(),positions=tuple(positions),zones=tuple(full_zones),
                     result=result,active=active,status='; '.join('Зона %d: %s'%(i+1,v) for i,v in list(sorted(warnings.items()))[:3]) if warnings else '%d зон, %d полигонов'%(len(zones),len(result.faces)),
@@ -1974,7 +2001,7 @@ def _draw_extra_panels(layout,context,obj,cached,edit):
 
 
 class NYANW35_PT_main(Panel):
-    bl_label='NyanwHair v0.35.39'
+    bl_label='NyanwHair v0.35.40'
     bl_idname='NYANW35_PT_main'
     bl_space_type='VIEW_3D'
     bl_region_type='UI'
@@ -2028,7 +2055,7 @@ class NYANW35_PT_main(Panel):
         _draw_extra_panels(layout,context,obj,cached,True)
         errors=cached.get('error_count',0)
         if errors:layout.label(text='Ошибок зон: %d'%errors,icon='ERROR');layout.label(text=cached.get('status','')[:100])
-        elif result:layout.label(text='%d / %d сегм. · %d полигонов'%(len(_zone_ui_faces(bm,obj)),cached.get('zone_count',0),len(cached.get('preview_result',result).faces)*len(getattr(cached.get('preview_result',result),'preview_masks',(0,)))))
+        elif result:layout.label(text='%d / %d сегм. · %d полигонов'%(len(_zone_ui_faces(bm,obj)),cached.get('zone_count',0),_preview_polygon_count(cached)))
 
 
 _CIRCLE_OFFSETS=tuple(p for i in range(12) for p in ((0.,0.),(math.cos(2*math.pi*i/12),math.sin(2*math.pi*i/12)),(math.cos(2*math.pi*(i+1)/12),math.sin(2*math.pi*(i+1)/12))))
@@ -2160,14 +2187,30 @@ class _BatchGroup:
             else:batch.draw(shader)
 
 
+def _buffer_layout(result,indices,offsets,edges):
+    import numpy as np
+    vertices=[];corners=[];owners=[];normal=[];reflected=[];dynamic=False
+    for fi in indices:
+        face=result.faces[fi];n=len(face);offset=len(vertices)
+        vertices.extend(face);corners.extend(range(int(offsets[fi]),int(offsets[fi])+n));owners.extend([result.owners[fi]]*n)
+        if n>4:dynamic=True
+        normal.extend((offset,offset+i,offset+i+1) for i in range(1,n-1))
+        reflected.extend((offset+n-1,offset+i,offset+i-1) for i in range(n-2,0,-1))
+    return dict(vertices=np.asarray(vertices,dtype=np.int32),corners=np.asarray(corners,dtype=np.int32),owners=np.asarray(owners,dtype=np.int32),normal=np.asarray(normal,dtype=np.int32),reflected=np.asarray(reflected,dtype=np.int32),edges=np.asarray(edges,dtype=np.int32).reshape(-1,2),dynamic=dynamic)
+
+
 def _gpu_mesh_records(cache,result,smooth):
     """Mesh-only records survive selection, color and object transform edits."""
     signature=(id(result),bool(smooth))
     if cache.get('gpu_mesh_signature')==signature:return cache['gpu_mesh_records']
     from . import appearance
-    normals=appearance.corner_normals(result,smooth,cache.get('normal_topology'))
+    import numpy as np
+    base_normals=appearance.corner_normals(result,smooth,cache.get('normal_topology'),packed=True)
     from . import decorations
-    normals=decorations.preview_normals(result,smooth,normals,cache)
+    normals=decorations.preview_normals(result,smooth,base_normals,cache,packed=True)
+    values=(result.normal_array if normals is base_normals else result.preview_normal_array) if result.faces else np.empty((0,3))
+    positions=np.asarray(result.vertices).reshape(-1,3)
+    cache['gpu_normal_array']=values;cache['gpu_vertex_array']=positions
     cache['normal_topology']=getattr(result,'normal_topology',None)
     plans={p.index:p for p in result.plans_by_loop.values()}
     boundary_keys=tuple(key[1] if key[0]=='shell' else key for key in result.vertex_keys)
@@ -2192,14 +2235,16 @@ def _gpu_mesh_records(cache,result,smooth):
             vertices=tuple(sorted({v for fi in indices for v in result.faces[fi]}))
             faces_key=(tuple((result.owners[fi],result.faces[fi]) for fi in indices),vertices)
             edges=tuple(owned_edges[key]);keys=edges
-            layout.append((key,tuple(indices),owners,vertices,faces_key,edges,keys))
+            info=_buffer_layout(result,indices,result.normal_topology[1],edges)
+            layout.append((key,tuple(indices),owners,vertices,faces_key,edges,keys,info))
         cache['gpu_layout']=(layout_signature,tuple(layout))
         boundary=set(boundary)
         cache['gpu_boundary_corners']=tuple((vertex,owner,fi,corner) for fi,(face,owner) in enumerate(zip(result.faces[:front_count],result.owners[:front_count])) for corner,vertex in enumerate(face) if vertex in boundary)
     records=[]
-    for key,indices,owners,vertices,faces_key,edges,keys in layout:
+    cache['gpu_buffer_layout']={row[0]:row[-1] for row in layout}
+    for key,indices,owners,vertices,faces_key,edges,keys,info in layout:
         faces=tuple((result.faces[fi],result.owners[fi],normals[fi]) for fi in indices)
-        geometry=(faces_key,tuple(result.vertices[v] for v in vertices),tuple(normals[fi] for fi in indices))
+        geometry=(faces_key,positions[np.asarray(vertices)].tobytes(),values[info['corners']].tobytes())
         records.append((key,faces,owners,geometry,edges,keys))
     boundary_normals={}
     for vertex,owner,fi,corner in cache.get('gpu_boundary_corners',()):
@@ -2227,13 +2272,15 @@ def _gpu_batches(cache,guide,shader):
     old=cache.get('gpu_chunks',{});current={};coords={};normal_coords={}
     old_wires=cache.get('gpu_wire_chunks',{});wire_chunks={}
     records=_gpu_mesh_records(cache,result,guide.nh35.smooth_preview)
+    import numpy as np
     normal_matrix=matrix.to_3x3().inverted_safe().transposed()
-    def world(index):
-        if index not in coords:coords[index]=tuple(matrix@Vector(result.vertices[index]))
-        return coords[index]
-    def world_normal(normal):
-        if normal not in normal_coords:normal_coords[normal]=tuple((normal_matrix@Vector(normal)).normalized())
-        return normal_coords[normal]
+    array_signature=(cache['gpu_mesh_signature'],transform)
+    if cache.get('gpu_world_array_signature')!=array_signature:
+        linear=np.asarray(matrix.to_3x3(),dtype=np.float32);translation=np.asarray(matrix.translation,dtype=np.float32)
+        cache['gpu_world_vertices']=np.ascontiguousarray(np.asarray(cache['gpu_vertex_array'],dtype=np.float32)@linear.T+translation)
+        cache['gpu_world_normals']=np.ascontiguousarray(np.asarray(cache['gpu_normal_array'],dtype=np.float32)@np.asarray(normal_matrix,dtype=np.float32).T)
+        cache['gpu_world_array_signature']=array_signature
+    world_vertices=cache['gpu_world_vertices'];world_normals=cache['gpu_world_normals']
     wire_shader=_stroke_shader()
     for key,faces,owners,geometry,owned_edges,edge_key in records:
         colors_key=tuple((owner,tint_strength*(1. if owner==active else .65) if owner in selected else 0.) for owner in owners)
@@ -2243,33 +2290,31 @@ def _gpu_batches(cache,guide,shader):
             current[key]=saved
             if key in old_wires:wire_chunks[key]=old_wires[key]
             continue
-        tris=[];colors=[];vertex_normals=[];indices=[];reflected=[]
-        instanced=len(getattr(result,'preview_masks',(0,)))>1
-        for face,owner,normals in faces:
-            alpha=tint_strength*(1. if owner==active else .65) if owner in selected else 0.
-            color=(*tint_color,alpha);offset=len(tris)
-            if len(face)>4:
-                from .topology import _triangulate
-                corner_for={v:i for i,v in enumerate(face)}
-                triangles=[tuple(corner_for[v] for v in tri) for tri in _triangulate(result.vertices,face)]
-                reverse=[tuple(corner_for[v] for v in tri) for tri in _triangulate(result.vertices,face[::-1])] if instanced else ()
-            else:
-                triangles=[(0,i,i+1) for i in range(1,len(face)-1)]
-                reverse=[(len(face)-1,i,i-1) for i in range(len(face)-2,0,-1)] if instanced else ()
-            indices.extend(tuple(offset+i for i in tri) for tri in triangles)
-            reflected.extend(tuple(offset+i for i in tri) for tri in reverse)
-            for corner,v in enumerate(face):
-                tris.append(world(v));colors.append(color);vertex_normals.append(world_normal(normals[corner]))
-        solid=_SurfaceBatch({'pos':tris,'normal':vertex_normals,'color':colors,'base':[base_color]*len(tris)},indices,reflected if instanced else None) if tris else None
+        info=cache['gpu_buffer_layout'][key];count=len(info['vertices']);instanced=len(getattr(result,'preview_masks',(0,)))>1
+        colors=np.empty((count,4),dtype=np.float32);colors[:,:3]=tint_color;colors[:,3]=0.
+        for owner in owners:
+            if owner in selected:colors[info['owners']==owner,3]=tint_strength*(1. if owner==active else .65)
+        normal_indices=info['normal'];reflected_indices=info['reflected'] if instanced else None
+        if info['dynamic']:
+            from .topology import _triangulate
+            normal_indices=[];reflected_indices=[];offset=0
+            for face,owner,normals in faces:
+                lookup={v:offset+i for i,v in enumerate(face)}
+                normal_indices.extend(tuple(lookup[v] for v in tri) for tri in _triangulate(result.vertices,face))
+                if instanced:reflected_indices.extend(tuple(lookup[v] for v in tri) for tri in _triangulate(result.vertices,face[::-1]))
+                offset+=len(face)
+            if not instanced:reflected_indices=None
+        data={'pos':np.ascontiguousarray(world_vertices[info['vertices']]),'normal':np.ascontiguousarray(world_normals[info['corners']]),'color':colors,'base':np.ascontiguousarray(np.broadcast_to(np.asarray(base_color,dtype=np.float32),(count,3)))}
+        solid=_SurfaceBatch(data,normal_indices,reflected_indices) if count else None
         axes=getattr(result,'preview_axes',())
-        wire_stamp=(transform,geometry,edge_key,overlays,axes);saved_wire=old_wires.get(key)
+        wire_stamp=(transform,geometry[:2],edge_key,overlays,axes);saved_wire=old_wires.get(key)
         if saved_wire and saved_wire[0]==wire_stamp:wire=saved_wire[1]
-        else:
-            lines={}
-            for edge in owned_edges if overlays else ():
-                plane=sum(1<<axis for axis,on in enumerate(axes) if on and all(abs(result.vertices[v][axis])<1e-7 for v in edge))
-                lines.setdefault(plane,[]).extend(world(v) for v in edge)
-            wire=_WireBatch((plane,_stroke_batch(wire_shader,'LINES',{'pos':coords})) for plane,coords in sorted(lines.items())) if lines else None
+        elif overlays and len(info['edges']):
+            edges=info['edges'];plane=np.zeros(len(edges),dtype=np.uint8)
+            for axis,on in enumerate(axes):
+                if on:plane|=(np.all(np.abs(cache['gpu_vertex_array'][edges,axis])<1e-7,axis=1).astype(np.uint8)<<axis)
+            wire=_WireBatch((int(bits),_stroke_batch(wire_shader,'LINES',{'pos':np.ascontiguousarray(world_vertices[edges[plane==bits].reshape(-1)])})) for bits in np.unique(plane))
+        else:wire=None
         wire_chunks[key]=(wire_stamp,wire)
         current[key]=(stamp,solid,wire)
     # Rail batches are independent of mesh density and segment tint.
@@ -2281,8 +2326,8 @@ def _gpu_batches(cache,guide,shader):
     rail_signature=tuple((key,record[0]) for key,record in sorted(rail_records.items()))
     rails=cache.get('gpu_rails')
     if cache.get('gpu_rail_signature')!=rail_signature:
-        attributes={name:[value for key in sorted(rail_records) for value in rail_records[key][1][name]] for name in ('pos','normalA','normalB','curveGap')}
-        rails=_stroke_batch(_stroke_shader(guides=True),'LINES',attributes) if attributes['pos'] else None
+        attributes={name:np.concatenate([rail_records[key][1][name] for key in sorted(rail_records)]) for name in ('pos','normalA','normalB','curveGap')} if rail_records else {}
+        rails=_stroke_batch(_stroke_shader(guides=True),'LINES',attributes) if rail_records else None
     solid=_BatchGroup(item[1] for item in current.values());wire=_BatchGroup(item[2] for item in current.values())
     cache.update(gpu_signature=signature,gpu_batches=(solid,wire,rails),gpu_chunks=current,gpu_wire_chunks=wire_chunks,
         gpu_rails=rails,gpu_rail_records=rail_records,gpu_rail_signature=rail_signature,rail_segments=rail_segments,rail_attributes=rail_attributes)
@@ -2306,14 +2351,17 @@ def _occlusion_state(ctx):
     guides=[]
     for guide in ctx.scene.objects:
         if not is_guide(guide) or not guide.visible_get(view_layer=ctx.view_layer) or not guide.nh35.show_preview:continue
-        for cached in groups.all_caches(guide):
+        for cached in _render_caches(guide):
             result=decorations.preview(cached,guide)
             if not result.faces:continue
             if cached.get('pick_result') is not result:
                 cached['pick_bvh']=BVHTree.FromPolygons(result.vertices,result.faces);cached['pick_result']=result
             for mask,reflection in decorations.instance_matrices(result,guide.matrix_world):
                 matrix=reflection@guide.matrix_world;guides.append((cached['pick_bvh'],matrix.inverted_safe(),matrix))
-    return guides,ctx.evaluated_depsgraph_get()
+    ordinary=any(not is_guide(o) and o.visible_get(view_layer=ctx.view_layer) and o.type not in {'CAMERA','LIGHT','ARMATURE','SPEAKER','LIGHT_PROBE'} and (o.type!='EMPTY' or o.instance_type!='NONE') for o in ctx.scene.objects)
+    rv=ctx.region_data;projection=rv.perspective_matrix.copy();inverse=projection.inverted_safe();view_inverse=rv.view_matrix.inverted_safe()
+    ray=(projection,inverse,view_inverse.translation.copy(),bool(rv.is_perspective),rv.view_perspective!='CAMERA',2.*inverse.col[0].xyz.length/max(1,ctx.region.width))
+    return guides,ctx.evaluated_depsgraph_get() if ordinary else None,ray
 
 
 def _point_visible(ctx,world,state=None,screen=None):
@@ -2322,20 +2370,31 @@ def _point_visible(ctx,world,state=None,screen=None):
     if state is None:state=_occlusion_state(ctx)
     if screen is None:screen=view3d_utils.location_3d_to_region_2d(ctx.region,ctx.region_data,world)
     if screen is None:return False
-    origin=view3d_utils.region_2d_to_origin_3d(ctx.region,ctx.region_data,screen)
+    ray=state[2] if len(state)>2 else None
+    if ray:
+        projection,inverse,camera,perspective,offset,pixel_scale=ray
+        if perspective:origin=camera
+        else:
+            dx=2.*screen.x/ctx.region.width-1.;dy=2.*screen.y/ctx.region.height-1.
+            origin=inverse.col[0].xyz*dx+inverse.col[1].xyz*dy+inverse.translation
+            if offset:origin-=inverse.col[2].xyz
+    else:origin=view3d_utils.region_2d_to_origin_3d(ctx.region,ctx.region_data,screen)
     delta=world-origin;distance=delta.length
     if distance<1e-8:return True
     direction=delta/distance
     # One-pixel tolerance keeps a source point visible on its own sampled
     # curved boundary without exposing points through an overlapping sheet.
-    neighbor=view3d_utils.region_2d_to_location_3d(ctx.region,ctx.region_data,(screen.x+1,screen.y),world)
-    tolerance=max(1e-5,(neighbor-world).length*.75)
+    if ray:tolerance=max(1e-5,abs((projection@world.to_4d()).w)*pixel_scale*.75)
+    else:
+        neighbor=view3d_utils.region_2d_to_location_3d(ctx.region,ctx.region_data,(screen.x+1,screen.y),world)
+        tolerance=max(1e-5,(neighbor-world).length*.75)
     for bvh,inverse,matrix in state[0]:
         hit,_,_,_=bvh.ray_cast(inverse@origin,(inverse.to_3x3()@direction).normalized())
         if hit is not None and (matrix@hit-origin).length<distance-tolerance:return False
     # Native source faces are wire guides, so skip them while checking
     # ordinary scene occluders (head, other meshes and baked surfaces).
     cursor=origin.copy();depsgraph=state[1]
+    if depsgraph is None:return True
     for _ in range(32):
         remaining=(world-cursor).length-tolerance
         if remaining<=0:break
@@ -2368,14 +2427,15 @@ def _draw_preview():
         gpu.state.depth_mask_set(True)
         for obj in ctx.scene.objects:
             if not is_guide(obj) or not obj.visible_get(view_layer=ctx.view_layer) or not obj.nh35.show_preview: continue
-            style=palette.get(obj.nh35)
-            for cached in groups.all_caches(obj):
+            style=palette.get(obj.nh35);prepared=[]
+            for cached in _render_caches(obj):
                 result=cached['result']
                 if not result.faces: continue
                 solid,wire,rails=_gpu_batches(cached,obj,shader)
                 from . import strokes
                 overlays=cached.get('group_id',1)==groups.active_id(obj) and _helpers_visible(ctx)
-                stroke_scale,depth_limit=strokes.view_style(cached,obj,ctx) if overlays else (1.,0.)
+                style_cache=groups.CACHE.get(obj.as_pointer(),{}).get(cached.get('group_id',1),cached)
+                stroke_scale,depth_limit=strokes.view_style(style_cache,obj,ctx) if overlays else (1.,0.)
                 from . import decorations
                 display=decorations.preview(cached,obj)
                 original_view=gpu.matrix.get_model_view_matrix()
@@ -2390,7 +2450,9 @@ def _draw_preview():
                                 normal_matrix=reflection.to_3x3().inverted_safe().transposed()
                                 shader.uniform_float('viewRotation',original_view.to_3x3()@normal_matrix)
                             cached['appearance_status']=status;solid.draw(shader,mask)
-                gpu.state.depth_mask_set(False)
+                prepared.append((cached,wire,rails,overlays,stroke_scale,depth_limit,instances))
+            gpu.state.depth_mask_set(False)
+            for cached,wire,rails,overlays,stroke_scale,depth_limit,instances in prepared:
                 if overlays and wire and obj.nh35.show_wire and obj.nh35.wire_opacity>0:
                     gpu.state.depth_test_set(overlay_depth)
                     for mask,reflection in instances:
@@ -2422,7 +2484,9 @@ def _draw_preview():
                         gpu.state.line_width_set(1.)
                         gpu.state.depth_test_set('LESS_EQUAL')
                     from . import controls
-                    for side,coords in controls.caps(bm,obj,cached)[0]:
+                    primary=_zone_ui_primary(bm,obj)
+                    cap_lines=controls.caps(bm,obj,cached)[0] if primary and primary.index in cached['result'].face_paths else ()
+                    for side,coords in cap_lines:
                         if len(coords)<2:continue
                         primary=_zone_ui_primary(bm,obj);plan=cached['result'].plans_by_loop.get(tuple(v.index for v in primary.verts)) if primary else None
                         normal=(obj.matrix_world.to_3x3().inverted_safe().transposed()@Vector(plan.normal)).normalized() if plan else Vector()
@@ -2474,7 +2538,7 @@ def _draw_control_points():
         view=(tuple(v for row in ctx.region_data.perspective_matrix for v in row),ctx.region.width,ctx.region.height)
         from . import decorations,strokes
         point_scale=.6+.4*max(0.,min(1.,(strokes.view_style(cache,obj,ctx,pixel=True)[0]-.2)/.8))
-        previews=tuple((o.as_pointer(),tuple(id(decorations.preview(entry,o)) for entry in groups.all_caches(o)),tuple(v for row in o.matrix_world for v in row),o.visible_get(view_layer=ctx.view_layer),o.nh35.show_preview) for o in ctx.scene.objects if is_guide(o))
+        previews=tuple((o.as_pointer(),tuple(id(decorations.preview(entry,o)) for entry in _render_caches(o)),tuple(v for row in o.matrix_world for v in row),o.visible_get(view_layer=ctx.view_layer),o.nh35.show_preview) for o in ctx.scene.objects if is_guide(o))
         signature=(_SOURCE_REVISION,id(cache.get('result')),view,selection,previews,_xray_enabled(ctx),ctx.view_layer.as_pointer(),obj.nh35.palette,style)
         saved=cache.setdefault('point_draw_cache',{});region_key=ctx.region.as_pointer()
         record=saved.get(region_key)

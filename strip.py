@@ -38,16 +38,18 @@ def build_strip(plan,width,registry,ca,cb,left,right,profiles,put,emit,max_polyg
             if length(normal)<EPS:normal=reference
             if dot(normal,reference)<0.:normal=mul(normal,-1.)
             normals.append(normal);previous_normal=normal;old_tangent=tangents[i]
+        profile=[bias_cross_position(x/width,plan.settings.bias) for x in range(width+1)]
+        sine=[math.sin(math.pi*v) for v in profile]
         grid=[];sections=[]
         for row_index,((ka,a),(kb,b)) in enumerate(zip(body_a,body_b)):
-            row=[];coords=[]
+            row=[];coords=[];row_width=length(sub(b,a))
             for x in range(width+1):
                 if x==0:key,pos=ka,a
                 elif x==width:key,pos=kb,b
                 elif ka==kb:key,pos=ka,a
                 else:
-                    v=bias_cross_position(x/width,plan.settings.bias)
-                    amount=plan.settings.bulge*length(sub(b,a))*math.sin(math.pi*v)
+                    v=profile[x]
+                    amount=plan.settings.bulge*row_width*sine[x]
                     if plan.settings.flip:amount=-amount
                     pos=add(mix(a,b,v),mul(normals[row_index],amount))
                     if row_index==0 and plan.start[0]=='edge' or row_index==len(body_a)-1 and plan.end[0]=='edge':
@@ -69,5 +71,7 @@ def build_strip(plan,width,registry,ca,cb,left,right,profiles,put,emit,max_polyg
     cache[plan.boundary]=(signature,recipe)
     points,faces,sections,columns,grid=recipe
     remap=[put(key,pos) for key,pos in points]
-    for face in faces:emit([remap[v] for v in face])
+    if hasattr(emit,'bulk'):emit.bulk(faces,remap)
+    else:
+        for face in faces:emit([remap[v] for v in face])
     return sections,[[remap[v] for v in c] for c in columns],[[remap[v] if v is not None else None for v in row] for row in grid],reused

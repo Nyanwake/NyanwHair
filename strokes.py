@@ -38,17 +38,24 @@ def rails(cache,result,evaluate,matrix,normal_matrix,visible):
             if c:
                 p,q,ma,mb=map(Vector,c);quadratic=-3*p+3*q-2*ma-mb;cubic=2*p-2*q+ma+mb
                 chord_error=max((linear@(2*quadratic)).length,(linear@(2*quadratic+6*cubic)).length)/(8.*24.*24.)
-            values=[]
-            for j in range(25):
-                t=j/24.;i=max(0,min(len(knots)-2,bisect_right(knots,t)-1));factor=(t-knots[i])/max(1e-12,knots[i+1]-knots[i])
-                point=Vector(evaluate(one,two,t));chord=Vector(points[i]).lerp(Vector(points[i+1]),factor)
-                pair=[]
-                for side in range(len(owners)):
-                    n=Vector(rows[i][side]).lerp(Vector(rows[i+1][side]),factor);pair.append(tuple((normal_matrix@n).normalized()))
-                if len(pair)==1:pair.append(pair[0])
-                if not pair:pair=[(0.,0.,0.)]*2
-                values.append((tuple(matrix@point),pair[0],pair[1],(*tuple(linear@(point-chord)),chord_error)))
-            data={name:[values[index][column] for pair in zip(range(24),range(1,25)) for index in pair] for column,name in enumerate(('pos','normalA','normalB','curveGap'))}
+            import numpy as np
+            ts=np.arange(25,dtype=np.float64)/24.;tt=ts*ts;ttt=tt*ts
+            if c:
+                p0,p1,m0,m1=np.asarray(c,dtype=np.float64)
+                local=((2*ttt-3*tt+1)[:,None]*p0+(-2*ttt+3*tt)[:,None]*p1)+((ttt-2*tt+ts)[:,None]*m0+(ttt-tt)[:,None]*m1)
+            else:local=np.asarray([evaluate(one,two,t) for t in ts])
+            local=local.astype(np.float32);ks=np.asarray(knots);indices=np.clip(np.searchsorted(ks,ts,side='right')-1,0,len(ks)-2)
+            blend=((ts-ks[indices])/np.maximum(1e-12,ks[indices+1]-ks[indices])).astype(np.float32)
+            sample_positions=np.asarray(points,dtype=np.float32);chords=(1-blend[:,None])*sample_positions[indices]+blend[:,None]*sample_positions[indices+1]
+            linear_array=np.asarray(matrix.to_3x3(),dtype=np.float32);normal_transform=np.asarray(normal_matrix,dtype=np.float32)
+            world_positions=local@linear_array.T+np.asarray(matrix.translation,dtype=np.float32)
+            source_normals=np.asarray(rows,dtype=np.float32)
+            interpolated=(1-blend[:,None,None])*source_normals[indices]+blend[:,None,None]*source_normals[indices+1]
+            adjusted=interpolated@normal_transform.T;adjusted/=np.maximum(1e-12,np.linalg.norm(adjusted,axis=2))[:,:,None]
+            if len(owners)==1:adjusted=np.repeat(adjusted,2,axis=1)
+            gap=np.empty((25,4),dtype=np.float32);gap[:,:3]=(local-chords)@linear_array.T;gap[:,3]=chord_error
+            pair_indices=np.column_stack((np.arange(24),np.arange(1,25))).reshape(-1)
+            data={'pos':np.ascontiguousarray(world_positions[pair_indices]),'normalA':np.ascontiguousarray(adjusted[pair_indices,0]),'normalB':np.ascontiguousarray(adjusted[pair_indices,1]),'curveGap':np.ascontiguousarray(gap[pair_indices])}
         records[edge]=(stamp,data);segments[edge]=data['pos'];attributes[edge]=data
     cache['gpu_guide_geometry_signature']=signature
     return records,segments,attributes

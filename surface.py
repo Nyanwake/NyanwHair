@@ -271,5 +271,7 @@ def build_patch(plan,width,registry,left_curve,right_curve,left,right,cap_profil
     if cache is not None:cache[plan.boundary]=(signature,recipe)
     points,faces,sections,columns=recipe
     remap=[put(key,pos) for key,pos in points]
-    for face in faces:emit([remap[v] for v in face])
+    if hasattr(emit,'bulk'):emit.bulk(faces,remap)
+    else:
+        for face in faces:emit([remap[v] for v in face])
     return sections,[[remap[v] for v in column] for column in columns],reused

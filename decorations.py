@@ -247,14 +247,14 @@ def instance_matrices(result,matrix):
     return tuple((mask,matrix@Matrix.Diagonal(tuple(-1. if mask&(1<<i) else 1. for i in range(3))+(1.,))@inverse if mask else Matrix.Identity(4)) for mask in getattr(result,'preview_masks',(0,)))
 
 
-def preview_normals(result,smooth,normals,cache=None):
+def preview_normals(result,smooth,normals,cache=None,packed=False):
     """Match welded seam normals without evaluating every reflected polygon."""
     axes=getattr(result,'preview_axes',())
-    if not smooth or not any(axes):return normals
+    if not smooth or not any(axes) or not result.faces:return normals
     on_plane=getattr(result,'preview_on_plane',None)
     if on_plane is not None and not on_plane[:,axes].any():return normals
     old=getattr(result,'preview_normal_cache',None)
-    if old and old[0] is normals:return old[1]
+    if old and old[0] is normals:return old[1] if packed else tuple(tuple(tuple(v) for v in face) for face in old[1])
     import numpy as np
     topology=result.normal_topology;offsets,vertices,_,_,groups=topology[1:]
     signature=(id(topology),tuple(axes),on_plane.tobytes() if on_plane is not None else None)
@@ -279,6 +279,7 @@ def preview_normals(result,smooth,normals,cache=None):
     for axis,on in enumerate(axes):
         if on:values[(bits&(1<<axis))!=0,axis]=0.
     sizes=np.linalg.norm(values,axis=1);values/=np.maximum(sizes,1e-12)[:,None]
-    output=tuple(tuple(tuple(v) for v in values[offset:offset+len(face)]) for offset,face in zip(offsets,result.faces))
+    output=tuple(values[offset:offset+len(face)] for offset,face in zip(offsets,result.faces))
+    result.preview_normal_array=values
     result.preview_normal_cache=(normals,output)
-    return output
+    return output if packed else tuple(tuple(tuple(v) for v in face) for face in output)

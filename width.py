@@ -215,5 +215,7 @@ def build_transition(plan,width,registry,ca,cb,left,right,profiles,put,emit,max_
             columns.append(tuple(column))
         recipe=(tuple(points),tuple(faces),tuple(sections),tuple(columns),tuple(rows))
     cache[plan.boundary]=(signature,recipe);points,faces,sections,columns,rows=recipe;remap=[put(k,p) for k,p in points]
-    for face in faces:emit([remap[v] for v in face])
+    if hasattr(emit,'bulk'):emit.bulk(faces,remap)
+    else:
+        for face in faces:emit([remap[v] for v in face])
     return sections,[[remap[v] for v in col] for col in columns],[[remap[v] for v in row] for row in rows],reused

@@ -188,7 +188,18 @@ class RailRegistry:
                 allocated+=len(adaptive)-len(fractions)
                 if allocated>2*max_samples:raise ValueError('Превышен лимит точек детализации')
                 sections.append([curve,first,last,adaptive])
+        self.final_sampling_cache={};old_final=getattr(previous,'final_sampling_cache',{})
         for curve,first,last,adaptive in sections:
+            row_key=(curve.path,first,last)
+            profile=self.point_field.profile(curve)
+            final_signature=(self.row_cache[row_key][0],tuple(adaptive),tuple(((edge_details or {}).get(edge,1.),self.density.get(edge,1.)) for edge in curve.edges),tuple(profile[0]),tuple(profile[1]))
+            saved=old_final.get(row_key)
+            if saved and saved[0]==final_signature:
+                allocated+=len(saved[1])-len(adaptive)
+                if allocated>2*max_samples:raise ValueError('Превышен лимит локального уплотнения')
+                self.final_sampling_cache[row_key]=saved
+                self._register_samples(curve,first,last,saved[1])
+                continue
             if any((edge_details or {}).get(edge,1.)>1.+1e-7 for edge in curve.edges):
                 from .density import redistribute
                 def factor(u):
@@ -225,6 +236,7 @@ class RailRegistry:
                     lambda u:self.point_field.at(curve,u),self.point_field.profile(curve)[1],2*max_samples)
                 allocated+=len(refined)-len(adaptive);adaptive=refined
                 if allocated>2*max_samples:raise ValueError('Превышен лимит локального уплотнения')
+            self.final_sampling_cache[row_key]=(final_signature,tuple(adaptive))
             self._register_samples(curve,first,last,adaptive)
 
     def _register_samples(self,curve,first,last,fractions):
