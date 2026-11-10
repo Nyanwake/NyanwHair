@@ -55,6 +55,8 @@
   "Density multiplier": "Множитель плотности",
   "Theme": "Тема",
   "Brightness": "Яркость",
+  "Transparency": "Прозрачность",
+  "Fade the entire hair preview to trace a reference; does not affect the generated Mesh": "Прозрачность всей отрисовки волос для работы по референсу; не влияет на создаваемый Mesh",
   "Surface": "Поверхность",
   "Wire": "Сетка",
   "Show generated mesh edges; guides remain visible": "Показать рёбра результата; направляющие остаются видимыми",

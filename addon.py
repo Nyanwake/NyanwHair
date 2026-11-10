@@ -1139,6 +1139,7 @@ class NHGuidedProperties(PropertyGroup):
     active_group: IntProperty(default=1,min=1)
     palette: EnumProperty(name='Theme',items=palette.ITEMS,default='WARM')
     brightness: FloatProperty(name='Brightness',default=.8,min=.1,max=2.)
+    transparency: FloatProperty(name='Transparency',description='Fade the entire hair preview to trace a reference; does not affect the generated Mesh',default=0.,min=0.,max=1.,subtype='FACTOR')
     enabled: BoolProperty(default=False)
     live: BoolProperty(name='Live',default=True)
     show_preview: BoolProperty(name='Surface',default=True)
@@ -1962,7 +1963,9 @@ def _draw_extra_panels(layout,context,obj,cached,edit):
     header,body=layout.panel('nyanw_appearance',default_closed=True);header.label(text=tr('Appearance'),icon='SHADING_SOLID')
     if body is not None:
         if edit:body.prop(props,'palette',text=tr('Theme'))
-        body.prop(props,'smooth_preview',text='Smooth + Sharp');body.prop(props,'brightness',text=tr('Brightness'),slider=True)
+        body.prop(props,'smooth_preview',text='Smooth + Sharp')
+        body.prop(props,'brightness',text=tr('Brightness'),slider=True)
+        body.prop(props,'transparency',text=tr('Transparency'),slider=True)
         row=body.row(align=True);row.prop(props,'show_wire',text=tr('Wire'));column=row.column();column.enabled=props.show_wire;column.prop(props,'wire_opacity',text='',slider=True)
         if edit:body.prop(props,'show_tint',text=tr('Segment highlight'))
         if edit and props.show_tint:
@@ -2395,7 +2398,7 @@ def _draw_preview():
     # An enabled add-on must not allocate shaders or change GPU state in
     # unrelated modelling/retopology views, including an empty hair scene.
     guides=tuple(obj for obj in ctx.scene.objects if is_guide(obj) and
-                 obj.nh35.show_preview and obj.visible_get(view_layer=ctx.view_layer))
+                 obj.nh35.show_preview and obj.nh35.transparency<1. and obj.visible_get(view_layer=ctx.view_layer))
     if not guides and not (_CUT_PREVIEW and is_guide(ctx.edit_object)):return
     # Opening a file / restoring a deleted object needs one read-only
     # display build. Existing inactive caches are never refreshed here.
@@ -2437,7 +2440,7 @@ def _draw_preview():
                     for mask,reflection in instances:
                         with gpu.matrix.push_pop():
                             if mask:gpu.matrix.multiply_matrix(reflection)
-                            shader,status=appearance.bind(ctx,True,obj.nh35.brightness)
+                            shader,status=appearance.bind(ctx,True,obj.nh35.brightness,1.-obj.nh35.transparency)
                             if mask:
                                 normal_matrix=reflection.to_3x3().inverted_safe().transposed()
                                 shader.uniform_float('viewRotation',original_view.to_3x3()@normal_matrix)
@@ -2451,7 +2454,7 @@ def _draw_preview():
                         with gpu.matrix.push_pop():
                             if mask:gpu.matrix.multiply_matrix(reflection)
                             line_shader=_stroke_shader(stroke_scale,max_clearance=depth_limit);line_shader.bind()
-                            line_shader.uniform_float('color',(*palette.wire_color(groups.color(obj,cached.get('group_id',1))),obj.nh35.wire_opacity))
+                            line_shader.uniform_float('color',palette.preview_color(obj.nh35,(*palette.wire_color(groups.color(obj,cached.get('group_id',1))),obj.nh35.wire_opacity)))
                             wire.draw(line_shader,mask)
                     gpu.state.depth_test_set('LESS_EQUAL')
                 if overlays and rails:
@@ -2460,7 +2463,7 @@ def _draw_preview():
                     gpu.state.depth_test_set(overlay_depth)
                     guide_shader=_stroke_shader(style.guide_width*stroke_scale,guides=True,max_clearance=depth_limit)
                     guide_shader.bind()
-                    guide_shader.uniform_float('color',style.guide)
+                    guide_shader.uniform_float('color',palette.preview_color(obj.nh35,style.guide))
                     rails.draw(guide_shader)
                     gpu.state.line_width_set(1.0)
                     gpu.state.depth_test_set('LESS_EQUAL')
@@ -2470,7 +2473,7 @@ def _draw_preview():
                     if selected:
                         selected_shader=_stroke_shader(style.selected_width*stroke_scale,guides=True,max_clearance=depth_limit)
                         selected_shader.bind()
-                        selected_shader.uniform_float('color',style.selected)
+                        selected_shader.uniform_float('color',palette.preview_color(obj.nh35,style.selected))
                         gpu.state.depth_test_set(overlay_depth)
                         selected.draw(selected_shader)
                         gpu.state.line_width_set(1.)
@@ -2482,18 +2485,18 @@ def _draw_preview():
                         if len(coords)<2:continue
                         primary=_zone_ui_primary(bm,obj);plan=cached['result'].plans_by_loop.get(tuple(v.index for v in primary.verts)) if primary else None
                         normal=(obj.matrix_world.to_3x3().inverted_safe().transposed()@Vector(plan.normal)).normalized() if plan else Vector()
-                        endpoint_shader=_stroke_shader(style.cap_width*stroke_scale,normal=normal,max_clearance=depth_limit);endpoint_shader.bind();endpoint_shader.uniform_float('color',style.caps[side])
+                        endpoint_shader=_stroke_shader(style.cap_width*stroke_scale,normal=normal,max_clearance=depth_limit);endpoint_shader.bind();endpoint_shader.uniform_float('color',palette.preview_color(obj.nh35,style.caps[side]))
                         gpu.state.depth_test_set(overlay_depth)
                         _stroke_batch(endpoint_shader,'LINE_STRIP',{'pos':coords}).draw(endpoint_shader)
                     gpu.state.line_width_set(1.);gpu.state.depth_test_set('LESS_EQUAL')
-        if _CUT_PREVIEW and _helpers_visible(ctx):
+        if _CUT_PREVIEW and is_guide(active) and active.nh35.transparency<1. and _helpers_visible(ctx):
             preview=_CUT_PREVIEW
             from . import strokes
             cut_scale,cut_limit=strokes.view_style(_CACHE.get(active.as_pointer(),{}),active,ctx) if is_guide(active) else (1.,0.)
             for coords in preview.get('lines',(preview['line'],)):
                 if not coords:continue
                 shader_line=_stroke_shader(3.*cut_scale,max_clearance=cut_limit);shader_line.bind()
-                shader_line.uniform_float('color',(.95,.77,.41,1.0));gpu.state.depth_test_set(overlay_depth)
+                shader_line.uniform_float('color',palette.preview_color(active.nh35,(.95,.77,.41,1.0)));gpu.state.depth_test_set(overlay_depth)
                 if len(coords)>=2:
                     batch=_stroke_batch(shader_line,'LINE_STRIP',{'pos':[tuple(p) for p in coords]})
                     batch.draw(shader_line)
@@ -2519,7 +2522,7 @@ def _draw_control_points():
     ctx = bpy.context
     obj = ctx.edit_object
     if not _helpers_visible(ctx):return
-    if not is_guide(obj) or ctx.region_data is None or ctx.region is None:
+    if not is_guide(obj) or obj.nh35.transparency>=1. or ctx.region_data is None or ctx.region is None:
         return
     try:
         bm = bmesh.from_edit_mesh(obj.data)
@@ -2570,8 +2573,8 @@ def _draw_control_points():
             record=(signature,batches);saved[region_key]=record
             if len(saved)>8:saved.clear();saved[region_key]=record
         for outline,shade,color,outline_color in record[1]:
-            shader.bind();shader.uniform_float('color',outline_color);outline.draw(shader)
-            shader.uniform_float('color',color);shade.draw(shader)
+            shader.bind();shader.uniform_float('color',palette.preview_color(obj.nh35,outline_color));outline.draw(shader)
+            shader.uniform_float('color',palette.preview_color(obj.nh35,color));shade.draw(shader)
         if _CUT_PREVIEW is not None and _CUT_PREVIEW.get('kind')=='anchor':
             # Explicit 2D marker, 7-pixel radius. It remains visible on top
             # of source vertices, preview lines, and the generated surface.
@@ -2584,9 +2587,9 @@ def _draw_control_points():
                     fill=batch_for_shader(shader,'TRIS',{'pos':circles(position,5.5)})
                     dot=batch_for_shader(shader,'TRIS',{'pos':circles(position,1.8)})
                     shader.bind()
-                    shader.uniform_float('color',(.08,.10,.16,1.0)); ring.draw(shader)
-                    shader.uniform_float('color',(1.,.83,.37,1.0)); fill.draw(shader)
-                    shader.uniform_float('color',(.12,.18,.23,1.0)); dot.draw(shader)
+                    shader.uniform_float('color',palette.preview_color(obj.nh35,(.08,.10,.16,1.0))); ring.draw(shader)
+                    shader.uniform_float('color',palette.preview_color(obj.nh35,(1.,.83,.37,1.0))); fill.draw(shader)
+                    shader.uniform_float('color',palette.preview_color(obj.nh35,(.12,.18,.23,1.0))); dot.draw(shader)
     except (ReferenceError, RuntimeError, ValueError, TypeError):
         pass
     finally:
@@ -2719,7 +2722,8 @@ def _register_keys():
     _KEYMAPS.append((km,kmi))
     for field,modifiers in (('detail',{'ctrl':True,'shift':True}),('width',{'shift':True}),('bulge',{'ctrl':True}),('smooth',{'alt':True})):
         for button,sign in (('WHEELUPMOUSE',1),('WHEELDOWNMOUSE',-1)):
-            kmi=km.keymap_items.new('nyanw35.adjust',button,'PRESS',**modifiers)
+            # Prefer our bindings within Mesh; poll still rejects other objects.
+            kmi=km.keymap_items.new('nyanw35.adjust',button,'PRESS',head=True,**modifiers)
             kmi.properties.field=field
             kmi.properties.direction=sign
             _KEYMAPS.append((km,kmi))

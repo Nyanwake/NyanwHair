@@ -112,6 +112,11 @@ def strength_set(props,value):props['opacity']=float(value)
 def highlight(props):return get(props).tint,float(props.opacity)
 
 
+def preview_color(props,color):
+    """Fade cached overlay colours at draw time, without rebuilding geometry."""
+    return (*color[:3],color[3]*(1.-props.transparency))
+
+
 def markers(style):
     """Selected endpoint markers retain their semantic fill and gain an accent ring."""
     colors=(*style.points,*style.cap_points,*style.cap_points)
