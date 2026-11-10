@@ -1,4 +1,4 @@
-"""NyanwHair 0.35.41: shared curve contracts and independent reverse-sheet widths.
+"""NyanwHair 0.35.42: shared curve contracts and independent reverse-sheet widths.
 
 Pure Python, no Blender IDs or tags on vertices/edges. Blender face corners may
 store the user's chosen end caps; this module only consumes that choice.

@@ -59,6 +59,8 @@ _CUT_PREVIEW = None
 _KEYMAPS = []
 _PENDING_PICK = None
 _SOURCE_REVISION = 0
+_UNDO_DISPLAY = {}
+_RESTORE_GROUPS = set()
 
 
 def is_guide(obj):
@@ -2000,7 +2002,7 @@ def _draw_extra_panels(layout,context,obj,cached,edit):
 
 
 class NYANW35_PT_main(Panel):
-    bl_label='NyanwHair v0.35.41'
+    bl_label='NyanwHair v0.35.42'
     bl_idname='NYANW35_PT_main'
     bl_space_type='VIEW_3D'
     bl_region_type='UI'
@@ -2270,7 +2272,7 @@ def _gpu_batches(cache,guide,shader):
     active=cache.get('active',-1)
     tint=(tuple(sorted(selected)),active,tint_color,float(tint_strength))
     base_color=groups.color(guide,cache.get('group_id',1))
-    overlays=cache.get('group_id',1)==groups.active_id(guide) and _helpers_visible(bpy.context)
+    overlays=guide==bpy.context.edit_object and cache.get('group_id',1)==groups.active_id(guide) and _helpers_visible(bpy.context)
     signature=(id(result),transform,tint,bool(guide.nh35.smooth_preview),base_color,overlays)
     if cache.get('gpu_signature')==signature:return cache['gpu_batches']
     old=cache.get('gpu_chunks',{});current={};coords={};normal_coords={}
@@ -2414,6 +2416,15 @@ def _draw_preview():
     if gpu is None or _UNDOING or not _RUNNING: return
     ctx=bpy.context
     if not ctx.scene or not ctx.region_data: return
+    # An enabled add-on must not allocate shaders or change GPU state in
+    # unrelated modelling/retopology views, including an empty hair scene.
+    guides=tuple(obj for obj in ctx.scene.objects if is_guide(obj) and
+                 obj.nh35.show_preview and obj.visible_get(view_layer=ctx.view_layer))
+    if not guides and not (_CUT_PREVIEW and is_guide(ctx.edit_object)):return
+    # Opening a file / restoring a deleted object needs one read-only
+    # display build. Existing inactive caches are never refreshed here.
+    for guide in guides:
+        if not groups.all_caches(guide):_rebuild(guide,False)
     # Synchronize once per viewport redraw, not only on the timer tick.
     # This is strictly read-only for Blender data and avoids dragging lag.
     active=ctx.edit_object
@@ -2423,21 +2434,22 @@ def _draw_preview():
     overlay_depth='NONE' if _xray_enabled(ctx) else 'LESS_EQUAL'
     try:
         from . import appearance
-        shader=appearance.shader()
         previous_depth=gpu.state.depth_test_get()
         previous_mask=gpu.state.depth_mask_get()
+        previous_blend=gpu.state.blend_get()
+        previous_width=gpu.state.line_width_get()
+        shader=appearance.shader()
         gpu.state.blend_set('ALPHA')
         gpu.state.depth_test_set('LESS_EQUAL')
         gpu.state.depth_mask_set(True)
-        for obj in ctx.scene.objects:
-            if not is_guide(obj) or not obj.visible_get(view_layer=ctx.view_layer) or not obj.nh35.show_preview: continue
+        for obj in guides:
             style=palette.get(obj.nh35);prepared=[]
             for cached in _render_caches(obj):
                 result=cached['result']
                 if not result.faces: continue
                 solid,wire,rails=_gpu_batches(cached,obj,shader)
                 from . import strokes
-                overlays=cached.get('group_id',1)==groups.active_id(obj) and _helpers_visible(ctx)
+                overlays=obj==ctx.edit_object and cached.get('group_id',1)==groups.active_id(obj) and _helpers_visible(ctx)
                 style_cache=groups.CACHE.get(obj.as_pointer(),{}).get(cached.get('group_id',1),cached)
                 stroke_scale,depth_limit=strokes.view_style(style_cache,obj,ctx) if overlays else (1.,0.)
                 from . import decorations
@@ -2516,8 +2528,8 @@ def _draw_preview():
     finally:
         gpu.state.depth_mask_set(locals().get('previous_mask',False))
         gpu.state.depth_test_set(locals().get('previous_depth','NONE'))
-        gpu.state.line_width_set(1.0)
-        gpu.state.blend_set('NONE')
+        gpu.state.line_width_set(locals().get('previous_width',1.0))
+        gpu.state.blend_set(locals().get('previous_blend','NONE'))
 
 
 def _draw_control_points():
@@ -2564,6 +2576,7 @@ def _draw_control_points():
                 point_sets[group].append((pos.x,pos.y))
         old_mask = gpu.state.depth_mask_get()
         old_depth = gpu.state.depth_test_get()
+        old_blend = gpu.state.blend_get()
         shader = gpu.shader.from_builtin('UNIFORM_COLOR')
         gpu.state.blend_set('ALPHA')
         gpu.state.depth_test_set('NONE')
@@ -2605,7 +2618,7 @@ def _draw_control_points():
             gpu.state.depth_mask_set(old_mask)
         if 'old_depth' in locals():
             gpu.state.depth_test_set(old_depth)
-        gpu.state.blend_set('NONE')
+        gpu.state.blend_set(locals().get('old_blend','NONE'))
 
 
 def _ticker():
@@ -2615,15 +2628,17 @@ def _ticker():
         scene=bpy.context.scene
         if scene is None: return 0.05
         changed=False
+        active=bpy.context.object
+        if not is_guide(active):return 0.25
+        if active.session_uid in _RESTORE_GROUPS:
+            groups.restore(active);_RESTORE_GROUPS.discard(active.session_uid)
         obj=bpy.context.edit_object
-        if is_guide(obj):
+        if obj==active:
             cache=_CACHE.get(obj.as_pointer(),{})
             before=(cache.get('active'),cache.get('zone_selection'),cache.get('zone_selection_explicit'))
             _sync_ui(obj)
             changed=before!=(cache.get('active'),cache.get('zone_selection'),cache.get('zone_selection_explicit'))
-        for guide in scene.objects:
-            if is_guide(guide) and guide.nh35.live:
-                changed=_rebuild(guide,lazy=True) or changed
+            if obj.nh35.live:changed=_rebuild(obj,lazy=True) or changed
         # GPU-only preview: no object creation/removal, no mesh swapping,
         # no property writes in the periodic update.
         if changed:
@@ -2637,6 +2652,7 @@ def _ticker():
 
 @persistent
 def _on_scene_update(_scene,_depsgraph):
+    if not _CACHE and not groups.CACHE:return
     global _SOURCE_REVISION
     _SOURCE_REVISION+=1
     for update in _depsgraph.updates:
@@ -2657,7 +2673,8 @@ def _on_scene_update(_scene,_depsgraph):
 def _on_load(_dummy):
     editing.cancel_all(False)
     _clear_zone_pick()
-    global _CUT_PREVIEW
+    global _CUT_PREVIEW,_UNDOING
+    _UNDOING=False;_UNDO_DISPLAY.clear();_RESTORE_GROUPS.clear()
     _CACHE.clear();groups.CACHE.clear()
     _CUT_PREVIEW=None
 
@@ -2669,6 +2686,13 @@ def _on_undo_pre(_dummy):
     global _UNDOING,_CUT_PREVIEW
     _UNDOING=True
     _CUT_PREVIEW=None
+    # Keep numeric display caches across unrelated undo. Store stable IDs,
+    # never Blender/BMesh wrappers, because object pointers may be replaced.
+    _UNDO_DISPLAY.clear()
+    for obj in bpy.data.objects:
+        if is_guide(obj):
+            pointer=obj.as_pointer()
+            _UNDO_DISPLAY[obj.session_uid]=(_CACHE.get(pointer),groups.CACHE.get(pointer,{}))
     _CACHE.clear();groups.CACHE.clear()
 
 
@@ -2678,7 +2702,19 @@ def _on_undo_post(_dummy):
     _CACHE.clear();groups.CACHE.clear()
     _UNDOING=False
     for obj in bpy.data.objects:
-        if is_guide(obj):groups.restore(obj)
+        if not is_guide(obj):continue
+        if obj==bpy.context.object:
+            groups.restore(obj)
+        else:
+            saved=_UNDO_DISPLAY.get(obj.session_uid)
+            if saved:
+                pointer=obj.as_pointer();current,stored=saved
+                for cached in list(stored.values())+([current] if current else []):
+                    cached.update(object_pointer=pointer,data_pointer=obj.data.as_pointer(),source_dirty=True)
+                if current:_CACHE[pointer]=current
+                if stored:groups.CACHE[pointer]=stored
+            _RESTORE_GROUPS.add(obj.session_uid)
+    _UNDO_DISPLAY.clear()
 
 
 from . import editing
@@ -2768,3 +2804,4 @@ def unregister():
     del bpy.types.Object.nh35
     for cls in reversed(_CLASSES): bpy.utils.unregister_class(cls)
     _CACHE.clear();groups.CACHE.clear()
+    _UNDO_DISPLAY.clear();_RESTORE_GROUPS.clear()
