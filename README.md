@@ -36,7 +36,7 @@ Build expressive stylized hair one strand at a time. Shape the guides and NyanwH
 
 **Local density** adds geometry near selected points without changing the guide shape. **Radius** sets how far the extra density spreads along the guides, with a smooth fade to the regular grid.
 
-**Volume** adds a reverse surface with its own width and convexity. **Mirror UV** lets reflected strands share the original texture space or use separate islands.
+**Volume** adds a reverse surface with its own width and convexity. **Volume, %** in Points thins it locally: 100% keeps the segment volume, smaller values taper it toward the selected points. **Mirror UV** lets reflected strands share the original texture space or use separate islands.
 
 Choose **RU / EN** in **Additional**. The initial language follows Blender; other languages use English.
 
@@ -55,6 +55,8 @@ Choose **RU / EN** in **Additional**. The initial language follows Blender; othe
 **Детализация** — ряды вдоль пряди; **Ширина** — колонки поперёк. **Выпуклость** задаёт поперечный профиль, **Распределение** смещает колонки по ширине.
 
 **Уплотнение** добавляет полигоны возле выбранных точек, сохраняя форму направляющих. **Радиус** задаёт область влияния вдоль кривых с плавным переходом к обычной сетке.
+
+**Объём, %** в настройках точек локально уменьшает толщину: 100% сохраняет объём сегмента, меньшие значения утончают локон возле выбранных точек. Кнопка сброса возвращает 100%.
 
 Горячие клавиши: **E** — вытягивание и ветвление; **Ctrl+R** — Loop; **M** — Merge. **Shift+колесо** — ширина, **Ctrl+Shift+колесо** — детализация, **Ctrl+колесо** — выпуклость, **Alt+колесо** — сглаживание.
 

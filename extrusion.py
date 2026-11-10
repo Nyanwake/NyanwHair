@@ -90,9 +90,9 @@ def _extend(bm,targets,offset,result):
         for i,(neighbor,curve) in enumerate(zip(neighbors,curves)):
             base=tip if i==carrier else bm.verts.new(origin)
             if base is not tip:
-                for name in (a.L_POINT_DENSITY,a.L_POINT_RADIUS):base[bm.verts.layers.float[name]]=tip[bm.verts.layers.float[name]]
+                for name in (a.L_POINT_DENSITY,a.L_POINT_RADIUS,a.L_POINT_VOLUME):base[bm.verts.layers.float[name]]=tip[bm.verts.layers.float[name]]
                 base[bm.verts.layers.int[a.L_VERTEX_GROUP]]=tip[bm.verts.layers.int[a.L_VERTEX_GROUP]]
-            aliases[tip,neighbor]=base;end=bm.verts.new(origin+offset);moving[base]=end;rows.append((base,end,curve))
+            aliases[tip,neighbor]=base;end=bm.verts.new(origin+offset);end[bm.verts.layers.float[a.L_POINT_VOLUME]]=base[bm.verts.layers.float[a.L_POINT_VOLUME]];moving[base]=end;rows.append((base,end,curve))
         descriptions.append((tuple(origin),span,carrier,rows))
     if aliases:
         records=[{(aliases.get((u,v),u),aliases.get((v,u),v)):value for (u,v),value in values.items()} for values in records]
@@ -111,7 +111,8 @@ def _extend(bm,targets,offset,result):
                 first,second=ring[i],ring[(i+1)%len(ring)]
                 directions.append(center-(ring[i-1].co+ring[(i+2)%len(ring)].co)*.5)
                 for vertex in (first,second):
-                    if vertex not in moving:moving[vertex]=bm.verts.new(vertex.co+offset)
+                    if vertex not in moving:
+                        moving[vertex]=bm.verts.new(vertex.co+offset);moving[vertex][bm.verts.layers.float[a.L_POINT_VOLUME]]=vertex[bm.verts.layers.float[a.L_POINT_VOLUME]]
                 replacements[first]=[first,moving[first],moving[second]]
                 slots[index]=frozenset((moving[first],moving[second]))
         polygon=[v for vertex in ring for v in replacements.get(vertex,(vertex,))]
@@ -171,6 +172,7 @@ def _volume(bm,result,offset,faces=(),band=None):
     if not walls:raise ValueError(tr('No open base contour found'))
     origin=sum((v.co for v in root),Vector())/len(root)
     moving={v:bm.verts.new(v.co+offset) for v in sorted(root,key=lambda v:v.index)}
+    for source,target in moving.items():target[bm.verts.layers.float[a.L_POINT_VOLUME]]=source[bm.verts.layers.float[a.L_POINT_VOLUME]]
     candidates={v for source in removed for v in source.verts}
     for source in removed:bm.faces.remove(source)
     used={int(f[layer]) for f in bm.faces}
@@ -197,6 +199,7 @@ def _wire(bm,source,offset):
     from . import groups
     origin=source.co.copy();direction=sum((source.co-edge.other_vert(source).co for edge in source.link_edges),Vector())
     vertex=bm.verts.new(origin+offset)
+    vertex[bm.verts.layers.float[a.L_POINT_VOLUME]]=source[bm.verts.layers.float[a.L_POINT_VOLUME]]
     vertex[bm.verts.layers.int[a.L_VERTEX_GROUP]]=source[bm.verts.layers.int[a.L_VERTEX_GROUP]] or groups.active_id(bpy.context.edit_object)
     bm.edges.new((source,vertex));e._select(bm,[vertex]);bm.verts.index_update()
     return dict(mode='WIRE',wire_start=source.index,indices=(vertex.index,),bases=(tuple(origin),),anchor=tuple(origin),

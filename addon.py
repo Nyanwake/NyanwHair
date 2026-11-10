@@ -42,6 +42,7 @@ L_CAP = 'nh35_cap_corner'  # BMLOOP, per-face direction, never a vertex/edge tag
 L_DENSITY = 'nh35_density'
 L_POINT_DENSITY = 'nh35_point_density'
 L_POINT_RADIUS = 'nh35_point_radius'
+L_POINT_VOLUME = 'nh35_point_volume_reduction'
 L_LAYOUT_LENGTH = 'nh35_layout_length'
 L_SMOOTH_START = 'nh35_smooth_start'
 L_SMOOTH_END = 'nh35_smooth_end'
@@ -116,6 +117,7 @@ def _get_zone(f,bm):
     bias=floats.get(L_BIAS)
     flip=ints.get(L_FLIP)
     order=ints.get(L_ORDER)
+    point_volume=bm.verts.layers.float.get(L_POINT_VOLUME)
     return core.ZoneSettings(
         width=max(1,min(32,int(f[w]))) if w and f[w]>0 else 2,
         bulge=max(-3.0,min(3.0,float(f[b]))) if b else _DEFAULT_BULGE,
@@ -128,6 +130,7 @@ def _get_zone(f,bm):
         back_simple=bool(f[ints[L_BACK_SIMPLE]]) if ints.get(L_BACK_SIMPLE) else False,
         back_width=int(f[ints[L_BACK_WIDTH]]) if ints.get(L_BACK_WIDTH) else 0,
         back_enabled=bool(f[ints[L_BACK_ENABLED]]) if ints.get(L_BACK_ENABLED) else None,
+        volume_points=tuple(sorted((v.index,float(v[point_volume])) for v in f.verts if v[point_volume]>0.)) if point_volume else (),
     )
 
 
@@ -561,7 +564,7 @@ def _prepare_bmesh(bm, result=None, group_id=None):
     if migrate:bm.loops.layers.int.new(L_BOUNDARY)
     for name in (L_DENSITY,L_LAYOUT_LENGTH):
         if bm.edges.layers.float.get(name) is None:bm.edges.layers.float.new(name)
-    for name in (L_POINT_DENSITY,L_POINT_RADIUS):
+    for name in (L_POINT_DENSITY,L_POINT_RADIUS,L_POINT_VOLUME):
         if bm.verts.layers.float.get(name) is None:bm.verts.layers.float.new(name)
     for name in (L_SMOOTH_START,L_SMOOTH_END):
         if bm.loops.layers.float.get(name) is None:bm.loops.layers.float.new(name)
@@ -893,6 +896,37 @@ def _point_density_targets(bm,result):
             (uid is None or groups.vertex_group(v,bm,uid)==uid)]
 
 
+def _point_volume_targets(bm,result):
+    enabled={v for p in result.plans_by_loop.values() if p.settings.back_enabled or p.settings.back_enabled is None and p.settings.back>0. for v in p.boundary} if result else set()
+    return [v for v in _point_density_targets(bm,result) if v.index in enabled]
+
+
+def _get_point_volume(self):
+    obj=bpy.context.edit_object
+    if not is_guide(obj):return 100.
+    bm=bmesh.from_edit_mesh(obj.data);vertices=_point_volume_targets(bm,_CACHE.get(obj.as_pointer(),{}).get('result'));layer=bm.verts.layers.float.get(L_POINT_VOLUME)
+    return sum(100.*(1.-v[layer]) if layer else 100. for v in vertices)/len(vertices) if vertices else 100.
+
+
+def _set_point_volume(self,value):
+    if not _SYNCING_UI and is_guide(bpy.context.edit_object):bpy.ops.nyanw35.point_volume('EXEC_DEFAULT',True,value=float(value))
+
+
+class NYANW35_OT_point_volume(Operator):
+    bl_idname='nyanw35.point_volume';bl_label='Selected point volume';bl_options={'REGISTER','UNDO','UNDO_GROUPED'}
+    value:FloatProperty(default=100.,min=0.,max=100.)
+    @classmethod
+    def poll(cls,context):return bool(is_guide(context.edit_object))
+    def execute(self,context):
+        obj=context.edit_object;bm=bmesh.from_edit_mesh(obj.data);_prepare_bmesh(bm);_rebuild(obj)
+        vertices=_point_volume_targets(bm,_CACHE.get(obj.as_pointer(),{}).get('result'))
+        if not vertices:return {'CANCELLED'}
+        layer=bm.verts.layers.float[L_POINT_VOLUME]
+        for vertex in vertices:vertex[layer]=1.-self.value/100.
+        bmesh.update_edit_mesh(obj.data,loop_triangles=False,destructive=False);_rebuild(obj)
+        return {'FINISHED'}
+
+
 def _get_point_radius(self):
     obj=bpy.context.edit_object
     if not is_guide(obj):return 20.
@@ -1015,7 +1049,7 @@ def _signature(positions,zones,options,rows,caps,detail_length=0.,smoothing=None
     return (bool(regular_rows),tuple(sorted((a,b,round(v,8)) for (a,b),v in (layout_lengths or {}).items())),tuple(sorted((i,round(f,6),round(r,6)) for i,(f,r) in (point_density or {}).items())),int(rows),round(detail_length,8),tuple(sorted((a,b,round(v,6)) for (a,b),v in (density or {}).items())),tuple(sorted((a,b,round(v,6)) for (a,b),v in (smoothing or {}).items())),
             tuple(tuple(round(x,6) for x in p) for p in positions),
             tuple(zones),tuple(caps),
-            tuple((o.width,round(o.bulge,5),round(o.bias,5),o.flip,o.order,o.group,o.detail,round(o.back,5),o.back_enabled,o.back_width) for o in options))
+            tuple((o.width,round(o.bulge,5),round(o.bias,5),o.flip,o.order,o.group,o.detail,round(o.back,5),o.back_enabled,o.back_width,o.volume_points) for o in options))
 
 
 def _rebuild(obj,force=False,lazy=False,group_id=None,_background=False):
@@ -1159,6 +1193,7 @@ class NHGuidedProperties(PropertyGroup):
 
 
 class NHGuidedUISettings(PropertyGroup):
+    point_volume:FloatProperty(name='Volume, %',default=100.,min=0.,max=100.,get=_get_point_volume,set=_set_point_volume,description='100% uses segment volume; lower values bring the reverse side toward the front near selected points')
     detail:IntProperty(name='Detail',default=12,min=2,max=160,update=_on_ui_change('detail'),description='Polygon density along selected segments; guide shape is preserved')
     volume:BoolProperty(name='Volume',default=False,update=_on_back_change,description='Closed reverse surface with its own width and convexity')
     back_width:IntProperty(name='Reverse width',default=2,min=2,max=32,update=_on_ui_change('back_width'),description='Reverse-side column count; front topology is preserved')
@@ -1759,6 +1794,8 @@ def _split_single_bmesh(bm, zone, t, result, select_result=False):
         if vertex not in original_vertices:
             vertex[bm.verts.layers.float[L_POINT_DENSITY]]=0.
             vertex[bm.verts.layers.float[L_POINT_RADIUS]]=0.
+            from . import volume
+            vertex[bm.verts.layers.float[L_POINT_VOLUME]]=volume.seed(result,zone,tuple(vertex.co))
     split_records=[(left,right,ends[i]) for i,(kind,left,right,edge) in enumerate(end_caps) if kind=='edge']
     _restore_directions(bm,direction_records,split_records)
     _restore_density(bm,density_records,split_records)
@@ -2032,6 +2069,8 @@ class NYANW35_PT_main(Panel):
             op=row.operator('nyanw35.boundary',text='',icon='X');op.slot=slot;op.clear=True
         layout.separator();layout.label(text=tr('Points'),icon='VERTEXSEL')
         row=layout.row(align=True);row.enabled=bool(_smooth_targets(bm,result));row.prop(ui,'direction_smoothing',text=tr('Smoothing'),slider=True);row.operator('nyanw35.direction_smoothing',text='',icon='LOOP_BACK').value=1.
+        if any(p.settings.back_enabled or p.settings.back_enabled is None and p.settings.back>0. for p in result.plans_by_loop.values()):
+            row=layout.row(align=True);row.enabled=bool(_point_volume_targets(bm,result));row.prop(ui,'point_volume',text=tr('Volume, %'),slider=True);row.operator('nyanw35.point_volume',text='',icon='LOOP_BACK').value=100.
         layout.separator(factor=.4);layout.label(text=tr('Local density'),icon='MOD_SUBSURF')
         vertices=_point_density_targets(bm,result)
         column=layout.column(align=True);column.enabled=bool(vertices);column.prop(ui,'local_density',text=tr('Density'));column.prop(ui,'point_radius',text=tr('Radius, %'))
@@ -2700,7 +2739,7 @@ def _on_undo_post(_dummy):
 
 from . import editing
 
-_CLASSES=groups.CLASSES+(NHGuidedProperties,NHGuidedUISettings,NYANW35_OT_direction_smoothing,NYANW35_OT_local_density,NYANW35_OT_point_density,NYANW35_OT_density_reset,NYANW35_OT_set_cap,NYANW35_OT_refresh_layout,
+_CLASSES=groups.CLASSES+(NHGuidedProperties,NHGuidedUISettings,NYANW35_OT_direction_smoothing,NYANW35_OT_local_density,NYANW35_OT_point_density,NYANW35_OT_point_volume,NYANW35_OT_density_reset,NYANW35_OT_set_cap,NYANW35_OT_refresh_layout,
           NYANW35_OT_create_guide,NYANW35_OT_disable,
           NYANW35_OT_demo,NYANW35_OT_rebuild,NYANW35_OT_bake,
           NYANW35_OT_pin_rails, NYANW35_OT_adjust,NYANW35_OT_pick_zone,

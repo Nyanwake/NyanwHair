@@ -45,6 +45,7 @@ class ZoneSettings:
     back_simple: bool=False
     back_width: int=0
     back_enabled: bool|None=None
+    volume_points: tuple=()
 
 @dataclass(frozen=True)
 class FacePlan:
