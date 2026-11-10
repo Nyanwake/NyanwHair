@@ -64,9 +64,7 @@ def _unmirror(key):
 
 def _key(key):
     mask=0
-    while key[0] in ('mirror','back','shell'):
-        if key[0]=='mirror':mask|=key[1];key=key[2]
-        else:key=key[1]
+    while key[0]=='mirror':mask|=key[1];key=key[2]
     return key,mask
 
 
@@ -178,45 +176,26 @@ def generate(surfaces,matrix,angle=math.radians(60.),margin=.008,mirror_uv=True)
     full_faces=[];full_keys=[];active_faces=[];replicas={}
     for gid,surface in surfaces:
         offset=len(world);world.extend(tuple(matrix@Vector(p)) for p in surface.vertices)
-        front=getattr(surface,'front_result',surface);back=getattr(surface,'back_result',None)
-        maps={('front',owner):values for owner,values in _maps(front).items()}
-        if back is not None:maps.update((('back',owner),values) for owner,values in _maps(back).items())
-        keys=[_key(k) for k in surface.vertex_keys];side_labels=getattr(surface,'surface_sides',None)
+        source=getattr(surface,'source_result',surface)
+        maps=_maps(source)
+        keys=[_key(k) for k in surface.vertex_keys]
         originals={};replica_faces=getattr(surface,'replica_faces',set());face_offset=len(full_faces)
-        def signature(face,owner,side):return owner,side,tuple(sorted(_unmirror(surface.vertex_keys[v]) for v in face))
+        def signature(face,owner):return owner,tuple(sorted(_unmirror(surface.vertex_keys[v]) for v in face))
         if mirror_uv:
             for local,(face,owner) in enumerate(zip(surface.faces,surface.owners)):
-                if local not in replica_faces:originals[signature(face,owner,side_labels[local] if side_labels else 'front')]=face_offset+local
+                if local not in replica_faces:originals[signature(face,owner)]=face_offset+local
         for local,(face,owner) in enumerate(zip(surface.faces,surface.owners)):
-            side=side_labels[local] if side_labels is not None else 'front';mask=0
+            mask=0
             full=len(full_faces);full_faces.append(tuple(offset+v for v in face));full_keys.append([_unmirror(surface.vertex_keys[v]) for v in face])
             if mirror_uv and local in replica_faces:
-                replicas[full]=originals[signature(face,owner,side)];continue
+                replicas[full]=originals[signature(face,owner)];continue
             for v in face:mask|=keys[v][1]
-            coords={};lookup=maps.get((side,owner),{})
-            if side=='rim':
-                plan=next(p for p in front.plans_by_loop.values() if p.index==owner)
-                cap_edge=next((keys[v][0][1:3] for v in face if keys[v][0][0]=='cap'),None)
-                if cap_edge is None:
-                    cap_edge=next((core.edge_key(plan.boundary[i],plan.boundary[(i+1)%len(plan.boundary)]) for kind,i in (plan.start,plan.end) if kind=='edge' and all(keys[v][0][0]=='v' and keys[v][0][1] in (plan.boundary[i],plan.boundary[(i+1)%len(plan.boundary)]) for v in face)),None)
-                if cap_edge is None:raise ValueError(tr('UV: reverse-side boundary not found'))
-                start_cap=plan.start[0]=='edge' and core.edge_key(plan.boundary[plan.start[1]],plan.boundary[(plan.start[1]+1)%len(plan.boundary)])==cap_edge
-                first=plan.left[0 if start_cap else -1]
-                # Welded corners lie halfway across the rim's lens-shaped UV.
-                for v in face:
-                    raw,_=keys[v]
-                    u=raw[3]/raw[4] if raw[0]=='cap' else float(raw[1]==cap_edge[1])
-                    if first!=cap_edge[0]:u=1-u
-                    original=surface.vertex_keys[v]
-                    while original[0]=='mirror':original=original[2]
-                    depth=1. if original[0]=='back' else .5 if raw[0]=='v' else 0.
-                    coords[offset+v]=(u,depth)
-            else:
-                for v in face:
-                    raw,_=keys[v]
-                    if raw not in lookup:raise ValueError(tr('UV: missing guide coordinate for segment %d')%(owner+1))
-                    coords[offset+v]=lookup[raw]
-            faces.append(tuple(offset+v for v in face));initial.append(coords);kinds.append((gid,owner,side,mask))
+            coords={};lookup=maps.get(owner,{})
+            for v in face:
+                raw,_=keys[v]
+                if raw not in lookup:raise ValueError(tr('UV: missing guide coordinate for segment %d')%(owner+1))
+                coords[offset+v]=lookup[raw]
+            faces.append(tuple(offset+v for v in face));initial.append(coords);kinds.append((gid,owner,mask))
             active_faces.append(full)
 
     from .topology import _triangulate
@@ -267,7 +246,7 @@ def generate(surfaces,matrix,angle=math.radians(60.),margin=.008,mirror_uv=True)
         a,b=linked;ca,cb=face_chart[a],face_chart[b]
         if ca==cb:continue
         ka,kb=charts[ca]['kind'],charts[cb]['kind']
-        if ka[0]!=kb[0] or ka[2:]!=kb[2:] or ka[2]=='rim':continue
+        if ka[0]!=kb[0] or ka[2:]!=kb[2:]:continue
         score=min(core.dot(normals[a],normals[b]),core.dot(flows[a],flows[b]))
         candidates[core.edge_key(ca,cb)].append(score)
     # Whole shared runs must be smooth, not just one favorable sampled edge.

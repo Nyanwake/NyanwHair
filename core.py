@@ -1,4 +1,4 @@
-"""NyanwHair 1.0.0: shared curve contracts and independent reverse-sheet widths.
+"""NyanwHair 1.01: shared curve contracts and editable guide surfaces.
 
 Pure Python, no Blender IDs or tags on vertices/edges. Blender face corners may
 store the user's chosen end caps; this module only consumes that choice.
@@ -41,11 +41,6 @@ class ZoneSettings:
     order: int=0
     group: int=1
     detail: int=0
-    back: float=0.
-    back_simple: bool=False
-    back_width: int=0
-    back_enabled: bool|None=None
-    volume_points: tuple=()
 
 @dataclass(frozen=True)
 class FacePlan:
@@ -531,8 +526,6 @@ def generate(points,boundaries,settings=None,rows=12,max_polygons=200000,
     out.effective_widths=widths
     out.base_rows=rows
     out.directional_smoothing=dict(directional_smoothing or {})
-    # The reverse sheet changes width/profile only; its source curves are
-    # identical and can reuse the front solve. Other callers solve normally.
     evaluate=edge_evaluator if edge_evaluator is not None else make_edge_evaluator(points,plans,out.directional_smoothing)
     out.edge_evaluator=evaluate
     out.local_density=dict(local_density or {})

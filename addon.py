@@ -29,10 +29,6 @@ except ImportError:
 L_GROUP = 'nh35_group'
 L_VERTEX_GROUP = 'nh35_vertex_group'
 L_DETAIL = 'nh35_detail'
-L_BACK_SIMPLE = 'nh35_back_simple'
-L_BACK = 'nh35_back'
-L_BACK_WIDTH = 'nh35_back_width'
-L_BACK_ENABLED = 'nh35_back_enabled'
 L_WIDTH = 'nh35_width'
 L_BULGE = 'nh35_bulge'
 L_BIAS = 'nh35_bias'
@@ -42,7 +38,6 @@ L_CAP = 'nh35_cap_corner'  # BMLOOP, per-face direction, never a vertex/edge tag
 L_DENSITY = 'nh35_density'
 L_POINT_DENSITY = 'nh35_point_density'
 L_POINT_RADIUS = 'nh35_point_radius'
-L_POINT_VOLUME = 'nh35_point_volume_reduction'
 L_LAYOUT_LENGTH = 'nh35_layout_length'
 L_SMOOTH_START = 'nh35_smooth_start'
 L_SMOOTH_END = 'nh35_smooth_end'
@@ -117,7 +112,6 @@ def _get_zone(f,bm):
     bias=floats.get(L_BIAS)
     flip=ints.get(L_FLIP)
     order=ints.get(L_ORDER)
-    point_volume=bm.verts.layers.float.get(L_POINT_VOLUME)
     return core.ZoneSettings(
         width=max(1,min(32,int(f[w]))) if w and f[w]>0 else 2,
         bulge=max(-3.0,min(3.0,float(f[b]))) if b else _DEFAULT_BULGE,
@@ -126,11 +120,6 @@ def _get_zone(f,bm):
         order=int(f[order]) if order else 0,
         group=int(f[ints[L_GROUP]]) if ints.get(L_GROUP) else 0,
         detail=int(f[ints[L_DETAIL]]) if ints.get(L_DETAIL) else 0,
-        back=float(f[floats[L_BACK]]) if floats.get(L_BACK) else 0.,
-        back_simple=bool(f[ints[L_BACK_SIMPLE]]) if ints.get(L_BACK_SIMPLE) else False,
-        back_width=int(f[ints[L_BACK_WIDTH]]) if ints.get(L_BACK_WIDTH) else 0,
-        back_enabled=bool(f[ints[L_BACK_ENABLED]]) if ints.get(L_BACK_ENABLED) else None,
-        volume_points=tuple(sorted((v.index,float(v[point_volume])) for v in f.verts if v[point_volume]>0.)) if point_volume else (),
     )
 
 
@@ -547,10 +536,8 @@ def _prepare_bmesh(bm, result=None, group_id=None):
     """
     context_obj=bpy.context.edit_object or bpy.context.object
     current_group=group_id or (groups.active_id(context_obj) if is_guide(context_obj) else 1)
-    migrate_back=bm.faces.layers.int.get(L_BACK_ENABLED) is None
-    for name in (L_GROUP,L_DETAIL,L_BACK_SIMPLE,L_BACK_WIDTH,L_BACK_ENABLED):
+    for name in (L_GROUP,L_DETAIL):
         if bm.faces.layers.int.get(name) is None:bm.faces.layers.int.new(name)
-    if bm.faces.layers.float.get(L_BACK) is None:bm.faces.layers.float.new(L_BACK)
     if bm.verts.layers.int.get(L_VERTEX_GROUP) is None:bm.verts.layers.int.new(L_VERTEX_GROUP)
     for name,integer,default in ((L_WIDTH,True,2),(L_FLIP,True,0),(L_ORDER,True,0),
                                 (L_BULGE,False,_DEFAULT_BULGE),(L_BIAS,False,0.)):
@@ -564,14 +551,13 @@ def _prepare_bmesh(bm, result=None, group_id=None):
     if migrate:bm.loops.layers.int.new(L_BOUNDARY)
     for name in (L_DENSITY,L_LAYOUT_LENGTH):
         if bm.edges.layers.float.get(name) is None:bm.edges.layers.float.new(name)
-    for name in (L_POINT_DENSITY,L_POINT_RADIUS,L_POINT_VOLUME):
+    for name in (L_POINT_DENSITY,L_POINT_RADIUS):
         if bm.verts.layers.float.get(name) is None:bm.verts.layers.float.new(name)
     for name in (L_SMOOTH_START,L_SMOOTH_END):
         if bm.loops.layers.float.get(name) is None:bm.loops.layers.float.new(name)
     bm.verts.index_update(); bm.faces.index_update()
     group_layer=bm.faces.layers.int[L_GROUP]
     for face in bm.faces:
-        if migrate_back:face[bm.faces.layers.int[L_BACK_ENABLED]]=int(face[bm.faces.layers.float[L_BACK]]>0.)
         if face[group_layer]<=0:face[group_layer]=current_group
     for vertex in bm.verts:
         if vertex[bm.verts.layers.int[L_VERTEX_GROUP]]<=0:
@@ -723,10 +709,6 @@ def _set_zone(f,bm,field,value):
         'bias': (L_BIAS,False),
         'flip': (L_FLIP,True),
         'detail': (L_DETAIL,True),
-        'back': (L_BACK,False),
-        'back_simple': (L_BACK_SIMPLE,True),
-        'back_width': (L_BACK_WIDTH,True),
-        'back_enabled': (L_BACK_ENABLED,True),
     }[field]
     layers=bm.faces.layers.int if is_integer else bm.faces.layers.float
     layer=layers.get(name)
@@ -896,37 +878,6 @@ def _point_density_targets(bm,result):
             (uid is None or groups.vertex_group(v,bm,uid)==uid)]
 
 
-def _point_volume_targets(bm,result):
-    enabled={v for p in result.plans_by_loop.values() if p.settings.back_enabled or p.settings.back_enabled is None and p.settings.back>0. for v in p.boundary} if result else set()
-    return [v for v in _point_density_targets(bm,result) if v.index in enabled]
-
-
-def _get_point_volume(self):
-    obj=bpy.context.edit_object
-    if not is_guide(obj):return 100.
-    bm=bmesh.from_edit_mesh(obj.data);vertices=_point_volume_targets(bm,_CACHE.get(obj.as_pointer(),{}).get('result'));layer=bm.verts.layers.float.get(L_POINT_VOLUME)
-    return sum(100.*(1.-v[layer]) if layer else 100. for v in vertices)/len(vertices) if vertices else 100.
-
-
-def _set_point_volume(self,value):
-    if not _SYNCING_UI and is_guide(bpy.context.edit_object):bpy.ops.nyanw35.point_volume('EXEC_DEFAULT',True,value=float(value))
-
-
-class NYANW35_OT_point_volume(Operator):
-    bl_idname='nyanw35.point_volume';bl_label='Selected point volume';bl_options={'REGISTER','UNDO','UNDO_GROUPED'}
-    value:FloatProperty(default=100.,min=0.,max=100.)
-    @classmethod
-    def poll(cls,context):return bool(is_guide(context.edit_object))
-    def execute(self,context):
-        obj=context.edit_object;bm=bmesh.from_edit_mesh(obj.data);_prepare_bmesh(bm);_rebuild(obj)
-        vertices=_point_volume_targets(bm,_CACHE.get(obj.as_pointer(),{}).get('result'))
-        if not vertices:return {'CANCELLED'}
-        layer=bm.verts.layers.float[L_POINT_VOLUME]
-        for vertex in vertices:vertex[layer]=1.-self.value/100.
-        bmesh.update_edit_mesh(obj.data,loop_triangles=False,destructive=False);_rebuild(obj)
-        return {'FINISHED'}
-
-
 def _get_point_radius(self):
     obj=bpy.context.edit_object
     if not is_guide(obj):return 20.
@@ -981,17 +932,6 @@ def _get_local_density(self):
 def _set_local_density(self,value):
     if not _SYNCING_UI and is_guide(bpy.context.edit_object):bpy.ops.nyanw35.point_density('EXEC_DEFAULT',True,field='FACTOR',value=float(value))
 
-
-def _on_back_change(self,context):
-    if _SYNCING_UI:return
-    obj=context.edit_object
-    if not is_guide(obj):return
-    bm=bmesh.from_edit_mesh(obj.data);_prepare_bmesh(bm)
-    for face in _zone_ui_faces(bm,obj):
-        _set_zone(face,bm,'back_enabled',self.volume);_set_zone(face,bm,'back',self.back_depth)
-    bmesh.update_edit_mesh(obj.data,loop_triangles=False,destructive=False)
-    cached=_CACHE.get(obj.as_pointer())
-    if cached:cached['source_dirty']=True
 
 class NYANW35_OT_local_density(Operator):
     bl_idname='nyanw35.local_density'
@@ -1049,7 +989,7 @@ def _signature(positions,zones,options,rows,caps,detail_length=0.,smoothing=None
     return (bool(regular_rows),tuple(sorted((a,b,round(v,8)) for (a,b),v in (layout_lengths or {}).items())),tuple(sorted((i,round(f,6),round(r,6)) for i,(f,r) in (point_density or {}).items())),int(rows),round(detail_length,8),tuple(sorted((a,b,round(v,6)) for (a,b),v in (density or {}).items())),tuple(sorted((a,b,round(v,6)) for (a,b),v in (smoothing or {}).items())),
             tuple(tuple(round(x,6) for x in p) for p in positions),
             tuple(zones),tuple(caps),
-            tuple((o.width,round(o.bulge,5),round(o.bias,5),o.flip,o.order,o.group,o.detail,round(o.back,5),o.back_enabled,o.back_width,o.volume_points) for o in options))
+            tuple((o.width,round(o.bulge,5),round(o.bias,5),o.flip,o.order,o.group,o.detail) for o in options))
 
 
 def _rebuild(obj,force=False,lazy=False,group_id=None,_background=False):
@@ -1083,21 +1023,14 @@ def _rebuild(obj,force=False,lazy=False,group_id=None,_background=False):
             except ValueError:pass
     previous=old['result'] if old and old.get('group_zones')==tuple(zones) and old.get('face_indices')==tuple(indices) else None
     try:
-        prior_signature=old.get('signature') if old else None
-        if old and not getattr(old['result'],'parts',()) and prior_signature and prior_signature!=signature and prior_signature[:-1]==signature[:-1] and tuple(v[:7] for v in prior_signature[-1])==tuple(v[:7] for v in signature[-1]):
-            # Back-only edits change metadata, not front geometry or curves.
-            from copy import copy
-            result=copy(old['result']);current=dict(zip(indices,options))
-            result.plans_by_loop={loop:replace(plan,settings=current[plan.index]) for loop,plan in result.plans_by_loop.items()}
-        else:
-            result=components.generate(positions,zones,options,rows,previous=previous,caps=[core.neutral_caps(loop,c) for loop,c in zip(zones,caps)],reference_length=reference,directional_smoothing=smoothing,local_density=density,point_density=point_density,layout_lengths=layout_lengths,regular_rows=True,face_indices=indices)
+        result=components.generate(positions,zones,options,rows,previous=previous,caps=[core.neutral_caps(loop,c) for loop,c in zip(zones,caps)],reference_length=reference,directional_smoothing=smoothing,local_density=density,point_density=point_density,layout_lengths=layout_lengths,regular_rows=True,face_indices=indices)
         warnings=result.warnings;selection={}
         if old and old.get('zone_selection_explicit'):
             lookup=_zone_lookup(result);keys=frozenset(k for k in old.get('zone_selection',()) if k in lookup)
             selected=next((_zone_key(p) for p in old['result'].plans_by_loop.values() if p.index==old.get('active',-1)),None)
             active=lookup.get(selected,min((lookup[k] for k in keys),default=-1));selection={'zone_selection':keys,'zone_selection_explicit':True}
         if active not in indices:active=indices[0] if indices else -1
-        reuse={k:old[k] for k in ('gpu_chunks','gpu_wire_chunks','gpu_rails','gpu_rail_records','gpu_rail_signature','native_selection_stamp','back_result','normal_topology','gpu_layout','preview_normal_groups','preview_axis_sharp','render_parts') if old and k in old}
+        reuse={k:old[k] for k in ('gpu_chunks','gpu_wire_chunks','gpu_rails','gpu_rail_records','gpu_rail_signature','native_selection_stamp','normal_topology','gpu_layout','preview_normal_groups','preview_axis_sharp','render_parts') if old and k in old}
         cached=dict(selection,**reuse,signature=signature,topology=tuple(full_zones),face_indices=tuple(indices),group_zones=tuple(zones),group_id=uid,object_pointer=key,
                     rows=rows,revision=_SOURCE_REVISION,source_state=state,source_dirty=False,data_pointer=obj.data.as_pointer(),positions=tuple(positions),zones=tuple(full_zones),
                     result=result,active=active,status='; '.join(tr('Segment %d: %s')%(i+1,v) for i,v in list(sorted(warnings.items()))[:3]) if warnings else tr('%d segments, %d polygons')%(len(zones),len(result.faces)),
@@ -1132,10 +1065,6 @@ def _sync_ui(obj):
             if ui.width!=data.width: ui.width=data.width
             detail=data.detail or obj.nh35.rows
             if ui.detail!=detail:ui.detail=detail
-            enabled=data.back_enabled if data.back_enabled is not None else data.back>0
-            if ui.volume!=enabled:ui.volume=enabled
-            if ui.back_width!=(data.back_width or data.width):ui.back_width=data.back_width or data.width
-            if enabled and abs(ui.back_depth-data.back)>1e-6:ui.back_depth=data.back
             if abs(ui.bulge-data.bulge)>1e-6: ui.bulge=data.bulge
             if abs(ui.bias-data.bias)>1e-6: ui.bias=data.bias
             if ui.flip!=data.flip: ui.flip=data.flip
@@ -1160,8 +1089,7 @@ def _on_ui_change(field):
         bmesh.update_edit_mesh(obj.data,loop_triangles=False,destructive=False)
         cached=_CACHE.get(obj.as_pointer())
         if cached is not None:
-            if field=='back_width':cached['source_dirty']=True
-            else:cached['signature']=None
+            cached['signature']=None
         # The edit BMesh is changed only by this explicit user action.
         # Timer-driven Live never modifies a Blender datablock.
     return update
@@ -1193,11 +1121,7 @@ class NHGuidedProperties(PropertyGroup):
 
 
 class NHGuidedUISettings(PropertyGroup):
-    point_volume:FloatProperty(name='Volume, %',default=100.,min=0.,max=100.,get=_get_point_volume,set=_set_point_volume,description='100% uses segment volume; lower values bring the reverse side toward the front near selected points')
     detail:IntProperty(name='Detail',default=12,min=2,max=160,update=_on_ui_change('detail'),description='Polygon density along selected segments; guide shape is preserved')
-    volume:BoolProperty(name='Volume',default=False,update=_on_back_change,description='Closed reverse surface with its own width and convexity')
-    back_width:IntProperty(name='Reverse width',default=2,min=2,max=32,update=_on_ui_change('back_width'),description='Reverse-side column count; front topology is preserved')
-    back_depth:FloatProperty(name='Reverse convexity',default=.08,min=0.,max=3.,update=_on_back_change,description='Reverse-side profile; 0 gives a flat profile')
     density_mode: EnumProperty(name='Density target',items=[('POINT','Point','Smooth density around the active point'),('EDGE','Edges','Legacy multiplier on selected edges')],default='POINT')
     point_radius: FloatProperty(name='Radius, % of length',min=.1,max=200.,get=_get_point_radius,set=_set_point_radius,description='Distance along guides as a percentage of the reference length; fades smoothly to the regular grid')
     local_density: FloatProperty(name='Density multiplier',min=1.,max=8.,get=_get_local_density,set=_set_local_density,description='Density around all selected points; curve shape is preserved')
@@ -1796,8 +1720,6 @@ def _split_single_bmesh(bm, zone, t, result, select_result=False):
         if vertex not in original_vertices:
             vertex[bm.verts.layers.float[L_POINT_DENSITY]]=0.
             vertex[bm.verts.layers.float[L_POINT_RADIUS]]=0.
-            from . import volume
-            vertex[bm.verts.layers.float[L_POINT_VOLUME]]=volume.seed(result,zone,tuple(vertex.co))
     split_records=[(left,right,ends[i]) for i,(kind,left,right,edge) in enumerate(end_caps) if kind=='edge']
     _restore_directions(bm,direction_records,split_records)
     _restore_density(bm,density_records,split_records)
@@ -2032,7 +1954,7 @@ def _draw_extra_panels(layout,context,obj,cached,edit):
 
 
 class NYANW35_PT_main(Panel):
-    bl_label='NyanwHair v1.0.0'
+    bl_label='NyanwHair v1.01'
     bl_idname='NYANW35_PT_main'
     bl_space_type='VIEW_3D'
     bl_region_type='UI'
@@ -2071,9 +1993,7 @@ class NYANW35_PT_main(Panel):
         layout.separator();layout.label(text=tr('Segment settings'),icon='FACESEL')
         parameters=layout.column(align=True);parameters.enabled=bool(_zone_ui_faces(bm,obj))
         parameters.prop(ui,'detail',text=tr('Detail'));parameters.prop(ui,'width',text=tr('Width'));parameters.prop(ui,'bulge',text=tr('Convexity'));parameters.prop(ui,'bias',text=tr('Distribution'))
-        parameters.separator();parameters.prop(ui,'volume',text=tr('Volume'),icon='MOD_SOLIDIFY')
-        if ui.volume:
-            parameters.prop(ui,'back_width',text=tr('Reverse: width'));parameters.prop(ui,'back_depth',text=tr('Reverse: convexity'))
+        parameters.separator();parameters.operator('nyanw35.create_reverse',text=tr('Create reverse side'),icon='MOD_SOLIDIFY')
         if not cached.get('zone_count',0):layout.operator('nyanw35.group_starter',text=tr('Create strand in group'),icon='ADD')
         layout.separator();layout.label(text=tr('Segment boundaries'),icon='EDGESEL')
         ends=layout.column(align=True);ends.enabled=bool(_zone_ui_faces(bm,obj))
@@ -2082,8 +2002,6 @@ class NYANW35_PT_main(Panel):
             op=row.operator('nyanw35.boundary',text='',icon='X');op.slot=slot;op.clear=True
         layout.separator();layout.label(text=tr('Points'),icon='VERTEXSEL')
         row=layout.row(align=True);row.enabled=bool(_smooth_targets(bm,result));row.prop(ui,'direction_smoothing',text=tr('Smoothing'),slider=True);row.operator('nyanw35.direction_smoothing',text='',icon='LOOP_BACK').value=1.
-        if any(p.settings.back_enabled or p.settings.back_enabled is None and p.settings.back>0. for p in result.plans_by_loop.values()):
-            row=layout.row(align=True);row.enabled=bool(_point_volume_targets(bm,result));row.prop(ui,'point_volume',text=tr('Volume, %'),slider=True);row.operator('nyanw35.point_volume',text='',icon='LOOP_BACK').value=100.
         layout.separator(factor=.4);layout.label(text=tr('Local density'),icon='MOD_SUBSURF')
         vertices=_point_density_targets(bm,result)
         column=layout.column(align=True);column.enabled=bool(vertices);column.prop(ui,'local_density',text=tr('Density'));column.prop(ui,'point_radius',text=tr('Radius, %'))
@@ -2250,7 +2168,7 @@ def _gpu_mesh_records(cache,result,smooth):
     cache['gpu_normal_array']=values;cache['gpu_vertex_array']=positions
     cache['normal_topology']=getattr(result,'normal_topology',None)
     plans={p.index:p for p in result.plans_by_loop.values()}
-    boundary_keys=tuple(key[1] if key[0]=='shell' else key for key in result.vertex_keys)
+    boundary_keys=tuple(result.vertex_keys)
     boundary=tuple(i for i,key in enumerate(boundary_keys) if key[0] in ('v','s'))
     front_count=len(cache['result'].faces)
     layout_signature=(tuple(result.faces),tuple(result.owners),boundary,front_count,
@@ -2750,13 +2668,13 @@ def _on_undo_post(_dummy):
     _UNDO_DISPLAY.clear()
 
 
-from . import editing
+from . import editing,reverse
 
-_CLASSES=groups.CLASSES+(NHGuidedProperties,NHGuidedUISettings,NYANW35_OT_direction_smoothing,NYANW35_OT_local_density,NYANW35_OT_point_density,NYANW35_OT_point_volume,NYANW35_OT_density_reset,NYANW35_OT_set_cap,NYANW35_OT_refresh_layout,
+_CLASSES=groups.CLASSES+(NHGuidedProperties,NHGuidedUISettings,NYANW35_OT_direction_smoothing,NYANW35_OT_local_density,NYANW35_OT_point_density,NYANW35_OT_density_reset,NYANW35_OT_set_cap,NYANW35_OT_refresh_layout,
           NYANW35_OT_create_guide,NYANW35_OT_disable,
           NYANW35_OT_demo,NYANW35_OT_rebuild,NYANW35_OT_bake,
           NYANW35_OT_pin_rails, NYANW35_OT_adjust,NYANW35_OT_pick_zone,
-          NYANW35_OT_hair_loop,NYANW35_PT_main)+editing.CLASSES
+          NYANW35_OT_hair_loop,NYANW35_PT_main)+editing.CLASSES+(reverse.NYANW35_OT_reverse,)
 
 
 def _register_keys():

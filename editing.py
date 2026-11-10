@@ -119,9 +119,9 @@ def merge_stage(bm,mode,distance,cursor):
     density=_mapped(a._edge_density(bm,True),mapping,True)
     layout=_mapped(a._layout_lengths(bm,True),mapping,True)
     survivors=set(mapping.values())
-    point_gain=bm.verts.layers.float[a.L_POINT_DENSITY];point_radius=bm.verts.layers.float[a.L_POINT_RADIUS];point_volume=bm.verts.layers.float[a.L_POINT_VOLUME]
+    point_gain=bm.verts.layers.float[a.L_POINT_DENSITY];point_radius=bm.verts.layers.float[a.L_POINT_RADIUS]
     values={target:tuple(max((float(v[layer]) for v in selected if mapping.get(v,v) is target),default=0.)
-                         for layer in (point_gain,point_radius,point_volume)) for target in survivors}
+                         for layer in (point_gain,point_radius)) for target in survivors}
     if mode!='DISTANCE':next(iter(survivors)).co=position
     bmesh.ops.weld_verts(bm,targetmap=mapping)
     bm.verts.index_update();bm.faces.index_update()
@@ -129,7 +129,7 @@ def merge_stage(bm,mode,distance,cursor):
         slots=saved.get(int(face[order]))
         if slots is not None:assign_vertices(face,bm,slots)
     a._restore_directions(bm,directions);a._restore_density(bm,density);a._restore_layout(bm,layout)
-    for target,(gain,radius,volume) in values.items():target[point_gain]=gain;target[point_radius]=radius;target[point_volume]=volume
+    for target,(gain,radius) in values.items():target[point_gain]=gain;target[point_radius]=radius
     if any(len(e.link_faces)>2 for e in bm.edges):raise ValueError(tr('Merge would join three surfaces on one edge'))
     _select(bm,list(selected_after))
 
@@ -218,11 +218,10 @@ def single_extrude_stage(bm,result,offset):
             def move_corner(records):
                 return {((second if u is first and v is neighbor else u),(second if v is first and u is neighbor else v)):value for (u,v),value in records.items()}
             directions=move_corner(directions);density=move_corner(density);layout=move_corner(layout)
-            for name in (a.L_POINT_DENSITY,a.L_POINT_RADIUS,a.L_POINT_VOLUME):
+            for name in (a.L_POINT_DENSITY,a.L_POINT_RADIUS):
                 layer=bm.verts.layers.float[name];second[layer]=first[layer]
             one=bm.verts.new(first.co+offset);two=bm.verts.new(second.co+offset)
             polygon=ring[:i]+[first,one,two,second]+ring[i+1:]
-        for source,target in ((first,one),(second,two)):target[bm.verts.layers.float[a.L_POINT_VOLUME]]=source[bm.verts.layers.float[a.L_POINT_VOLUME]]
         bm.faces.remove(face)
         new=bm.faces.new(polygon);face_values(new)
         slots[cap_index]=frozenset((one,two));assign_vertices(new,bm,slots)
@@ -233,7 +232,6 @@ def single_extrude_stage(bm,result,offset):
         first,second=next((l.vert,l.link_loop_next.vert) for l in face.loops if l.edge is edge)
         default_direction=(second.co-first.co).cross(face.normal)
         one=bm.verts.new(first.co+offset);two=bm.verts.new(second.co+offset)
-        for source,target in ((first,one),(second,two)):target[bm.verts.layers.float[a.L_POINT_VOLUME]]=source[bm.verts.layers.float[a.L_POINT_VOLUME]]
         new=bm.faces.new((second,first,one,two));face_values(new)
         new[bm.faces.layers.int[a.L_ORDER]]=max(int(f[bm.faces.layers.int[a.L_ORDER]]) for f in bm.faces)+1
         key=a.core.edge_key(first.index,second.index)
@@ -330,7 +328,7 @@ class NYANW35_OT_extrude(Operator):
     def _status(self,context):
         if getattr(self,'_curve_phase',False):
             context.area.header_text_set(tr('Bend · intermediate points: %d · mouse: bend · wheel: points · LMB / Enter · Esc')%self.curve_points);return
-        label={'EXTEND':tr('Extend'),'BRANCH':tr('Branch'),'VOLUME':'E-Face','WIRE':tr('Guide wire')}.get(self._data['mode'],tr('Extrude'))
+        label={'EXTEND':tr('Extend'),'BRANCH':tr('Branch'),'CHAIN':tr('Edge chain'),'REGION':'E-Face','WIRE':tr('Guide wire')}.get(self._data['mode'],tr('Extrude'))
         if self._data.get('count',1)>1:label+=' ×%d'%self._data['count']
         extra=tr(' · wheel: bend') if self._data['mode']=='WIRE' else ''
         context.area.header_text_set(label+tr(' · mouse / X Y Z / number')+extra+tr(' · LMB / Enter · Esc'))

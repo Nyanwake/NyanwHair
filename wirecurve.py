@@ -29,9 +29,8 @@ def rebuild(bm,start_index,end_index,old_indices,coords):
         bm.edges.remove(edge)
     for vertex in old:bm.verts.remove(vertex)
     inside=[];uid=start[bm.verts.layers.int[a.L_VERTEX_GROUP]]
-    layer=bm.verts.layers.float[a.L_POINT_VOLUME]
-    for i,point in enumerate(coords[1:-1],1):
-        vertex=bm.verts.new(point);vertex[bm.verts.layers.int[a.L_VERTEX_GROUP]]=uid;vertex[layer]=start[layer]+(end[layer]-start[layer])*i/(len(coords)-1);inside.append(vertex)
+    for point in coords[1:-1]:
+        vertex=bm.verts.new(point);vertex[bm.verts.layers.int[a.L_VERTEX_GROUP]]=uid;inside.append(vertex)
     end.co=coords[-1];chain=[start,*inside,end]
     for one,two in zip(chain,chain[1:]):bm.edges.new((one,two))
     editing._select(bm,[end]);bm.verts.index_update()
