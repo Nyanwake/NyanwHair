@@ -1,4 +1,4 @@
-"""NyanwHair 1.03: shared curve contracts and editable guide surfaces.
+"""Shared curve contracts and editable guide surfaces.
 
 Pure Python, no Blender IDs or tags on vertices/edges. Blender face corners may
 store the user's chosen end caps; this module only consumes that choice.
@@ -41,6 +41,10 @@ class ZoneSettings:
     order: int=0
     group: int=1
     detail: int=0
+    normal_flip: bool=False
+
+    @property
+    def signed_bulge(self):return -self.bulge if self.flip!=self.normal_flip else self.bulge
 
 @dataclass(frozen=True)
 class FacePlan:
@@ -150,7 +154,7 @@ def _cap_profiles(points,plans,widths,evaluate,cap_widths=None,rim_caps=None):
                 for other in adjacency[vertex]&pending:pending.remove(other);component.append(other)
         if len(component)<2:continue
         primary=min(component,key=lambda edge:min(_plan_priority(p) for p,n in groups[edge]))
-        owners=groups[primary];normal=tuple(math.fsum(n[i]*p.settings.bulge*(-1. if p.settings.flip else 1.) for p,n in owners) for i in range(3))
+        owners=groups[primary];normal=tuple(math.fsum(n[i]*p.settings.signed_bulge for p,n in owners) for i in range(3))
         if length(normal)<EPS:normal=owners[0][1]
         origin=points[primary[0]];across=norm(sub(points[primary[1]],origin));axis=norm(cross(across,normal))
         vertices={v for edge in component for v in edge};span=max(length(sub(points[v],origin)) for v in vertices)
@@ -166,8 +170,9 @@ def _cap_profiles(points,plans,widths,evaluate,cap_widths=None,rim_caps=None):
     for (lo,hi),group in groups.items():
         group.sort(key=lambda item:_boundary_key(item[0].boundary))
         rim=any(dot(one[1],two[1])<-.95 for i,one in enumerate(group) for two in group[i+1:])
-        if rim and rim_caps is not None:rim_caps.add((lo,hi))
-        offset=((0.,0.,0.) if rim else tuple(math.fsum(normal[axis]*p.settings.bulge*(-1. if p.settings.flip else 1.)
+        sharp=rim or len({p.settings.normal_flip for p,n in group})>1
+        if sharp and rim_caps is not None:rim_caps.add((lo,hi))
+        offset=((0.,0.,0.) if rim else tuple(math.fsum(normal[axis]*p.settings.signed_bulge
             for p,normal in group)/len(group) for axis in range(3)))
         bias=math.fsum(p.settings.bias for p,_ in group)/len(group)
         w=(cap_widths or {}).get((lo,hi),widths[group[0][0].index])
@@ -625,6 +630,7 @@ def generate(points,boundaries,settings=None,rows=12,max_polygons=200000,
             first=p.boundary.index(p.left[0])
             reverse=(p.boundary[(first+1)%len(p.boundary)]==p.left[1])
             if signs[p.index]<0:reverse=not reverse
+            if p.settings.normal_flip:reverse=not reverse
             out.orientation_by_face[p.index]=reverse
             local=[];local_keys=set()
             def emit(face):

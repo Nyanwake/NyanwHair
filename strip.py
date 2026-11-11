@@ -41,7 +41,7 @@ def build_strip(plan,width,registry,ca,cb,left,right,profiles,put,emit,max_polyg
             normals.append(normal);previous_normal=normal;old_tangent=tangents[i]
         cap_blend=CapBlend.from_profiles(plan,[(body_a[i][1],body_b[i][1]) for i in (0,-1)],(normals[0],normals[-1]),profiles)
         profile=[bias_cross_position(x/width,plan.settings.bias) for x in range(width+1)]
-        sine=[math.sin(math.pi*v) for v in profile]
+        sine=[math.sin(math.pi*v) for v in profile];bulge=plan.settings.signed_bulge
         grid=[];sections=[]
         for row_index,((ka,a),(kb,b)) in enumerate(zip(body_a,body_b)):
             row=[];coords=[];row_width=length(sub(b,a))
@@ -52,8 +52,7 @@ def build_strip(plan,width,registry,ca,cb,left,right,profiles,put,emit,max_polyg
                 elif ka==kb:key,pos=ka,a
                 else:
                     v=profile[x]
-                    amount=plan.settings.bulge*row_width*sine[x]
-                    if plan.settings.flip:amount=-amount
+                    amount=bulge*row_width*sine[x]
                     pos=add(mix(a,b,v),mul(normals[row_index],amount))
                     pos=cap_blend.apply(pos,x/width,weights)
                     if row_index==0 and plan.start[0]=='edge' or row_index==len(body_a)-1 and plan.end[0]=='edge':

@@ -18,7 +18,7 @@ def create(bm,result,indices,distance,matrix,join=True,axes=(),bend=None,
     for face in faces:
         plan=result.plans_by_loop.get(tuple(v.index for v in face.verts))
         if plan is None:raise ValueError(tr('The selected segment has no valid layout'))
-        normal=Vector(plan.normal);signed=plan.settings.bulge*(-1. if plan.settings.flip else 1.)
+        normal=Vector(plan.normal);signed=plan.settings.signed_bulge
         if signed<0.:normal=-normal
         selected.update(face.verts)
         jobs.append((face,list(face.verts),extrusion._attributes(face,bm),editing.boundary_vertices(face,bm),plan,normal))
@@ -73,7 +73,7 @@ def create(bm,result,indices,distance,matrix,join=True,axes=(),bend=None,
                     if edge in values:values[clone(edge[0]),clone(edge[1])]=values[edge]
         face=extrusion._face(bm,[clone(v) for v in reversed(ring)],attrs,next_order,
             tuple(frozenset(clone(v) for v in slot) for slot in slots))
-        if bend is not None:a._set_zone(face,bm,'bulge',bend*(bend_gains or {}).get(int(source_face[order]),1.))
+        if bend is not None:a._set_zone(face,bm,'bulge',bend*(bend_gains or {}).get(int(source_face[order]),1.)*(-1. if plan.settings.normal_flip else 1.))
         next_order+=1;created.append(face)
     borders={(face,frozenset((u,v))) for face,u,v,attrs,plan,rail in boundary}
     walls=[]
@@ -92,23 +92,19 @@ def create(bm,result,indices,distance,matrix,join=True,axes=(),bend=None,
     for face,span,attrs,plan,rail in walls:
         if weld:continue
         clone=lambda v:copies[fan[v,face]]
-        pieces=[span]
-        polygon=span+list(reversed([clone(v) for v in span]))
-        if len(span)>2 and a.core.length(a.core.newell([tuple(v.co) for v in polygon],tuple(range(len(polygon)))))<a.core.EPS:
-            pieces=[span[i:i+2] for i in range(len(span)-1)]
-        for path in pieces:
-            copied=[clone(v) for v in path]
-            if rail:
-                polygon=path+copied[::-1]
-                loop=next(loop for loop in face.loops if set(loop.edge.verts)==set(path[:2]))
-                if loop.vert is path[0]:polygon.reverse()
-                ends=(frozenset((path[0],copied[0])),frozenset((path[-1],copied[-1])))
-            else:
-                polygon=(path[1],path[0],copied[0],copied[1]);ends=(frozenset(path),frozenset(copied))
-            wall=extrusion._face(bm,polygon,attrs,next_order,ends);next_order+=1
-            a._set_zone(wall,bm,'bulge',0.);a._set_zone(wall,bm,'bias',0.);a._set_zone(wall,bm,'flip',False)
-            a._set_zone(wall,bm,'width',2 if rail else plan.settings.width)
-            if not rail:a._set_zone(wall,bm,'detail',2)
+        copied=[clone(v) for v in span]
+        if rail:
+            polygon=span+copied[::-1]
+            loop=next(loop for loop in face.loops if set(loop.edge.verts)==set(span[:2]))
+            if loop.vert is span[0]:polygon.reverse()
+            ends=(frozenset((span[0],copied[0])),frozenset((span[-1],copied[-1])))
+        else:
+            polygon=(span[1],span[0],copied[0],copied[1]);ends=(frozenset(span),frozenset(copied))
+        wall=extrusion._face(bm,polygon,attrs,next_order,ends);next_order+=1
+        a._set_zone(wall,bm,'bulge',0.);a._set_zone(wall,bm,'bias',0.);a._set_zone(wall,bm,'flip',False)
+        a._set_zone(wall,bm,'width',2 if rail else plan.settings.width)
+        if not rail:a._set_zone(wall,bm,'detail',2)
+    extrusion.straight_connections(bm,records,((key[0],vertex) for key,vertex in copies.items()))
     a._restore_directions(bm,records[0]);a._restore_density(bm,records[1]);a._restore_layout(bm,records[2])
     for face in bm.faces:face.select_set(False)
     for edge in bm.edges:edge.select_set(False)
@@ -175,7 +171,7 @@ def prepare_closed_base(bm,result,indices,obj,axes=()):
             across=right-left;width=across.length
             x=max(0.,min(1.,(point-left).dot(across)/max(1e-16,across.length_squared)))
             base=left+across*x;normal=Vector(plan.normal)
-            if plan.settings.bulge*(-1. if plan.settings.flip else 1.)<0.:normal=-normal
+            if plan.settings.signed_bulge<0.:normal=-normal
             baseline=point-normal*(point-base).dot(normal)
             values.append((baseline,normal*width*max(.3,4*x*(1-x))))
         recipes[index]=(sum((v[0] for v in values),Vector())/len(values),sum((v[1] for v in values),Vector())/len(values))

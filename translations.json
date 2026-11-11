@@ -58,6 +58,8 @@
   "Extrude · E": "Экструд · E",
   "Merge": "Слияние",
   "Rip": "Разрыв",
+  "Flip normals": "Перевернуть нормали",
+  "Reverse selected segment normals while preserving the current shape": "Развернуть нормали выделенных сегментов, сохраняя текущую форму",
   "Rip guides": "Разделить направляющие",
   "Split a boundary guide point and move the new point": "Разделить краевую точку направляющей и переместить новую точку",
   "Select one guide point to split": "Выдели одну точку направляющей для разделения",

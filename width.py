@@ -109,8 +109,7 @@ def _regular_transition(plan,width,ca,cb,left,right,caps,max_polygons):
             elif x==0:key,pos=ka,a
             elif x==n:key,pos=kb,b
             else:
-                v=bias_cross_position(x/n,plan.settings.bias);amount=plan.settings.bulge*widths[k]*math.sin(math.pi*v)
-                if plan.settings.flip:amount=-amount
+                v=bias_cross_position(x/n,plan.settings.bias);amount=plan.settings.signed_bulge*widths[k]*math.sin(math.pi*v)
                 key=('width',plan.index,k,x,n);pos=add(mix(a,b,v),mul(normals[k],amount))
                 pos=cap_blend.apply(pos,x/n,weights)
             coords.append(pos)
@@ -200,8 +199,7 @@ def build_transition(plan,width,registry,ca,cb,left,right,profiles,put,emit,max_
                 elif x==count:key,pos=kb,pb
                 elif ka==kb:key,pos=ka,pa
                 else:
-                    v=bias_cross_position(x/count,plan.settings.bias);amount=plan.settings.bulge*length(sub(pb,pa))*math.sin(math.pi*v)
-                    if plan.settings.flip:amount=-amount
+                    v=bias_cross_position(x/count,plan.settings.bias);amount=plan.settings.signed_bulge*length(sub(pb,pa))*math.sin(math.pi*v)
                     key=('width',plan.index,k,x,count);pos=add(mix(pa,pb,v),mul(normals[k],amount))
                     pos=cap_blend.apply(pos,x/count,weights)
                 row.append(vertex(key,pos));coords.append(pos)

@@ -11,7 +11,7 @@ def _frame(plan,points,across):
     normal=Vector(across).cross(flow).normalized()
     if not normal.length:normal=Vector(plan.normal)
     if normal.dot(Vector(plan.normal))<0.:normal=-normal
-    if plan.settings.bulge*(-1. if plan.settings.flip else 1.)<0.:normal=-normal
+    if plan.settings.signed_bulge<0.:normal=-normal
     return -normal
 
 
@@ -38,7 +38,7 @@ def prepare(bm,result,indices,obj,axes=()):
     bm.faces.ensure_lookup_table();parents={}
     for (source,plan),index in zip(sources,created):
         face=bm.faces[index];parents[int(face[layer])]=(source,plan)
-        a._set_zone(face,bm,'flip',plan.settings.bulge*(-1. if plan.settings.flip else 1.)<0.)
+        a._set_zone(face,bm,'flip',plan.settings.signed_bulge<0.)
     flat=e.validate_stage(bm,obj);flat_plans={p.settings.order:p for p in flat.plans_by_loop.values()}
     pending=set(parents);provenance={};solved=flat
     while pending:
@@ -112,7 +112,7 @@ def apply(bm,prepared,distance,bend,join):
         fraction=prepared['fractions'].get(int(face[layer]))
         if fraction is not None:
             gain=fraction*fraction/max(1e-12,math.hypot(fraction,bend*math.sin(math.pi*fraction)))
-            a._set_zone(face,bm,'bulge',bend*gain)
+            a._set_zone(face,bm,'bulge',bend*gain*(-1. if face[bm.faces.layers.int[a.L_NORMAL_FLIP]] else 1.))
     paths=[(identity,[bm.verts[i] for i in one],[bm.verts[i] for i in two]) for identity,one,two in prepared['rails']]
     mapping={v:u for identity,one,two in paths for u,v in zip(one,two) if (u.co-v.co).length<1e-7} if join else {}
     paths=[(parent,one,[mapping.get(v,v) for v in two]) for parent,one,two in paths]
@@ -131,6 +131,8 @@ def apply(bm,prepared,distance,bend,join):
                 wall=x._face(bm,polygon,x._attributes(face,bm),identity,
                     (frozenset((a_path[0],b_path[0])),frozenset((a_path[-1],b_path[-1]))));identity+=1
                 for name,value in (('bulge',0.),('bias',0.),('flip',False),('width',2)):a._set_zone(wall,bm,name,value)
+        records=list(x._records(bm));x.straight_connections(bm,records,((u,v) for parent,one,two in paths for u,v in zip(one,two)))
+        a._restore_directions(bm,records[0])
     chosen=set(prepared['orders']);created=[f for f in bm.faces if int(f[layer]) in chosen]
     for face in bm.faces:face.select_set(False)
     for edge in bm.edges:edge.select_set(False)

@@ -21,7 +21,7 @@ class CapBlend:
     def __init__(self,plan,ends,normals,profiles):
         self.bias=plan.settings.bias;self.ends=[];self.cache={}
         for (a,b),normal,profile in zip(ends,normals,profiles):
-            amplitude=plan.settings.bulge*length(sub(b,a))*(-1. if plan.settings.flip else 1.)
+            amplitude=plan.settings.signed_bulge*length(sub(b,a))
             self.ends.append((a,b,mul(normal,amplitude),profile) if profile else None)
     @classmethod
     def from_profiles(cls,plan,ends,normals,profiles):
@@ -57,7 +57,7 @@ class CapBlend:
 
 class FlowSurface:
     def __init__(self,plan,width,mapping,cap_profiles,cap_keys=None):
-        self.plan=plan;self.width=width;self.mapping=mapping;self.caps={};self._samples={};self.cap_keys=cap_keys or {}
+        self.plan=plan;self.width=width;self.mapping=mapping;self.caps={};self._samples={};self.cap_keys=cap_keys or {};self.bulge=plan.settings.signed_bulge
         for kind,i in (plan.start,plan.end):
             if kind=='edge':
                 edge=edge_key(plan.boundary[i],plan.boundary[(i+1)%len(plan.boundary)]);self.caps[edge]=cap_profiles[edge]
@@ -96,8 +96,7 @@ class FlowSurface:
         normal=normals[index]*(1.-t[:,None])+normals[index+1]*t[:,None]
         normal/=np.maximum(EPS,np.linalg.norm(normal,axis=1))[:,None]
         v=bias_cross_position(x/self.width,self.plan.settings.bias)
-        amount=self.plan.settings.bulge*np.linalg.norm(pb-pa,axis=1)*math.sin(math.pi*v)
-        if self.plan.settings.flip:amount=-amount
+        amount=self.bulge*np.linalg.norm(pb-pa,axis=1)*math.sin(math.pi*v)
         positions=pa*(1.-v)+pb*v+normal*amount[:,None]
         for end,shift in enumerate(self.cap_blend.column(x/self.width)):
             if shift is not None:
@@ -118,8 +117,7 @@ class FlowSurface:
         v=bias_cross_position(x/self.width,self.plan.settings.bias)
         t=min(self.n-1,int(u*self.n));blend=u*self.n-t
         normal=norm(mix(self.normals[t],self.normals[t+1],blend))
-        amplitude=self.plan.settings.bulge*length(sub(b,a))*math.sin(math.pi*v)
-        if self.plan.settings.flip:amplitude=-amplitude
+        amplitude=self.bulge*length(sub(b,a))*math.sin(math.pi*v)
         pos=add(mix(a,b,v),mul(normal,amplitude))
         pos=self.cap_blend.apply(pos,x/self.width,self.cap_blend.weights(u))
         if u==0. or u==1.:

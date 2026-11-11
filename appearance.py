@@ -89,7 +89,7 @@ def shader():
                 vec2 uv=clamp(n.xy*.5+.5,vec2(.001),vec2(.999));
                 base=(baseColor*texture(matcapDiffuse,uv).rgb+lighting.y*texture(matcapSpecular,uv).rgb)*lighting.z;
             }
-            fragColor=vec4(mix(base,tint.rgb,tint.a),abs(lighting.w));
+            fragColor=vec4(mix(base,tint.rgb,tint.a)*(gl_FrontFacing?1.0:.72),abs(lighting.w));
         }''')
         _SHADER=gpu.shader.create_from_info(info)
     return _SHADER

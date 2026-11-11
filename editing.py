@@ -244,7 +244,7 @@ def single_extrude_stage(bm,result,offset):
         count=sum(k[0]=='s' and k[1:3]==key for k in result.vertex_keys)+1
         a._set_zone(new,bm,'width',max(1,min(32,count)))
         assign_vertices(new,bm,(frozenset((first,second)),frozenset((one,two))))
-        directions[first,one]=0.;directions[second,two]=0.;mode='BRANCH'
+        directions[first,one]=directions[one,first]=0.;directions[second,two]=directions[two,second]=0.;mode='BRANCH'
     for v in (one,two):
         v[bm.verts.layers.float[a.L_POINT_DENSITY]]=0.;v[bm.verts.layers.float[a.L_POINT_RADIUS]]=0.
     a._restore_directions(bm,directions);a._restore_density(bm,density);a._restore_layout(bm,layout)
@@ -283,9 +283,11 @@ def validate_stage(bm,obj):
 
 
 def draw_mode_header(layout,context,mode,label,icon):
+    from . import ui_icons
     index={'VERT':0,'EDGE':1,'FACE':2}[mode]
+    accent=ui_icons.mode_icon(context.edit_object.nh35,mode)
     op=layout.operator('nyanw35.select_mode',text='%d · %s'%(index+1,tr(label)),
-        icon=icon,depress=context.tool_settings.mesh_select_mode[index])
+        depress=context.tool_settings.mesh_select_mode[index],**({'icon_value':accent} if accent else {'icon':icon}))
     op.mode=mode
 
 
@@ -308,6 +310,34 @@ class NYANW35_OT_select_mode(Operator):
     def execute(self,context):
         bpy.ops.mesh.select_mode(type=self.mode,use_extend=False,use_expand=False)
         a._sync_ui(context.edit_object)
+        if context.area:context.area.tag_redraw()
+        return {'FINISHED'}
+
+
+class NYANW35_OT_flip_normals(Operator):
+    bl_idname='nyanw35.flip_normals'
+    bl_label='Flip normals'
+    bl_description='Reverse selected segment normals while preserving the current shape'
+    bl_options={'REGISTER','UNDO'}
+    @classmethod
+    def poll(cls,context):return bool(a.is_guide(context.edit_object))
+    def execute(self,context):
+        obj=context.edit_object;a._rebuild(obj);bm=bmesh.from_edit_mesh(obj.data)
+        faces=a._zone_ui_faces(bm,obj)
+        if not faces:return {'CANCELLED'}
+        indices=tuple(face.index for face in faces)
+        def operation(bm):
+            a._prepare_bmesh(bm);bm.faces.ensure_lookup_table()
+            for index in indices:
+                face=bm.faces[index];settings=a._get_zone(face,bm)
+                a._set_zone(face,bm,'normal_flip',not settings.normal_flip)
+                a._set_zone(face,bm,'bulge',settings.bulge if settings.flip else -settings.bulge)
+                a._set_zone(face,bm,'flip',False)
+            validate_stage(bm,obj)
+        try:a._edit_transaction(obj,operation)
+        except (ValueError,RuntimeError,ReferenceError) as exc:
+            self.report({'WARNING'},str(exc));return {'CANCELLED'}
+        a._rebuild(obj,True);a._sync_ui(obj)
         if context.area:context.area.tag_redraw()
         return {'FINISHED'}
 
@@ -515,4 +545,4 @@ def cancel_all(restore=True):
 
 from .ripping import NYANW35_OT_rip
 
-CLASSES=(NYANW35_OT_boundary,NYANW35_OT_merge,NYANW35_MT_merge,NYANW35_OT_merge_menu,NYANW35_OT_select_mode,NYANW35_OT_extrude,NYANW35_OT_rip)
+CLASSES=(NYANW35_OT_boundary,NYANW35_OT_merge,NYANW35_MT_merge,NYANW35_OT_merge_menu,NYANW35_OT_select_mode,NYANW35_OT_flip_normals,NYANW35_OT_extrude,NYANW35_OT_rip)

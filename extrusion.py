@@ -28,6 +28,48 @@ def _records(bm):
     return a._directional_smoothing(bm,True),a._edge_density(bm,True),a._layout_lengths(bm,True)
 
 
+def straight_connections(bm,records,pairs):
+    for one,two in pairs:
+        if one is not two and bm.edges.get((one,two)) is not None:
+            records[0][one,two]=records[0][two,one]=0.
+
+
+def _boundary_walls(bm,result,faces):
+    region=set(faces);walls=[]
+    for face in faces:
+        plan=result.plans_by_loop[tuple(v.index for v in face.verts)]
+        vertices={v.index:v for v in face.verts};attrs=_attributes(face,bm)
+        exposed={edge for edge in face.edges if sum(owner in region for owner in edge.link_faces)==1}
+        def append(path,rail):
+            loop=next(loop for loop in face.loops if set(loop.edge.verts)==set(path[:2]))
+            width=2 if rail else plan.settings.width
+            walls.append((path,attrs,rail,width,loop.vert is path[0]))
+        for rail in (plan.left,plan.right):
+            run=[]
+            for one,two in zip(rail,rail[1:]):
+                u,v=vertices[one],vertices[two]
+                if bm.edges.get((u,v)) in exposed:
+                    if not run:run=[u]
+                    run.append(v)
+                elif run:append(run,True);run=[]
+            if run:append(run,True)
+        for kind,i in (plan.start,plan.end):
+            if kind!='edge':continue
+            path=[vertices[plan.boundary[j%len(plan.boundary)]] for j in (i,i+1)]
+            if bm.edges.get(tuple(path)) in exposed:append(path,False)
+    return walls
+
+
+def _build_walls(bm,walls,moving,identity):
+    for path,attrs,rail,width,forward in walls:
+        copied=[moving[v] for v in path];polygon=path+copied[::-1]
+        if not forward:polygon.reverse()
+        slots=(frozenset((path[0],copied[0])),frozenset((path[-1],copied[-1]))) if rail else (frozenset(path),frozenset(copied))
+        face=_face(bm,polygon,attrs,identity,slots);identity+=1
+        for name,value in (('width',width),('bulge',0.),('bias',0.),('flip',False)):a._set_zone(face,bm,name,value)
+        if not rail:a._set_zone(face,bm,'detail',2)
+
+
 def _finish(bm,offset,moving,origin,direction,mode,count,records):
     a._restore_directions(bm,records[0]);a._restore_density(bm,records[1]);a._restore_layout(bm,records[2])
     for vertex in moving:
@@ -175,19 +217,13 @@ def _solid(bm,result,offset,faces):
 
 def _capped_region(bm,result,offset,faces):
     """Move a patch on an existing surface, keeping its new outer cap."""
-    region=set(faces);records=list(_records(bm));order=bm.faces.layers.int[a.L_ORDER]
+    records=list(_records(bm));order=bm.faces.layers.int[a.L_ORDER]
     next_order=max((int(f[order]) for f in bm.faces),default=0)+1
-    jobs=[];walls=[];old_edges=set();vertices=set();normal=Vector()
+    jobs=[];walls=_boundary_walls(bm,result,faces);old_edges=set();vertices=set();normal=Vector()
     for face in faces:
-        plan=result.plans_by_loop[tuple(v.index for v in face.verts)]
         attrs=_attributes(face,bm);caps=e.boundary_vertices(face,bm)
         jobs.append((face,list(face.verts),attrs,int(face[order]),caps))
         old_edges.update(face.edges);vertices.update(face.verts);normal+=face.normal
-        for loop in face.loops:
-            if sum(owner in region for owner in loop.edge.link_faces)==2:continue
-            one,two=loop.vert,loop.link_loop_next.vert
-            width=_edge_count(result,one,two,plan.settings.width if frozenset((one,two)) in caps else 1)
-            walls.append((one,two,attrs,width))
     origin=sum((v.co for v in vertices),Vector())/len(vertices)
     moving={v:bm.verts.new(v.co+offset) for v in sorted(vertices,key=lambda v:v.index)}
     for source,target in moving.items():
@@ -200,12 +236,8 @@ def _capped_region(bm,result,offset,faces):
     for face,ring,attrs,identity,caps in jobs:
         created.append(_face(bm,[moving[v] for v in ring],attrs,identity,
             tuple(frozenset(moving[v] for v in cap) for cap in caps)))
-    for one,two,attrs,width in walls:
-        face=_face(bm,(one,two,moving[two],moving[one]),attrs,next_order,
-            (frozenset((one,two)),frozenset((moving[one],moving[two]))));next_order+=1
-        for name,value in (('width',max(1,min(32,width))),('bulge',0.),('bias',0.),('flip',False)):
-            a._set_zone(face,bm,name,value)
-        records[0][one,moving[one]]=0.;records[0][two,moving[two]]=0.
+    _build_walls(bm,walls,moving,next_order)
+    straight_connections(bm,records,moving.items())
     for edge in old_edges:
         if edge.is_valid and not edge.link_faces:bm.edges.remove(edge)
     for vertex in vertices:
@@ -271,7 +303,7 @@ def _region(bm,result,offset,faces=(),band=None):
     for one,two,attrs,width in walls:
         new=_face(bm,(one,two,moving[two],moving[one]),attrs,identity(attrs),(frozenset((one,two)),frozenset((moving[one],moving[two]))))
         a._set_zone(new,bm,'width',max(1,min(32,width)))
-        records[0][one,moving[one]]=0.;records[0][two,moving[two]]=0.
+    straight_connections(bm,records,moving.items())
     for edge in old_edges:
         if edge.is_valid and not edge.link_faces:bm.edges.remove(edge)
     for vertex in candidates:
@@ -290,8 +322,8 @@ def _wire(bm,source,offset):
 
 
 def _edge_chain(bm,selected):
-    edges=[edge for edge in bm.edges if edge.select and not edge.hide and set(edge.verts)<=selected]
-    if len(edges)<2:return None
+    edges=[edge for edge in bm.edges if not edge.hide and (edge.select or 'VERT' in bm.select_mode) and set(edge.verts)<=selected]
+    if not edges or len(edges)==1 and edges[0].link_faces:return None
     neighbors={}
     for edge in edges:
         for v in edge.verts:neighbors.setdefault(v,[]).append(edge.other_vert(v))
@@ -311,11 +343,12 @@ def _edge_chain(bm,selected):
 
 def _chain(bm,result,offset,chain):
     path,closed,edges=chain
-    if any(len(edge.link_faces)!=1 for edge in edges):raise ValueError(tr('Select a continuous free edge chain'))
+    if any(len(edge.link_faces)>1 for edge in edges):raise ValueError(tr('Select a continuous free edge chain'))
     records=list(_records(bm));layer=bm.faces.layers.int[a.L_ORDER]
-    parents={edge.link_faces[0] for edge in edges}
-    parent=bm.faces.active if bm.faces.active in parents else min(parents,key=lambda f:(int(f[layer]),f.index))
-    attrs=_attributes(parent,bm);moving={v:bm.verts.new(v.co+offset) for v in path}
+    parents={face for edge in edges for face in edge.link_faces}
+    parent=bm.faces.active if bm.faces.active in parents else min(parents,key=lambda f:(int(f[layer]),f.index),default=None)
+    attrs=_attributes(parent,bm) if parent else ([],0,True)
+    moving={v:bm.verts.new(v.co+offset) for v in path}
     vertex_group=bm.verts.layers.int[a.L_VERTEX_GROUP]
     for source,target in moving.items():target[vertex_group]=source[vertex_group]
     for values in records:
@@ -324,14 +357,27 @@ def _chain(bm,result,offset,chain):
     next_order=max((int(f[layer]) for f in bm.faces),default=0)+1
     direction=Vector()
     for edge in edges:
+        if not edge.link_faces:continue
         loop=next(loop for loop in edge.link_faces[0].loops if loop.edge is edge)
         direction+=(loop.link_loop_next.vert.co-loop.vert.co).cross(loop.face.normal)
+    if not direction.length:
+        tangent=path[-1].co-path[0].co;direction=tangent.cross(Vector((0.,1.,0.)))
+        if not direction.length:direction=Vector((1.,0.,0.))
     for span in spans:
         polygon=span+list(reversed([moving[v] for v in span]))
-        source_edge=bm.edges.get((span[0],span[1]));source_loop=next(loop for loop in source_edge.link_faces[0].loops if loop.edge is source_edge)
-        if source_loop.vert is span[0]:polygon.reverse()
-        _face(bm,polygon,attrs,next_order,(frozenset((span[0],moving[span[0]])),frozenset((span[-1],moving[span[-1]]))))
+        for one,two in zip(span,span[1:]):
+            source_edge=bm.edges.get((one,two))
+            if not source_edge.link_faces:continue
+            source_loop=next(loop for loop in source_edge.link_faces[0].loops if loop.edge is source_edge)
+            if source_loop.vert is one:polygon.reverse()
+            break
+        face=_face(bm,polygon,attrs,next_order,(frozenset((span[0],moving[span[0]])),frozenset((span[-1],moving[span[-1]]))))
+        if parent is None:
+            from . import groups
+            face[bm.faces.layers.int[a.L_GROUP]]=groups.active_id(bpy.context.edit_object)
+            a._set_zone(face,bm,'width',2);a._set_zone(face,bm,'bulge',a._DEFAULT_BULGE)
         next_order+=1
+    straight_connections(bm,records,moving.items())
     origin=sum((v.co for v in path),Vector())/len(path)
     return _finish(bm,offset,[moving[v] for v in path],origin,direction,'CHAIN',len(spans),records)
 

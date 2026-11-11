@@ -33,6 +33,7 @@ L_WIDTH = 'nh35_width'
 L_BULGE = 'nh35_bulge'
 L_BIAS = 'nh35_bias'
 L_FLIP = 'nh35_flip'
+L_NORMAL_FLIP = 'nh35_normal_flip'
 L_BOUNDARY = 'nh35_boundary_corners'
 L_CAP = 'nh35_cap_corner'  # BMLOOP, per-face direction, never a vertex/edge tag
 L_DENSITY = 'nh35_density'
@@ -120,6 +121,7 @@ def _get_zone(f,bm):
         order=int(f[order]) if order else 0,
         group=int(f[ints[L_GROUP]]) if ints.get(L_GROUP) else 0,
         detail=int(f[ints[L_DETAIL]]) if ints.get(L_DETAIL) else 0,
+        normal_flip=bool(f[ints[L_NORMAL_FLIP]]) if ints.get(L_NORMAL_FLIP) else False,
     )
 
 
@@ -541,7 +543,7 @@ def _prepare_bmesh(bm, result=None, group_id=None):
     """
     context_obj=bpy.context.edit_object or bpy.context.object
     current_group=group_id or (groups.active_id(context_obj) if is_guide(context_obj) else 1)
-    for name in (L_GROUP,L_DETAIL):
+    for name in (L_GROUP,L_DETAIL,L_NORMAL_FLIP):
         if bm.faces.layers.int.get(name) is None:bm.faces.layers.int.new(name)
     if bm.verts.layers.int.get(L_VERTEX_GROUP) is None:bm.verts.layers.int.new(L_VERTEX_GROUP)
     for name,integer,default in ((L_WIDTH,True,2),(L_FLIP,True,0),(L_ORDER,True,0),
@@ -714,6 +716,7 @@ def _set_zone(f,bm,field,value):
         'bias': (L_BIAS,False),
         'flip': (L_FLIP,True),
         'detail': (L_DETAIL,True),
+        'normal_flip': (L_NORMAL_FLIP,True),
     }[field]
     layers=bm.faces.layers.int if is_integer else bm.faces.layers.float
     layer=layers.get(name)
@@ -994,7 +997,7 @@ def _signature(positions,zones,options,rows,caps,detail_length=0.,smoothing=None
     return (bool(regular_rows),tuple(sorted((a,b,round(v,8)) for (a,b),v in (layout_lengths or {}).items())),tuple(sorted((i,round(f,6),round(r,6)) for i,(f,r) in (point_density or {}).items())),int(rows),round(detail_length,8),tuple(sorted((a,b,round(v,6)) for (a,b),v in (density or {}).items())),tuple(sorted((a,b,round(v,6)) for (a,b),v in (smoothing or {}).items())),
             tuple(tuple(round(x,6) for x in p) for p in positions),
             tuple(zones),tuple(caps),
-            tuple((o.width,round(o.bulge,5),round(o.bias,5),o.flip,o.order,o.group,o.detail) for o in options))
+            tuple((o.width,round(o.bulge,5),round(o.bias,5),o.flip,o.order,o.group,o.detail,o.normal_flip) for o in options))
 
 
 def _rebuild(obj,force=False,lazy=False,group_id=None,_background=False):
@@ -1077,7 +1080,6 @@ def _sync_ui(obj):
             if ui.detail!=detail:ui.detail=detail
             if abs(ui.bulge-data.bulge)>1e-6: ui.bulge=data.bulge
             if abs(ui.bias-data.bias)>1e-6: ui.bias=data.bias
-            if ui.flip!=data.flip: ui.flip=data.flip
         finally: _SYNCING_UI=False
     finally:
         if owned: bm.free()
@@ -1139,7 +1141,6 @@ class NHGuidedUISettings(PropertyGroup):
     width: IntProperty(name='Width',min=1,max=32,default=2,update=_on_ui_change('width'),description='Columns across the segment. Shift + wheel changes selected segments')
     bulge: FloatProperty(name='Convexity',default=_DEFAULT_BULGE,min=-3,max=3,step=5,precision=3,update=_on_ui_change('bulge'),description='Cross-section convexity. Ctrl + wheel changes selected segments')
     bias: FloatProperty(name='Distribution',default=0.0,min=-2,max=2,step=5,precision=3,update=_on_ui_change('bias'),description='Column distribution across the width; 0 is uniform')
-    flip: BoolProperty(name='Flip',default=False,update=_on_ui_change('flip'))
 
 
 class NYANW35_OT_create_guide(Operator):
@@ -1945,12 +1946,12 @@ def _draw_extra_panels(layout,context,obj,cached,edit):
         preferences=context.preferences.addons.get(__package__)
         if preferences:body.prop(preferences.preferences,'language',text='Language',expand=True)
         if edit:
-            body.prop(context.window_manager.nh35_ui,'flip',text=tr('Flip profile'));body.operator('nyanw35.refresh_layout',text=tr('Refresh row layout'),icon='FILE_REFRESH')
+            body.operator('nyanw35.refresh_layout',text=tr('Refresh row layout'),icon='FILE_REFRESH')
         body.operator('nyanw35.disable',text=tr('Disable on object'),icon='X')
 
 
 class NYANW35_PT_main(Panel):
-    bl_label='NyanwHair v1.04'
+    bl_label='NyanwHair v1.05'
     bl_idname='NYANW35_PT_main'
     bl_space_type='VIEW_3D'
     bl_region_type='UI'
@@ -2007,6 +2008,8 @@ class NYANW35_PT_main(Panel):
         column=section.column(align=True);column.enabled=bool(vertices);column.prop(ui,'local_density',text=tr('Density'));column.prop(ui,'point_radius',text=tr('Radius, %'))
         row=section.row(align=True);selected=row.row(align=True);selected.enabled=bool(vertices);selected.operator('nyanw35.density_reset',text=tr('Reset')).all_points=False
         row.operator('nyanw35.density_reset',text=tr('Reset all')).all_points=True
+        row=section.row();row.enabled=bool(_zone_ui_faces(bm,obj))
+        row.operator('nyanw35.flip_normals',text=tr('Flip normals'),icon='NORMALS_FACE')
         _draw_extra_panels(layout,context,obj,cached,True)
         errors=cached.get('error_count',0)
         if errors:layout.label(text=tr('Segment errors: %d')%errors,icon='ERROR');layout.label(text=cached.get('status','')[:100])
@@ -2766,7 +2769,7 @@ def unregister():
     del bpy.types.WindowManager.nh35_ui
     del bpy.types.Object.nh35
     for cls in reversed(_CLASSES): bpy.utils.unregister_class(cls)
-    from . import i18n
-    i18n.clear();bpy.utils.unregister_class(i18n.NHLanguagePreferences)
+    from . import i18n,ui_icons
+    ui_icons.clear();i18n.clear();bpy.utils.unregister_class(i18n.NHLanguagePreferences)
     _CACHE.clear();groups.CACHE.clear()
     _UNDO_DISPLAY.clear();_RESTORE_GROUPS.clear()
