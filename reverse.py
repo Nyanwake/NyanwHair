@@ -207,7 +207,7 @@ class NYANW35_OT_reverse(Operator):
     bl_options={'REGISTER','UNDO'}
     distance:FloatProperty(name='Offset',description='Distance behind the selected guides',default=.01,min=0.,soft_max=.1,subtype='DISTANCE')
     bend:FloatProperty(name='Convexity',description='Shape the reverse side across the strand',default=.08,min=0.,max=3.,step=5,precision=3)
-    join:BoolProperty(name='Connect free borders',default=True,description='Bridge open borders; at zero offset share the contour without side walls')
+    join:BoolProperty(name='Connect edges',default=True,description='Bridge open borders; at zero offset share the contour without side walls')
     @classmethod
     def poll(cls,context):return bool(a.is_guide(context.edit_object))
     def _begin(self,context):
@@ -279,7 +279,7 @@ class NYANW35_OT_reverse(Operator):
     def draw(self,context):
         layout=translated_layout(self.layout)
         layout.prop(self,'distance',text=tr('Offset'));layout.prop(self,'bend',text=tr('Convexity'))
-        layout.prop(self,'join',text=tr('Connect free borders'))
+        layout.prop(self,'join',text=tr('Connect edges'))
         if self.distance==0. and self.join:layout.label(text=tr('Shared contour · no side walls'),icon='AUTOMERGE_ON')
         if getattr(self,'_error',''):layout.label(text=self._error,icon='ERROR')
     def _end(self,context,restore):

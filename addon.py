@@ -1159,6 +1159,7 @@ class NYANW35_OT_create_guide(Operator):
         me.update()
         guide=bpy.data.objects.new('NyanwHair Guided Hair',me)
         context.collection.objects.link(guide)
+        guide.location=context.scene.cursor.location
         for o in context.selected_objects: o.select_set(False)
         guide.select_set(True)
         context.view_layer.objects.active=guide
@@ -1945,7 +1946,7 @@ def _draw_extra_panels(layout,context,obj,cached,edit):
 
 
 class NYANW35_PT_main(Panel):
-    bl_label='NyanwHair v1.02'
+    bl_label='NyanwHair v1.03'
     bl_idname='NYANW35_PT_main'
     bl_space_type='VIEW_3D'
     bl_region_type='UI'
@@ -1985,22 +1986,22 @@ class NYANW35_PT_main(Panel):
                 distance.prop(active,'mirror_distance',text='')
             else:body.label(text=tr('Press ↻ to prepare groups'))
         bm=bmesh.from_edit_mesh(obj.data)
-        layout.separator();editing.draw_mode_header(layout,context,'FACE','Segment settings','FACESEL')
-        parameters=layout.column(align=True);parameters.enabled=bool(_zone_ui_faces(bm,obj))
+        section=editing.mode_section(layout,context,'FACE','Segment settings','FACESEL')
+        parameters=section.column(align=True);parameters.enabled=bool(_zone_ui_faces(bm,obj))
         parameters.prop(ui,'detail',text=tr('Detail'));parameters.prop(ui,'width',text=tr('Width'));parameters.prop(ui,'bulge',text=tr('Convexity'));parameters.prop(ui,'bias',text=tr('Distribution'))
         parameters.separator();parameters.operator('nyanw35.create_reverse',text=tr('Create reverse side'),icon='MOD_SOLIDIFY')
         if not cached.get('zone_count',0):layout.operator('nyanw35.group_starter',text=tr('Create strand in group'),icon='ADD')
-        layout.separator();editing.draw_mode_header(layout,context,'EDGE','Segment boundaries','EDGESEL')
-        ends=layout.column(align=True);ends.enabled=bool(_zone_ui_faces(bm,obj))
+        section=editing.mode_section(layout,context,'EDGE','Segment boundaries','EDGESEL')
+        ends=section.column(align=True);ends.enabled=bool(_zone_ui_faces(bm,obj))
         for slot,label in [('FIRST',tr('Start')),('SECOND',tr('End'))]:
             row=ends.row(align=True);op=row.operator('nyanw35.boundary',text=label);op.slot=slot;op.clear=False
             op=row.operator('nyanw35.boundary',text='',icon='X');op.slot=slot;op.clear=True
-        layout.separator();editing.draw_mode_header(layout,context,'VERT','Points','VERTEXSEL')
-        row=layout.row(align=True);row.enabled=bool(_smooth_targets(bm,result));row.prop(ui,'direction_smoothing',text=tr('Smoothing'),slider=True);row.operator('nyanw35.direction_smoothing',text='',icon='LOOP_BACK').value=1.
-        layout.separator(factor=.4);layout.label(text=tr('Local density'),icon='MOD_SUBSURF')
+        section=editing.mode_section(layout,context,'VERT','Points','VERTEXSEL')
+        row=section.row(align=True);row.enabled=bool(_smooth_targets(bm,result));row.prop(ui,'direction_smoothing',text=tr('Smoothing'),slider=True);row.operator('nyanw35.direction_smoothing',text='',icon='LOOP_BACK').value=1.
+        section.separator(factor=.4);section.label(text=tr('Local density'),icon='MOD_SUBSURF')
         vertices=_point_density_targets(bm,result)
-        column=layout.column(align=True);column.enabled=bool(vertices);column.prop(ui,'local_density',text=tr('Density'));column.prop(ui,'point_radius',text=tr('Radius, %'))
-        row=layout.row(align=True);selected=row.row(align=True);selected.enabled=bool(vertices);selected.operator('nyanw35.density_reset',text=tr('Reset')).all_points=False
+        column=section.column(align=True);column.enabled=bool(vertices);column.prop(ui,'local_density',text=tr('Density'));column.prop(ui,'point_radius',text=tr('Radius, %'))
+        row=section.row(align=True);selected=row.row(align=True);selected.enabled=bool(vertices);selected.operator('nyanw35.density_reset',text=tr('Reset')).all_points=False
         row.operator('nyanw35.density_reset',text=tr('Reset all')).all_points=True
         _draw_extra_panels(layout,context,obj,cached,True)
         errors=cached.get('error_count',0)

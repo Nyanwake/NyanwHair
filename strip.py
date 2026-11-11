@@ -2,7 +2,7 @@
 from .i18n import tr
 import math
 from .core import EPS,add,sub,mul,dot,cross,length,norm,mix,bias_cross_position,edge_key
-from .surface import _rotate
+from .surface import _rotate,CapBlend
 from .ribbon import zipper_flows
 
 
@@ -39,11 +39,13 @@ def build_strip(plan,width,registry,ca,cb,left,right,profiles,put,emit,max_polyg
             if length(normal)<EPS:normal=reference
             if dot(normal,reference)<0.:normal=mul(normal,-1.)
             normals.append(normal);previous_normal=normal;old_tangent=tangents[i]
+        cap_blend=CapBlend.from_profiles(plan,[(body_a[i][1],body_b[i][1]) for i in (0,-1)],(normals[0],normals[-1]),profiles)
         profile=[bias_cross_position(x/width,plan.settings.bias) for x in range(width+1)]
         sine=[math.sin(math.pi*v) for v in profile]
         grid=[];sections=[]
         for row_index,((ka,a),(kb,b)) in enumerate(zip(body_a,body_b)):
             row=[];coords=[];row_width=length(sub(b,a))
+            weights=cap_blend.weights(fractions[row_index])
             for x in range(width+1):
                 if x==0:key,pos=ka,a
                 elif x==width:key,pos=kb,b
@@ -53,6 +55,7 @@ def build_strip(plan,width,registry,ca,cb,left,right,profiles,put,emit,max_polyg
                     amount=plan.settings.bulge*row_width*sine[x]
                     if plan.settings.flip:amount=-amount
                     pos=add(mix(a,b,v),mul(normals[row_index],amount))
+                    pos=cap_blend.apply(pos,x/width,weights)
                     if row_index==0 and plan.start[0]=='edge' or row_index==len(body_a)-1 and plan.end[0]=='edge':
                         cap=plan.start if row_index==0 else plan.end
                         edge=edge_key(plan.boundary[cap[1]],plan.boundary[(cap[1]+1)%len(plan.boundary)])

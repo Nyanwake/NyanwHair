@@ -280,5 +280,6 @@
   "Merge distance": "Допуск слияния",
   "Join reflected halves when guide points are within the seam distance": "Сшивать отражённые половины, когда точки направляющих находятся в пределах допуска от плоскости зеркала",
   "Merge to Mirror plane": "На плоскость Mirror",
-  "Place selected points on the Mirror plane to join both halves": "Поместить выбранные точки на плоскость Mirror для соединения половин"
+  "Place selected points on the Mirror plane to join both halves": "Поместить выбранные точки на плоскость Mirror для соединения половин",
+  "Connect edges": "Соединить края"
 }

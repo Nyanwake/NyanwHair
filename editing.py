@@ -289,6 +289,14 @@ def draw_mode_header(layout,context,mode,label,icon):
     op.mode=mode
 
 
+def mode_section(layout,context,mode,label,icon):
+    layout.separator()
+    active=context.tool_settings.mesh_select_mode[{'VERT':0,'EDGE':1,'FACE':2}[mode]]
+    body=layout.box() if active else layout.column()
+    draw_mode_header(body,context,mode,label,icon)
+    return body
+
+
 class NYANW35_OT_select_mode(Operator):
     bl_idname='nyanw35.select_mode'
     bl_label='Selection mode'

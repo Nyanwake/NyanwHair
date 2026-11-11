@@ -16,6 +16,45 @@ def _rotate(vector,old,new):
     return add(add(mul(vector,cosine),mul(cross(axis,vector),sine)),mul(axis,dot(axis,vector)*(1.-cosine)))
 
 
+class CapBlend:
+    """Bring the interior profile smoothly onto the shared end curves."""
+    def __init__(self,plan,ends,normals,profiles):
+        self.bias=plan.settings.bias;self.ends=[];self.cache={}
+        for (a,b),normal,profile in zip(ends,normals,profiles):
+            amplitude=plan.settings.bulge*length(sub(b,a))*(-1. if plan.settings.flip else 1.)
+            self.ends.append((a,b,mul(normal,amplitude),profile) if profile else None)
+    @classmethod
+    def from_profiles(cls,plan,ends,normals,profiles):
+        aligned=[]
+        for k,(kind,i) in enumerate((plan.start,plan.end)):
+            if kind!='edge':aligned.append(None);continue
+            edge=edge_key(plan.boundary[i],plan.boundary[(i+1)%len(plan.boundary)])
+            profile=profiles[edge]
+            aligned.append(profile if plan.left[-1 if k else 0]==edge[0] else profile[::-1])
+        return cls(plan,ends,normals,aligned)
+    def column(self,t):
+        if t not in self.cache:
+            v=bias_cross_position(t,self.bias);sine=math.sin(math.pi*v);shifts=[]
+            for end in self.ends:
+                if end is None:shifts.append(None);continue
+                a,b,normal,profile=end;x=t*(len(profile)-1);i=min(len(profile)-2,int(x))
+                wanted=mix(profile[i],profile[i+1],x-i)
+                delta=sub(wanted,add(mix(a,b,v),mul(normal,sine)))
+                shifts.append(delta if length(delta)>EPS else None)
+            self.cache[t]=tuple(shifts)
+        return self.cache[t]
+    def weights(self,u):
+        if .25<=u<=.75:return (0.,0.)
+        a=max(0.,min(1.,u*4.));b=max(0.,min(1.,(1.-u)*4.))
+        return (1.-a*a*(3.-2.*a) if self.ends[0] is not None and u<.25 else 0.,
+                1.-b*b*(3.-2.*b) if self.ends[1] is not None and u>.75 else 0.)
+    def apply(self,point,t,weights):
+        if not any(weights):return point
+        for shift,weight in zip(self.column(t),weights):
+            if shift is not None and weight:point=add(point,mul(shift,weight))
+        return point
+
+
 class FlowSurface:
     def __init__(self,plan,width,mapping,cap_profiles,cap_keys=None):
         self.plan=plan;self.width=width;self.mapping=mapping;self.caps={};self._samples={};self.cap_keys=cap_keys or {}
@@ -38,6 +77,8 @@ class FlowSurface:
             if length(normal)<EPS:normal=transported
             if dot(normal,transported)<0:normal=mul(normal,-1.)
             self.normals.append(normal);previous=normal;old=tangents[i]
+        ends=[tuple(p[1] for p in pairs[i]) for i in (0,-1)]
+        self.cap_blend=CapBlend.from_profiles(plan,ends,(self.normals[0],self.normals[-1]),cap_profiles)
 
     def prime(self,values,x):
         values=list(dict.fromkeys(float(u) for u in values if (float(u),x) not in self._samples))
@@ -58,6 +99,10 @@ class FlowSurface:
         amount=self.plan.settings.bulge*np.linalg.norm(pb-pa,axis=1)*math.sin(math.pi*v)
         if self.plan.settings.flip:amount=-amount
         positions=pa*(1.-v)+pb*v+normal*amount[:,None]
+        for end,shift in enumerate(self.cap_blend.column(x/self.width)):
+            if shift is not None:
+                t=np.clip((u if end==0 else 1.-u)/.25,0.,1.);weight=1.-t*t*(3.-2.*t)
+                positions+=weight[:,None]*np.asarray(shift)
         self._samples.update(((value,x),(None,tuple(pos))) for value,pos in zip(interior,positions.tolist()))
 
     def at(self,u,x):
@@ -76,6 +121,7 @@ class FlowSurface:
         amplitude=self.plan.settings.bulge*length(sub(b,a))*math.sin(math.pi*v)
         if self.plan.settings.flip:amplitude=-amplitude
         pos=add(mix(a,b,v),mul(normal,amplitude))
+        pos=self.cap_blend.apply(pos,x/self.width,self.cap_blend.weights(u))
         if u==0. or u==1.:
             end=u==1.;cap=self.plan.end if end else self.plan.start
             if cap[0]=='edge':

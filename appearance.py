@@ -9,6 +9,11 @@ def sharp_edges(result):
         for samples in rails:
             for (ka,pa),(kb,pb) in zip(samples,samples[1:]):
                 if ka in indices and kb in indices and indices[ka]!=indices[kb]:sharp.add(edge_key(indices[ka],indices[kb]))
+    for lo,hi in result.rim_caps:
+        width=result.cap_widths[lo,hi]
+        keys=[('v',lo)]+[('cap',lo,hi,x,width) for x in range(1,width)]+[('v',hi)]
+        for one,two in zip(keys,keys[1:]):
+            if one in indices and two in indices and indices[one]!=indices[two]:sharp.add(edge_key(indices[one],indices[two]))
     return sharp|set(getattr(result,"extra_sharp_edges",()))
 
 

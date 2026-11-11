@@ -1,4 +1,4 @@
-"""NyanwHair 1.02: shared curve contracts and editable guide surfaces.
+"""NyanwHair 1.03: shared curve contracts and editable guide surfaces.
 
 Pure Python, no Blender IDs or tags on vertices/edges. Blender face corners may
 store the user's chosen end caps; this module only consumes that choice.
@@ -70,6 +70,7 @@ class MeshResult:
     cut_lines: dict=field(default_factory=dict)
     effective_widths: dict=field(default_factory=dict)
     cap_widths: dict=field(default_factory=dict)
+    rim_caps: set=field(default_factory=set)
     width_transitions: dict=field(default_factory=dict)
     samples_per_edge: dict=field(default_factory=dict)
     plans_by_loop: dict=field(default_factory=dict)
@@ -114,11 +115,11 @@ def _boundary_key(boundary):
     return min(seq[i:]+seq[:i] for seq in (loop,loop[::-1]) for i in range(len(seq)))
 
 
-def _cap_profiles(points,plans,widths,evaluate,cap_widths=None):
+def _cap_profiles(points,plans,widths,evaluate,cap_widths=None,rim_caps=None):
     """One geometric definition per cross-cap, shared by ALL its owners.
 
-    Equal-weight mean signed bulge/bias is symmetric. The local reference
-    normals come from the source curves, independent of output row density.
+    The end-to-end frame keeps depth bends from shifting cap stations.
+    Opposing surfaces share a fixed rim; other owners average displacement.
     """
     groups=defaultdict(list)
     for p in plans:
@@ -126,30 +127,30 @@ def _cap_profiles(points,plans,widths,evaluate,cap_widths=None):
             if cap[0]!='edge': continue
             i=cap[1]
             key=edge_key(p.boundary[i],p.boundary[(i+1)%len(p.boundary)])
-            tangents=[]
-            for rail in (p.left,p.right):
-                if end:
-                    tangents.append(sub(points[rail[-1]],evaluate(rail[-2],rail[-1],.999)))
-                else:
-                    tangents.append(sub(evaluate(rail[0],rail[1],.001),points[rail[0]]))
             across=sub(points[p.right[-1 if end else 0]],points[p.left[-1 if end else 0]])
-            normal=norm(cross(across,add(*tangents)))
+            flow=sub(cap_location(points,p.boundary,p.end),cap_location(points,p.boundary,p.start))
+            normal=norm(cross(across,flow))
+            if length(normal)<EPS:
+                tangents=[sub(points[rail[-1]],evaluate(rail[-2],rail[-1],.999)) if end else
+                    sub(evaluate(rail[0],rail[1],.001),points[rail[0]]) for rail in (p.left,p.right)]
+                normal=norm(cross(across,add(*tangents)))
             if length(normal)<EPS: normal=p.normal
             if dot(normal,p.normal)<0: normal=mul(normal,-1.)
             groups[key].append((p,normal))
     profiles={}
     for (lo,hi),group in groups.items():
         group.sort(key=lambda item:_boundary_key(item[0].boundary))
-        n=norm(tuple(math.fsum(item[1][axis] for item in group) for axis in range(3)))
-        if length(n)<EPS: n=group[0][1]
+        rim=any(dot(one[1],two[1])<-.95 for i,one in enumerate(group) for two in group[i+1:])
+        if rim and rim_caps is not None:rim_caps.add((lo,hi))
+        offset=((0.,0.,0.) if rim else tuple(math.fsum(normal[axis]*p.settings.bulge*(-1. if p.settings.flip else 1.)
+            for p,normal in group)/len(group) for axis in range(3)))
         bias=math.fsum(p.settings.bias for p,_ in group)/len(group)
-        bulge=math.fsum(p.settings.bulge*(-1 if p.settings.flip else 1) for p,_ in group)/len(group)
         w=(cap_widths or {}).get((lo,hi),widths[group[0][0].index])
         size=length(sub(points[hi],points[lo]))
         positions=[]
         for j in range(w+1):
             v=bias_cross_position(j/w,bias)
-            positions.append(add(mix(points[lo],points[hi],v),mul(n,bulge*size*math.sin(math.pi*v))))
+            positions.append(add(mix(points[lo],points[hi],v),mul(offset,size*math.sin(math.pi*v))))
         positions[0]=points[lo]; positions[-1]=points[hi]
         profiles[(lo,hi)]=positions
     return profiles
@@ -558,7 +559,7 @@ def generate(points,boundaries,settings=None,rows=12,max_polygons=200000,
             if edge in rail_edges:interfaces[edge]=registry.boundary(registry.curve(edge))
     for edge,samples in interfaces.items():cap_widths[edge]=len(samples)-1
     out.cap_widths=cap_widths
-    cap_profiles=_cap_profiles(points,plans,widths,evaluate,cap_widths)
+    cap_profiles=_cap_profiles(points,plans,widths,evaluate,cap_widths,out.rim_caps)
     if any(plane_axes):
         for (a,b),profile in cap_profiles.items():
             locked=tuple(on and abs(points[a][axis])<1e-7 and abs(points[b][axis])<1e-7 for axis,on in enumerate(plane_axes))

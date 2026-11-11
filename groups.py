@@ -262,9 +262,11 @@ class NYANW35_OT_group_starter(Operator):
         obj=context.edit_object
         if not a.is_guide(obj):return {'CANCELLED'}
         uid=active_id(obj)
+        offset=obj.matrix_world.inverted_safe()@context.scene.cursor.location
         def operation(bm):
             from . import starter
             verts,face=starter.add(bm,uid)
+            for vertex in verts:vertex.co+=offset
             editing._select(bm,verts);isolate(bm,uid)
         a._edit_transaction(obj,operation);a._prepare_object(obj);a._rebuild(obj,True)
         return {'FINISHED'}

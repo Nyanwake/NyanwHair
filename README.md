@@ -1,4 +1,4 @@
-# NyanwHair 1.02
+# NyanwHair 1.03
 
 Build expressive stylized hair one strand at a time. Shape the guides and NyanwHair stitches neighbouring segments into a continuous mesh. Grow branches, open sharp tips, and add or remove polygons along and across each strand as you work.
 
@@ -34,19 +34,21 @@ Build expressive stylized hair one strand at a time. Shape the guides and NyanwH
 
 E continues a marked end when only that end is selected. Add connected edges to extrude the full chain, or select whole strands to create a closed volume.
 
+New strands start at the **3D cursor**.
+
 Click the **3 · Segment settings / 2 · Segment boundaries / 1 · Points** headers to switch selection modes. Selecting every point of a segment also selects that segment in modes 1 and 2.
 
 **Detail** controls rows along the strand. **Width** controls columns across it. **Convexity** shapes the cross-section; **Distribution** shifts the columns across the width.
 
 **Local density** adds geometry near selected points without changing the guide shape. **Radius** sets how far the extra density spreads along the guides, with a smooth fade to the regular grid.
 
-**Create reverse side** previews offset and convexity before confirmation. The result is editable. At zero offset, the front and rear share their contour without side walls; a centre guide gives each side its own shape. **Mirror UV** lets reflected strands share the original texture space or use separate islands.
+**Create reverse side** previews offset and convexity before confirmation. The result is editable; opposing sides meet at a stable rim. At zero offset, the front and rear share their contour without side walls; a centre guide gives each side its own shape. **Mirror UV** lets reflected strands share the original texture space or use separate islands.
 
 **Mirror · Merge seam** joins reflected halves within the chosen distance, in Live and the converted Mesh. **M → Mirror X/Y/Z** places selected source points exactly on a mirror plane.
 
 Choose **RU / EN** in **Additional**. The initial language follows Blender; other languages use English.
 
-[Download](https://github.com/Nyanwake/NyanwHair/releases/tag/v1.0.2) · [GPL-3.0](LICENSE)
+[Download](https://github.com/Nyanwake/NyanwHair/releases/tag/v1.0.3) · [GPL-3.0](LICENSE)
 
 ---
 
@@ -59,6 +61,8 @@ Choose **RU / EN** in **Additional**. The initial language follows Blender; othe
 **Начало / Конец** задают направление сегмента. Торцом может быть ребро или одна точка. Крестик заново определяет выбранный торец, сохраняя противоположный.
 
 Если выбран только торец, E продолжает локон. Цепочка рёбер вытягивается целиком, а выбор целых локонов создаёт замкнутый объём.
+
+Новый локон появляется у **3D-курсора**.
 
 Заголовки **3 · Настройки сегмента / 2 · Края сегмента / 1 · Точки** переключают режим выделения. В режимах 1 и 2 выбор всех точек сегмента выделяет и сам сегмент.
 
