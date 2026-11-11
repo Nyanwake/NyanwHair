@@ -7,6 +7,7 @@ except ImportError:
     np=None
 from .core import EPS,add,sub,mul,dot,cross,length,norm,mix,edge_key,bias_cross_position
 from .ribbon import zipper_flows
+from .crossflow import offset as cross_offset,weight
 
 
 def _rotate(vector,old,new):
@@ -18,28 +19,30 @@ def _rotate(vector,old,new):
 
 class CapBlend:
     """Bring the interior profile smoothly onto the shared end curves."""
-    def __init__(self,plan,ends,normals,profiles):
-        self.bias=plan.settings.bias;self.ends=[];self.cache={}
-        for (a,b),normal,profile in zip(ends,normals,profiles):
+    def __init__(self,plan,ends,normals,profiles,cross_profile=None):
+        self.bias=plan.settings.bias;self.automatic=plan.settings.auto_curve;self.ends=[];self.cache={}
+        for k,((a,b),normal,profile) in enumerate(zip(ends,normals,profiles)):
             amplitude=plan.settings.signed_bulge*length(sub(b,a))
-            self.ends.append((a,b,mul(normal,amplitude),profile) if profile else None)
+            self.ends.append((a,b,mul(normal,amplitude),profile,cross_profile.end(k) if cross_profile else None) if profile else None)
     @classmethod
-    def from_profiles(cls,plan,ends,normals,profiles):
+    def from_profiles(cls,plan,ends,normals,profiles,cross_profile=None):
         aligned=[]
         for k,(kind,i) in enumerate((plan.start,plan.end)):
             if kind!='edge':aligned.append(None);continue
             edge=edge_key(plan.boundary[i],plan.boundary[(i+1)%len(plan.boundary)])
             profile=profiles[edge]
             aligned.append(profile if plan.left[-1 if k else 0]==edge[0] else profile[::-1])
-        return cls(plan,ends,normals,aligned)
+        return cls(plan,ends,normals,aligned,cross_profile)
     def column(self,t):
         if t not in self.cache:
-            v=bias_cross_position(t,self.bias);sine=math.sin(math.pi*v);shifts=[]
+            v=bias_cross_position(t,self.bias);sine=weight(v,self.automatic);shifts=[]
             for end in self.ends:
                 if end is None:shifts.append(None);continue
-                a,b,normal,profile=end;x=t*(len(profile)-1);i=min(len(profile)-2,int(x))
+                a,b,normal,profile,deltas=end;x=t*(len(profile)-1);i=min(len(profile)-2,int(x))
                 wanted=mix(profile[i],profile[i+1],x-i)
-                delta=sub(wanted,add(mix(a,b,v),mul(normal,sine)))
+                base=add(mix(a,b,v),mul(normal,sine))
+                if deltas is not None:base=add(base,cross_offset(deltas,v))
+                delta=sub(wanted,base)
                 shifts.append(delta if length(delta)>EPS else None)
             self.cache[t]=tuple(shifts)
         return self.cache[t]
@@ -56,8 +59,9 @@ class CapBlend:
 
 
 class FlowSurface:
-    def __init__(self,plan,width,mapping,cap_profiles,cap_keys=None):
+    def __init__(self,plan,width,mapping,cap_profiles,cap_keys=None,cross_profile=None):
         self.plan=plan;self.width=width;self.mapping=mapping;self.caps={};self._samples={};self.cap_keys=cap_keys or {};self.bulge=plan.settings.signed_bulge
+        self.cross_profile=cross_profile;self.cross_rows={}
         for kind,i in (plan.start,plan.end):
             if kind=='edge':
                 edge=edge_key(plan.boundary[i],plan.boundary[(i+1)%len(plan.boundary)]);self.caps[edge]=cap_profiles[edge]
@@ -78,7 +82,7 @@ class FlowSurface:
             if dot(normal,transported)<0:normal=mul(normal,-1.)
             self.normals.append(normal);previous=normal;old=tangents[i]
         ends=[tuple(p[1] for p in pairs[i]) for i in (0,-1)]
-        self.cap_blend=CapBlend.from_profiles(plan,ends,(self.normals[0],self.normals[-1]),cap_profiles)
+        self.cap_blend=CapBlend.from_profiles(plan,ends,(self.normals[0],self.normals[-1]),cap_profiles,cross_profile)
 
     def prime(self,values,x):
         values=list(dict.fromkeys(float(u) for u in values if (float(u),x) not in self._samples))
@@ -96,18 +100,25 @@ class FlowSurface:
         normal=normals[index]*(1.-t[:,None])+normals[index+1]*t[:,None]
         normal/=np.maximum(EPS,np.linalg.norm(normal,axis=1))[:,None]
         v=bias_cross_position(x/self.width,self.plan.settings.bias)
-        amount=self.bulge*np.linalg.norm(pb-pa,axis=1)*math.sin(math.pi*v)
+        amount=self.bulge*np.linalg.norm(pb-pa,axis=1)*weight(v,self.plan.settings.auto_curve)
         positions=pa*(1.-v)+pb*v+normal*amount[:,None]
+        if self.cross_profile:
+            deltas=np.asarray([self._cross(value,ua,ub,p,q) for value,ua,ub,p,q in zip(interior,a,b,pa,pb)])
+            positions+=v*(1.-v)**2*deltas[:,0]-v*v*(1.-v)*deltas[:,1]
         for end,shift in enumerate(self.cap_blend.column(x/self.width)):
             if shift is not None:
-                t=np.clip((u if end==0 else 1.-u)/.25,0.,1.);weight=1.-t*t*(3.-2.*t)
-                positions+=weight[:,None]*np.asarray(shift)
+                t=np.clip((u if end==0 else 1.-u)/.25,0.,1.);blend=1.-t*t*(3.-2.*t)
+                positions+=blend[:,None]*np.asarray(shift)
         self._samples.update(((value,x),(None,tuple(pos))) for value,pos in zip(interior,positions.tolist()))
 
     def at(self,u,x):
         key=(u,x)
         if key not in self._samples:self._samples[key]=self._at(u,x)
         return self._samples[key]
+
+    def _cross(self,u,ua,ub,a,b):
+        if u not in self.cross_rows:self.cross_rows[u]=self.cross_profile.deltas(ua,ub,a,b)
+        return self.cross_rows[u]
 
     def _at(self,u,x):
         (ka,a),(kb,b)=self.mapping.at(u)
@@ -117,8 +128,11 @@ class FlowSurface:
         v=bias_cross_position(x/self.width,self.plan.settings.bias)
         t=min(self.n-1,int(u*self.n));blend=u*self.n-t
         normal=norm(mix(self.normals[t],self.normals[t+1],blend))
-        amplitude=self.bulge*length(sub(b,a))*math.sin(math.pi*v)
+        amplitude=self.bulge*length(sub(b,a))*weight(v,self.plan.settings.auto_curve)
         pos=add(mix(a,b,v),mul(normal,amplitude))
+        if self.cross_profile:
+            ua=self.mapping.flow_to_u(u);ub=self.mapping.u_to_v(ua)
+            pos=add(pos,cross_offset(self._cross(u,ua,ub,a,b),v))
         pos=self.cap_blend.apply(pos,x/self.width,self.cap_blend.weights(u))
         if u==0. or u==1.:
             end=u==1.;cap=self.plan.end if end else self.plan.start
@@ -240,7 +254,7 @@ class _SurfaceSections:
 
 def _build_patch(plan,width,registry,left_curve,right_curve,left,right,cap_profiles,put,emit,max_polygons):
     mapping=registry.maps[left_curve.path,right_curve.path]
-    surface=FlowSurface(plan,width,mapping,cap_profiles,registry.cap_keys)
+    surface=FlowSurface(plan,width,mapping,cap_profiles,registry.cap_keys,registry.crossflow.get(plan))
     columns=[];flows=[];coords=[]
     boundary_flows=[[mapping.fraction(curve,key) for key,pos in samples]
                     for curve,samples in ((left_curve,left),(right_curve,right))]
@@ -301,7 +315,7 @@ def build_patch(plan,width,registry,left_curve,right_curve,left,right,cap_profil
     edges=set(left_curve.edges)|set(right_curve.edges)
     signature=('adaptive',plan,width,registry.plan_spacing(plan),left_curve.geometry_signature,right_curve.geometry_signature,
         tuple(left),tuple(right),tuple(caps),tuple(sorted((e,registry.density[e]) for e in edges if e in registry.density)),
-        tuple(registry.point_field.profile(left_curve)[0]),tuple(registry.point_field.profile(right_curve)[0]))
+        tuple(registry.point_field.profile(left_curve)[0]),tuple(registry.point_field.profile(right_curve)[0]),registry.crossflow.signature(plan))
     old=(previous or {}).get(plan.boundary)
     reused=bool(old and old[0]==signature)
     if reused:recipe=old[1]

@@ -10,7 +10,7 @@ def _clone(result,copy_mesh=True):
     if copy_mesh:
         out.vertices=list(result.vertices);out.vertex_keys=list(result.vertex_keys);out.faces=list(result.faces);out.owners=list(result.owners)
     out.source_result=result
-    out.extra_sharp_edges=set(getattr(result,'extra_sharp_edges',()));out.replica_faces=set()
+    out.extra_sharp_edges=set(getattr(result,'extra_sharp_edges',()));out.extra_seam_edges=set(getattr(result,'extra_seam_edges',()));out.replica_faces=set()
     return out
 
 
@@ -18,7 +18,7 @@ def build(result,axes=(),replicate=True,merge=True):
     out=_clone(result,copy_mesh=bool(any(axes) and replicate))
     if not any(axes) or not replicate:return out
     source_vertices=list(out.vertices);source_keys=list(out.vertex_keys);source_faces=list(out.faces);source_owners=list(out.owners)
-    sharp=appearance.sharp_edges(out);lookup={};axis_bits=[1<<i for i,value in enumerate(axes) if value]
+    sharp=appearance.sharp_edges(out);seams=appearance.guide_edges(out);lookup={};axis_bits=[1<<i for i,value in enumerate(axes) if value]
     seen_faces={frozenset(face) for face in source_faces};masks=[0]
     for bit in axis_bits:masks+=[value|bit for value in list(masks)]
     for mask in (masks[1:] if replicate else ()):
@@ -40,9 +40,11 @@ def build(result,axes=(),replicate=True,merge=True):
             if mask.bit_count()%2:ring=ring[::-1]
             out.replica_faces.add(len(out.faces));out.faces.append(ring);out.owners.append(owner)
         out.extra_sharp_edges.update(core.edge_key(mapping[a],mapping[b]) for a,b in sharp)
+        out.extra_seam_edges.update(core.edge_key(mapping[a],mapping[b]) for a,b in seams)
     used=sorted({v for face in out.faces for v in face});remap={v:i for i,v in enumerate(used)}
     out.vertices=[out.vertices[v] for v in used];out.vertex_keys=[out.vertex_keys[v] for v in used];out.faces=[tuple(remap[v] for v in face) for face in out.faces]
     out.extra_sharp_edges={core.edge_key(remap[a],remap[b]) for a,b in out.extra_sharp_edges if a in remap and b in remap}
+    out.extra_seam_edges={core.edge_key(remap[a],remap[b]) for a,b in out.extra_seam_edges if a in remap and b in remap}
     return out
 
 

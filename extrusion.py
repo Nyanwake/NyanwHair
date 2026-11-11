@@ -66,7 +66,7 @@ def _build_walls(bm,walls,moving,identity):
         if not forward:polygon.reverse()
         slots=(frozenset((path[0],copied[0])),frozenset((path[-1],copied[-1]))) if rail else (frozenset(path),frozenset(copied))
         face=_face(bm,polygon,attrs,identity,slots);identity+=1
-        for name,value in (('width',width),('bulge',0.),('bias',0.),('flip',False)):a._set_zone(face,bm,name,value)
+        for name,value in (('width',width),('bulge',0.),('bias',0.),('flip',False),('auto_curve',False)):a._set_zone(face,bm,name,value)
         if not rail:a._set_zone(face,bm,'detail',2)
 
 

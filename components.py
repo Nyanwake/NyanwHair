@@ -73,7 +73,7 @@ def generate(points,boundaries,settings=None,rows=12,max_polygons=200000,previou
     for part in parts:
         remap=remaps[id(part)]
         for face,owner in zip(part.faces,part.owners):faces[owner].append(tuple(remap[v] for v in face))
-        for name in ('warnings','face_paths','guide_curves','cut_lines','effective_widths','cap_widths','rim_caps','width_transitions','samples_per_edge','plans_by_loop','transitions','orientation_by_face','surface_sections','rail_samples','layout_lengths','row_cache','sampling_cache','correspondence_cache','patch_cache','final_sampling_cache','valid_cache'):
+        for name in ('warnings','face_paths','guide_curves','cut_lines','effective_widths','cap_widths','rim_caps','smooth_rails','width_transitions','samples_per_edge','plans_by_loop','transitions','orientation_by_face','surface_sections','rail_samples','layout_lengths','row_cache','sampling_cache','correspondence_cache','patch_cache','final_sampling_cache','valid_cache'):
             getattr(out,name).update(getattr(part,name))
         out.surface_columns.update((owner,tuple(tuple(remap[v] for v in column) for column in columns)) for owner,columns in part.surface_columns.items())
         out.surface_grids.update((owner,tuple(tuple(remap[v] if v is not None else None for v in row) for row in grid)) for owner,grid in part.surface_grids.items())

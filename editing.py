@@ -285,9 +285,9 @@ def validate_stage(bm,obj):
 def draw_mode_header(layout,context,mode,label,icon):
     from . import ui_icons
     index={'VERT':0,'EDGE':1,'FACE':2}[mode]
-    accent=ui_icons.mode_icon(context.edit_object.nh35,mode)
-    op=layout.operator('nyanw35.select_mode',text='%d · %s'%(index+1,tr(label)),
-        depress=context.tool_settings.mesh_select_mode[index],**({'icon_value':accent} if accent else {'icon':icon}))
+    row=layout.row();row.scale_y=2.
+    op=ui_icons.button(row,context.edit_object.nh35,'nyanw35.select_mode','%d · %s'%(index+1,tr(label)),mode,icon,
+        depress=context.tool_settings.mesh_select_mode[index])
     op.mode=mode
 
 
@@ -310,6 +310,30 @@ class NYANW35_OT_select_mode(Operator):
     def execute(self,context):
         bpy.ops.mesh.select_mode(type=self.mode,use_extend=False,use_expand=False)
         a._sync_ui(context.edit_object)
+        if context.area:context.area.tag_redraw()
+        return {'FINISHED'}
+
+
+class NYANW35_OT_auto_curvature(Operator):
+    bl_idname='nyanw35.auto_curvature'
+    bl_label='Auto curvature'
+    bl_description='Smooth the cross-section between neighbouring guides; convexity adds to this shape'
+    bl_options={'REGISTER','UNDO'}
+    enabled:bpy.props.BoolProperty(name='Auto curvature',default=True)
+    @classmethod
+    def poll(cls,context):return bool(a.is_guide(context.edit_object))
+    def execute(self,context):
+        obj=context.edit_object;a._rebuild(obj);bm=bmesh.from_edit_mesh(obj.data)
+        indices=tuple(face.index for face in a._zone_ui_faces(bm,obj))
+        if not indices:return {'CANCELLED'}
+        def operation(stage):
+            a._prepare_bmesh(stage);stage.faces.ensure_lookup_table()
+            for index in indices:a._set_zone(stage.faces[index],stage,'auto_curve',self.enabled)
+            validate_stage(stage,obj)
+        try:a._edit_transaction(obj,operation)
+        except (ValueError,RuntimeError,ReferenceError) as exc:
+            self.report({'WARNING'},str(exc));return {'CANCELLED'}
+        a._rebuild(obj,True);a._sync_ui(obj)
         if context.area:context.area.tag_redraw()
         return {'FINISHED'}
 
@@ -545,4 +569,4 @@ def cancel_all(restore=True):
 
 from .ripping import NYANW35_OT_rip
 
-CLASSES=(NYANW35_OT_boundary,NYANW35_OT_merge,NYANW35_MT_merge,NYANW35_OT_merge_menu,NYANW35_OT_select_mode,NYANW35_OT_flip_normals,NYANW35_OT_extrude,NYANW35_OT_rip)
+CLASSES=(NYANW35_OT_boundary,NYANW35_OT_merge,NYANW35_MT_merge,NYANW35_OT_merge_menu,NYANW35_OT_select_mode,NYANW35_OT_auto_curvature,NYANW35_OT_flip_normals,NYANW35_OT_extrude,NYANW35_OT_rip)

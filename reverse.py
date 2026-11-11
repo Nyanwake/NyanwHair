@@ -103,6 +103,7 @@ def create(bm,result,indices,distance,matrix,join=True,axes=(),bend=None,
         wall=extrusion._face(bm,polygon,attrs,next_order,ends);next_order+=1
         a._set_zone(wall,bm,'bulge',0.);a._set_zone(wall,bm,'bias',0.);a._set_zone(wall,bm,'flip',False)
         a._set_zone(wall,bm,'width',2 if rail else plan.settings.width)
+        a._set_zone(wall,bm,'auto_curve',False)
         if not rail:a._set_zone(wall,bm,'detail',2)
     extrusion.straight_connections(bm,records,((key[0],vertex) for key,vertex in copies.items()))
     a._restore_directions(bm,records[0]);a._restore_density(bm,records[1]);a._restore_layout(bm,records[2])

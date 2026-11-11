@@ -3,18 +3,24 @@ from .i18n import tr
 from .core import edge_key
 
 
-def sharp_edges(result):
+def _guide_edges(result,sharp_only):
     indices={key:i for i,key in enumerate(result.vertex_keys)};sharp=set()
     for rails in result.rail_samples.values():
         for samples in rails:
             for (ka,pa),(kb,pb) in zip(samples,samples[1:]):
+                edge=ka[1:3] if ka[0]=='s' else kb[1:3] if kb[0]=='s' else edge_key(ka[1],kb[1])
+                if sharp_only and edge in result.smooth_rails:continue
                 if ka in indices and kb in indices and indices[ka]!=indices[kb]:sharp.add(edge_key(indices[ka],indices[kb]))
     for lo,hi in result.rim_caps:
         width=result.cap_widths[lo,hi]
         keys=[('v',lo)]+[('cap',lo,hi,x,width) for x in range(1,width)]+[('v',hi)]
         for one,two in zip(keys,keys[1:]):
             if one in indices and two in indices and indices[one]!=indices[two]:sharp.add(edge_key(indices[one],indices[two]))
-    return sharp|set(getattr(result,"extra_sharp_edges",()))
+    return sharp
+
+
+def sharp_edges(result):return _guide_edges(result,True)|set(getattr(result,'extra_sharp_edges',()))
+def guide_edges(result):return _guide_edges(result,False)|set(getattr(result,'extra_seam_edges',()))
 
 
 def corner_normals(result,smooth=True,topology=None,packed=False):

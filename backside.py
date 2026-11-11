@@ -130,7 +130,7 @@ def apply(bm,prepared,distance,bend,join):
                 if loop.vert is a_path[0]:polygon.reverse()
                 wall=x._face(bm,polygon,x._attributes(face,bm),identity,
                     (frozenset((a_path[0],b_path[0])),frozenset((a_path[-1],b_path[-1]))));identity+=1
-                for name,value in (('bulge',0.),('bias',0.),('flip',False),('width',2)):a._set_zone(wall,bm,name,value)
+                for name,value in (('bulge',0.),('bias',0.),('flip',False),('width',2),('auto_curve',False)):a._set_zone(wall,bm,name,value)
         records=list(x._records(bm));x.straight_connections(bm,records,((u,v) for parent,one,two in paths for u,v in zip(one,two)))
         a._restore_directions(bm,records[0])
     chosen=set(prepared['orders']);created=[f for f in bm.faces if int(f[layer]) in chosen]

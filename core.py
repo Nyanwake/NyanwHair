@@ -42,6 +42,7 @@ class ZoneSettings:
     group: int=1
     detail: int=0
     normal_flip: bool=False
+    auto_curve: bool=False
 
     @property
     def signed_bulge(self):return -self.bulge if self.flip!=self.normal_flip else self.bulge
@@ -75,6 +76,7 @@ class MeshResult:
     effective_widths: dict=field(default_factory=dict)
     cap_widths: dict=field(default_factory=dict)
     rim_caps: set=field(default_factory=set)
+    smooth_rails: set=field(default_factory=set)
     width_transitions: dict=field(default_factory=dict)
     samples_per_edge: dict=field(default_factory=dict)
     plans_by_loop: dict=field(default_factory=dict)
@@ -119,7 +121,7 @@ def _boundary_key(boundary):
     return min(seq[i:]+seq[:i] for seq in (loop,loop[::-1]) for i in range(len(seq)))
 
 
-def _cap_profiles(points,plans,widths,evaluate,cap_widths=None,rim_caps=None):
+def _cap_profiles(points,plans,widths,evaluate,cap_widths=None,rim_caps=None,crossflow=None):
     """One geometric definition per cross-cap, shared by ALL its owners.
 
     The end-to-end frame keeps depth bends from shifting cap stations.
@@ -178,9 +180,22 @@ def _cap_profiles(points,plans,widths,evaluate,cap_widths=None,rim_caps=None):
         w=(cap_widths or {}).get((lo,hi),widths[group[0][0].index])
         size=length(sub(points[hi],points[lo]))
         positions=[]
+        automatic=[]
+        if crossflow:
+            for p,n in group:
+                profile=crossflow.get(p)
+                if profile:
+                    end=p.end if p.end[0]=='edge' and edge_key(p.boundary[p.end[1]],p.boundary[(p.end[1]+1)%len(p.boundary)])==(lo,hi) else p.start
+                    k=int(end==p.end);automatic.append((profile.end(k),p.left[-1 if k else 0]==lo))
         for j in range(w+1):
             v=bias_cross_position(j/w,bias)
-            positions.append(add(mix(points[lo],points[hi],v),mul(offset,size*math.sin(math.pi*v))))
+            if automatic:
+                from .crossflow import offset as cross_offset,weight
+                shifts=[cross_offset(deltas,v if forward else 1.-v) for deltas,forward in automatic]
+                base=tuple(math.fsum(shift[axis] for shift in shifts)/len(group) for axis in range(3))
+                manual=tuple(math.fsum(n[axis]*p.settings.signed_bulge*weight(v,p.settings.auto_curve) for p,n in group)/len(group) for axis in range(3)) if not rim else (0.,0.,0.)
+                positions.append(add(add(mix(points[lo],points[hi],v),base),mul(manual,size)))
+            else:positions.append(add(mix(points[lo],points[hi],v),mul(offset,size*math.sin(math.pi*v))))
         positions[0]=points[lo]; positions[-1]=points[hi]
         profiles[(lo,hi)]=positions
     return profiles
@@ -579,6 +594,9 @@ def generate(points,boundaries,settings=None,rows=12,max_polygons=200000,
         for rail in (p.left,p.right):
             for edge in physical_edges(rail):edge_details[edge]=max(edge_details.get(edge,0.),details[p.index]/base)
     registry=RailRegistry(points,evaluate,base,plans,reference_length,max_polygons,out.local_density,out.point_density,previous,layout_lengths,edge_details)
+    from .crossflow import Registry as CrossRegistry
+    registry.crossflow=CrossRegistry(plans,registry)
+    out.smooth_rails=registry.crossflow.smooth_edges
     rail_edges={edge for p in plans for rail in (p.left,p.right) for edge in physical_edges(rail)}
     interfaces={};cap_widths={}
     for p in plans:
@@ -589,7 +607,7 @@ def generate(points,boundaries,settings=None,rows=12,max_polygons=200000,
             if edge in rail_edges:interfaces[edge]=registry.boundary(registry.curve(edge))
     for edge,samples in interfaces.items():cap_widths[edge]=len(samples)-1
     out.cap_widths=cap_widths
-    cap_profiles=_cap_profiles(points,plans,widths,evaluate,cap_widths,out.rim_caps)
+    cap_profiles=_cap_profiles(points,plans,widths,evaluate,cap_widths,out.rim_caps,registry.crossflow)
     if any(plane_axes):
         for (a,b),profile in cap_profiles.items():
             locked=tuple(on and abs(points[a][axis])<1e-7 and abs(points[b][axis])<1e-7 for axis,on in enumerate(plane_axes))

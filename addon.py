@@ -34,6 +34,7 @@ L_BULGE = 'nh35_bulge'
 L_BIAS = 'nh35_bias'
 L_FLIP = 'nh35_flip'
 L_NORMAL_FLIP = 'nh35_normal_flip'
+L_AUTO_CURVE = 'nh35_auto_curve'
 L_BOUNDARY = 'nh35_boundary_corners'
 L_CAP = 'nh35_cap_corner'  # BMLOOP, per-face direction, never a vertex/edge tag
 L_DENSITY = 'nh35_density'
@@ -122,6 +123,7 @@ def _get_zone(f,bm):
         group=int(f[ints[L_GROUP]]) if ints.get(L_GROUP) else 0,
         detail=int(f[ints[L_DETAIL]]) if ints.get(L_DETAIL) else 0,
         normal_flip=bool(f[ints[L_NORMAL_FLIP]]) if ints.get(L_NORMAL_FLIP) else False,
+        auto_curve=bool(f[ints[L_AUTO_CURVE]]) if ints.get(L_AUTO_CURVE) else False,
     )
 
 
@@ -543,7 +545,7 @@ def _prepare_bmesh(bm, result=None, group_id=None):
     """
     context_obj=bpy.context.edit_object or bpy.context.object
     current_group=group_id or (groups.active_id(context_obj) if is_guide(context_obj) else 1)
-    for name in (L_GROUP,L_DETAIL,L_NORMAL_FLIP):
+    for name in (L_GROUP,L_DETAIL,L_NORMAL_FLIP,L_AUTO_CURVE):
         if bm.faces.layers.int.get(name) is None:bm.faces.layers.int.new(name)
     if bm.verts.layers.int.get(L_VERTEX_GROUP) is None:bm.verts.layers.int.new(L_VERTEX_GROUP)
     for name,integer,default in ((L_WIDTH,True,2),(L_FLIP,True,0),(L_ORDER,True,0),
@@ -717,6 +719,7 @@ def _set_zone(f,bm,field,value):
         'flip': (L_FLIP,True),
         'detail': (L_DETAIL,True),
         'normal_flip': (L_NORMAL_FLIP,True),
+        'auto_curve': (L_AUTO_CURVE,True),
     }[field]
     layers=bm.faces.layers.int if is_integer else bm.faces.layers.float
     layer=layers.get(name)
@@ -997,7 +1000,7 @@ def _signature(positions,zones,options,rows,caps,detail_length=0.,smoothing=None
     return (bool(regular_rows),tuple(sorted((a,b,round(v,8)) for (a,b),v in (layout_lengths or {}).items())),tuple(sorted((i,round(f,6),round(r,6)) for i,(f,r) in (point_density or {}).items())),int(rows),round(detail_length,8),tuple(sorted((a,b,round(v,6)) for (a,b),v in (density or {}).items())),tuple(sorted((a,b,round(v,6)) for (a,b),v in (smoothing or {}).items())),
             tuple(tuple(round(x,6) for x in p) for p in positions),
             tuple(zones),tuple(caps),
-            tuple((o.width,round(o.bulge,5),round(o.bias,5),o.flip,o.order,o.group,o.detail,o.normal_flip) for o in options))
+            tuple((o.width,round(o.bulge,5),round(o.bias,5),o.flip,o.order,o.group,o.detail,o.normal_flip,o.auto_curve) for o in options))
 
 
 def _rebuild(obj,force=False,lazy=False,group_id=None,_background=False):
@@ -1080,6 +1083,7 @@ def _sync_ui(obj):
             if ui.detail!=detail:ui.detail=detail
             if abs(ui.bulge-data.bulge)>1e-6: ui.bulge=data.bulge
             if abs(ui.bias-data.bias)>1e-6: ui.bias=data.bias
+            if ui.auto_curve!=data.auto_curve:ui.auto_curve=data.auto_curve
         finally: _SYNCING_UI=False
     finally:
         if owned: bm.free()
@@ -1133,6 +1137,7 @@ class NHGuidedProperties(PropertyGroup):
 
 
 class NHGuidedUISettings(PropertyGroup):
+    auto_curve:BoolProperty(name='Auto curvature',default=False)
     detail:IntProperty(name='Detail',default=12,min=2,max=160,update=_on_ui_change('detail'),description='Polygon density along selected segments; guide shape is preserved')
     density_mode: EnumProperty(name='Density target',items=[('POINT','Point','Smooth density around the active point'),('EDGE','Edges','Legacy multiplier on selected edges')],default='POINT')
     point_radius: FloatProperty(name='Radius, % of length',min=.1,max=200.,get=_get_point_radius,set=_set_point_radius,description='Distance along guides as a percentage of the reference length; fades smoothly to the regular grid')
@@ -1150,27 +1155,8 @@ class NYANW35_OT_create_guide(Operator):
     bl_options={'REGISTER','UNDO'}
 
     def execute(self,context):
-        me=bpy.data.meshes.new('NyanwHair Guide')
-        from . import starter
-        bm=bmesh.new()
-        try:
-            starter.add(bm)
-            bm.to_mesh(me)
-        finally:
-            bm.free()
-        me.update()
-        guide=bpy.data.objects.new('NyanwHair Guided Hair',me)
-        context.collection.objects.link(guide)
-        guide.location=context.scene.cursor.location
-        for o in context.selected_objects: o.select_set(False)
-        guide.select_set(True)
-        context.view_layer.objects.active=guide
-        guide.nh35.enabled=True
-        guide.nh35.show_preview=True
-        guide.display_type='WIRE'
-        guide.show_in_front=False
-        _prepare_object(guide)
-        _rebuild(guide,True)
+        from . import presets
+        presets.create(context)
         return {'FINISHED'}
 
 
@@ -1262,13 +1248,15 @@ class NYANW35_OT_bake(Operator):
         src=context.object
         if not is_guide(src): return {'CANCELLED'}
         _rebuild(src,False)
-        from . import decorations
+        from . import decorations,appearance
         result=core.MeshResult();face_groups=[];uv_sources=[]
         for uid in groups.ids(src):
             _rebuild(src,True,group_id=uid,_background=True)
             surface=decorations.display(groups.CACHE[src.as_pointer()][uid],src);offset=len(result.vertices)
-            result.vertices.extend(surface.vertices);result.vertex_keys.extend(surface.vertex_keys);result.faces.extend(tuple(v+offset for v in f) for f in surface.faces);result.owners.extend(surface.owners);result.rail_samples.update(surface.rail_samples)
-            result.extra_sharp_edges=set(getattr(result,'extra_sharp_edges',()))|{core.edge_key(a+offset,b+offset) for a,b in surface.extra_sharp_edges}
+            result.vertices.extend(surface.vertices);result.vertex_keys.extend(surface.vertex_keys);result.faces.extend(tuple(v+offset for v in f) for f in surface.faces);result.owners.extend(surface.owners)
+            sharp=appearance.sharp_edges(surface);seams=appearance.guide_edges(surface)|sharp
+            result.extra_sharp_edges=set(getattr(result,'extra_sharp_edges',()))|{core.edge_key(a+offset,b+offset) for a,b in sharp}
+            result.extra_seam_edges=set(getattr(result,'extra_seam_edges',()))|{core.edge_key(a+offset,b+offset) for a,b in seams}
             face_groups.extend([uid]*len(surface.faces))
             if surface.faces:uv_sources.append((uid,surface))
         _CACHE[src.as_pointer()]=groups.CACHE[src.as_pointer()][groups.active_id(src)]
@@ -1285,8 +1273,8 @@ class NYANW35_OT_bake(Operator):
         me=bpy.data.meshes.new(src.name+'_BakedMesh')
         me.from_pydata(result.vertices,[],result.faces)
         me.update(calc_edges=True)
-        from . import appearance
         sharp=appearance.sharp_edges(result)
+        seams=appearance.guide_edges(result)|sharp
         me.polygons.foreach_set('use_smooth',[bool(src.nh35.smooth_preview)]*len(me.polygons))
         attribute=me.attributes.new(name='sharp_edge',type='BOOLEAN',domain='EDGE')
         attribute.data.foreach_set('value',[core.edge_key(*edge.vertices) in sharp for edge in me.edges])
@@ -1302,7 +1290,7 @@ class NYANW35_OT_bake(Operator):
                 self.report({'WARNING'},'UV: '+str(exc))
                 return {'CANCELLED'}
         for edge in me.edges:
-            if core.edge_key(*edge.vertices) in sharp:edge.use_seam=True
+            if core.edge_key(*edge.vertices) in seams:edge.use_seam=True
         bake=bpy.data.objects.new(src.name+'_Baked',me)
         if src.users_collection: src.users_collection[0].objects.link(bake)
         else: context.scene.collection.objects.link(bake)
@@ -1915,20 +1903,21 @@ class NYANW35_OT_hair_loop(Operator):
 
 def _draw_extra_panels(layout,context,obj,cached,edit):
     props=obj.nh35
+    from . import ui_icons
     if edit:
         header,body=layout.panel('nyanw_hotkeys',default_closed=True);header.label(text=tr('Hotkeys'),icon='EVENT_K')
         if body is not None:
             buttons=body.grid_flow(row_major=True,columns=2,even_columns=True,even_rows=True,align=True)
             buttons.operator_context='INVOKE_REGION_WIN';buttons.scale_y=2.
-            buttons.operator('nyanw35.extrude',text=tr('Extrude · E'),icon='CURVE_BEZCURVE').from_panel=True
-            buttons.operator('nyanw35.hair_loop',text='Loop · Ctrl+R',icon='EDGESEL').mode='AUTO'
-            buttons.operator('nyanw35.merge_menu',text=tr('Merge')+' · M',icon='AUTOMERGE_ON')
+            ui_icons.button(buttons,props,'nyanw35.extrude',tr('Extrude · E'),'EXTRUDE','CURVE_BEZCURVE').from_panel=True
+            ui_icons.button(buttons,props,'nyanw35.hair_loop','Loop · Ctrl+R','LOOP','EDGESEL').mode='AUTO'
+            ui_icons.button(buttons,props,'nyanw35.merge_menu',tr('Merge')+' · M','MERGE','AUTOMERGE_ON')
             from . import ripping
             if ripping.candidate(bmesh.from_edit_mesh(obj.data)) is not None:
-                buttons.operator('nyanw35.rip',text=tr('Rip')+' · V',icon='MOD_EDGESPLIT').from_panel=True
-            else:buttons.operator('mesh.rip_move',text=tr('Rip')+' · V',icon='MOD_EDGESPLIT')
-            buttons.operator('mesh.edge_face_add',text=tr('Fill')+' · F',icon='FACESEL')
-            buttons.operator('wm.call_menu',text=tr('Delete')+' · X',icon='TRASH').name='VIEW3D_MT_edit_mesh_delete'
+                ui_icons.button(buttons,props,'nyanw35.rip',tr('Rip')+' · V','RIP','MOD_EDGESPLIT').from_panel=True
+            else:ui_icons.button(buttons,props,'mesh.rip_move',tr('Rip')+' · V','RIP','MOD_EDGESPLIT')
+            ui_icons.button(buttons,props,'mesh.edge_face_add',tr('Fill')+' · F','FILL','FACESEL')
+            ui_icons.button(buttons,props,'wm.call_menu',tr('Delete')+' · X','DELETE','TRASH').name='VIEW3D_MT_edit_mesh_delete'
     header,body=layout.panel('nyanw_appearance',default_closed=True);header.label(text=tr('Appearance'),icon='SHADING_SOLID')
     if body is not None:
         if edit:body.prop(props,'palette',text=tr('Theme'))
@@ -1950,8 +1939,16 @@ def _draw_extra_panels(layout,context,obj,cached,edit):
         body.operator('nyanw35.disable',text=tr('Disable on object'),icon='X')
 
 
+def _draw_presets(layout,obj):
+    from . import ui_icons
+    props=obj.nh35 if is_guide(obj) else None
+    for operator,label,kind,fallback in (('nyanw35.create_guide','Create new strand','STRAND','CURVE_BEZCURVE'),('nyanw35.create_cap','Create hair cap','CAP','SPHERE')):
+        row=layout.row();row.scale_y=2.
+        ui_icons.button(row,props,operator,tr(label),kind,fallback)
+
+
 class NYANW35_PT_main(Panel):
-    bl_label='NyanwHair v1.05'
+    bl_label='NyanwHair v1.06'
     bl_idname='NYANW35_PT_main'
     bl_space_type='VIEW_3D'
     bl_region_type='UI'
@@ -1959,17 +1956,16 @@ class NYANW35_PT_main(Panel):
 
     def draw(self,context):
         layout=translated_layout(self.layout);obj=context.object
+        from . import ui_icons
         if not is_guide(obj):
-            row=layout.row();row.scale_y=2. if obj is None or obj.mode=='OBJECT' else 1.
-            row.operator('nyanw35.create_guide',text=tr('Create new strand'),icon='CURVE_BEZCURVE')
+            _draw_presets(layout,obj)
             return
         props=obj.nh35;cached=_CACHE.get(obj.as_pointer(),{});result=cached.get('result');ui=context.window_manager.nh35_ui
         if obj.mode!='EDIT':
-            row=layout.row();row.scale_y=2.
-            row.operator('nyanw35.create_guide',text=tr('Create new strand'),icon='CURVE_BEZCURVE')
+            _draw_presets(layout,obj)
             layout.separator(factor=.6,type='LINE')
             row=layout.row();row.scale_y=2.
-            row.operator('nyanw35.bake',text=tr('Convert to Mesh'),icon='OUTLINER_OB_MESH')
+            ui_icons.button(row,props,'nyanw35.bake',tr('Convert to Mesh'),'MESH','OUTLINER_OB_MESH')
             row=layout.row(align=True);row.prop(props,'generate_uv',text='UV')
             option=row.row(align=True);option.enabled=props.generate_uv and any(group.mirror_x or group.mirror_y or group.mirror_z for group in props.groups)
             option.prop(props,'mirror_uv',text='Mirror UV')
@@ -1983,10 +1979,11 @@ class NYANW35_PT_main(Panel):
             row=body.row(align=True);row.operator('nyanw35.group',text='',icon='ADD').action='ADD';remove=row.row(align=True);remove.enabled=len(props.groups)>1;remove.operator('nyanw35.group',text='',icon='REMOVE').action='REMOVE'
             active=groups.settings(obj)
             if active is not None:
-                split=body.split(factor=.32,align=True);split.column(align=True).label(text='Mirror',icon='MOD_MIRROR');axes=split.row(align=True)
+                row=body.row(align=True);row.label(text='Mirror',icon='MOD_MIRROR');apply=row.row(align=True);apply.enabled=active.mirror_x or active.mirror_y or active.mirror_z
+                apply.operator('nyanw35.apply_mirror',text=tr('Apply'));axes=body.row(align=True)
                 for axis in 'xyz':axes.prop(active,'mirror_'+axis,text=axis.upper(),toggle=True)
                 row=body.row(align=True);row.enabled=active.mirror_x or active.mirror_y or active.mirror_z
-                row.prop(active,'mirror_merge',text=tr('Merge seam'))
+                row.prop(active,'mirror_merge',text=tr('Merge'))
                 distance=row.row(align=True);distance.enabled=active.mirror_merge
                 distance.prop(active,'mirror_distance',text='')
             else:body.label(text=tr('Press ↻ to prepare groups'))
@@ -1994,7 +1991,8 @@ class NYANW35_PT_main(Panel):
         section=editing.mode_section(layout,context,'FACE','Segment settings','FACESEL')
         parameters=section.column(align=True);parameters.enabled=bool(_zone_ui_faces(bm,obj))
         parameters.prop(ui,'detail',text=tr('Detail'));parameters.prop(ui,'width',text=tr('Width'));parameters.prop(ui,'bulge',text=tr('Convexity'));parameters.prop(ui,'bias',text=tr('Distribution'))
-        parameters.separator();parameters.operator('nyanw35.create_reverse',text=tr('Create reverse side'),icon='MOD_SOLIDIFY')
+        op=parameters.operator('nyanw35.auto_curvature',text=tr('Auto curvature'),icon='CHECKBOX_HLT' if ui.auto_curve else 'CHECKBOX_DEHLT',emboss=False);op.enabled=not ui.auto_curve
+        parameters.separator();ui_icons.button(parameters,props,'nyanw35.create_reverse',tr('Create reverse side'),'REVERSE','MOD_SOLIDIFY')
         if not cached.get('zone_count',0):layout.operator('nyanw35.group_starter',text=tr('Create strand in group'),icon='ADD')
         section=editing.mode_section(layout,context,'EDGE','Segment boundaries','EDGESEL')
         ends=section.column(align=True);ends.enabled=bool(_zone_ui_faces(bm,obj))
@@ -2009,7 +2007,7 @@ class NYANW35_PT_main(Panel):
         row=section.row(align=True);selected=row.row(align=True);selected.enabled=bool(vertices);selected.operator('nyanw35.density_reset',text=tr('Reset')).all_points=False
         row.operator('nyanw35.density_reset',text=tr('Reset all')).all_points=True
         row=section.row();row.enabled=bool(_zone_ui_faces(bm,obj))
-        row.operator('nyanw35.flip_normals',text=tr('Flip normals'),icon='NORMALS_FACE')
+        ui_icons.button(row,props,'nyanw35.flip_normals',tr('Flip normals'),'NORMALS','NORMALS_FACE')
         _draw_extra_panels(layout,context,obj,cached,True)
         errors=cached.get('error_count',0)
         if errors:layout.label(text=tr('Segment errors: %d')%errors,icon='ERROR');layout.label(text=cached.get('status','')[:100])
@@ -2677,13 +2675,13 @@ def _on_undo_post(_dummy):
     _UNDO_DISPLAY.clear()
 
 
-from . import editing,reverse,mirror
+from . import editing,reverse,mirror,presets
 
 _CLASSES=groups.CLASSES+(NHGuidedProperties,NHGuidedUISettings,NYANW35_OT_direction_smoothing,NYANW35_OT_local_density,NYANW35_OT_point_density,NYANW35_OT_density_reset,NYANW35_OT_set_cap,NYANW35_OT_refresh_layout,
           NYANW35_OT_create_guide,NYANW35_OT_disable,
-          NYANW35_OT_demo,NYANW35_OT_rebuild,NYANW35_OT_bake,
+          NYANW35_OT_demo,NYANW35_OT_rebuild,NYANW35_OT_bake,presets.NYANW35_OT_create_cap,
           NYANW35_OT_pin_rails, NYANW35_OT_adjust,NYANW35_OT_pick_zone,
-          NYANW35_OT_hair_loop,NYANW35_PT_main)+editing.CLASSES+(reverse.NYANW35_OT_reverse,mirror.NYANW35_OT_mirror_seam)
+          NYANW35_OT_hair_loop,NYANW35_PT_main)+editing.CLASSES+(reverse.NYANW35_OT_reverse,mirror.NYANW35_OT_apply_mirror,mirror.NYANW35_OT_mirror_seam)
 
 
 def _register_keys():

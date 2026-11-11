@@ -4,6 +4,7 @@ import math
 from .core import EPS,add,sub,mul,dot,cross,length,norm,mix,bias_cross_position,edge_key
 from .surface import _rotate,CapBlend
 from .ribbon import zipper_flows
+from .crossflow import offset as cross_offset,weight
 
 
 def build_strip(plan,width,registry,ca,cb,left,right,profiles,put,emit,max_polygons,cache,previous):
@@ -12,7 +13,8 @@ def build_strip(plan,width,registry,ca,cb,left,right,profiles,put,emit,max_polyg
         if kind=='edge':
             edge=edge_key(plan.boundary[i],plan.boundary[(i+1)%len(plan.boundary)])
             cap_data.append((edge,tuple(profiles[edge]),tuple(registry.cap_keys.get(edge,()))))
-    signature=('strip',plan,width,ca.geometry_signature,cb.geometry_signature,tuple(left),tuple(right),tuple(cap_data))
+    cross_profile=registry.crossflow.get(plan)
+    signature=('strip',plan,width,ca.geometry_signature,cb.geometry_signature,tuple(left),tuple(right),tuple(cap_data),registry.crossflow.signature(plan))
     old=previous.get(plan.boundary);reused=bool(old and old[0]==signature)
     if reused:recipe=old[1]
     else:
@@ -39,12 +41,13 @@ def build_strip(plan,width,registry,ca,cb,left,right,profiles,put,emit,max_polyg
             if length(normal)<EPS:normal=reference
             if dot(normal,reference)<0.:normal=mul(normal,-1.)
             normals.append(normal);previous_normal=normal;old_tangent=tangents[i]
-        cap_blend=CapBlend.from_profiles(plan,[(body_a[i][1],body_b[i][1]) for i in (0,-1)],(normals[0],normals[-1]),profiles)
+        cap_blend=CapBlend.from_profiles(plan,[(body_a[i][1],body_b[i][1]) for i in (0,-1)],(normals[0],normals[-1]),profiles,cross_profile)
         profile=[bias_cross_position(x/width,plan.settings.bias) for x in range(width+1)]
-        sine=[math.sin(math.pi*v) for v in profile];bulge=plan.settings.signed_bulge
+        sine=[weight(v,plan.settings.auto_curve) for v in profile];bulge=plan.settings.signed_bulge
         grid=[];sections=[]
         for row_index,((ka,a),(kb,b)) in enumerate(zip(body_a,body_b)):
             row=[];coords=[];row_width=length(sub(b,a))
+            deltas=cross_profile.deltas(station(fa,row_index/count),station(fb,row_index/count),a,b) if cross_profile else None
             weights=cap_blend.weights(fractions[row_index])
             for x in range(width+1):
                 if x==0:key,pos=ka,a
@@ -54,6 +57,7 @@ def build_strip(plan,width,registry,ca,cb,left,right,profiles,put,emit,max_polyg
                     v=profile[x]
                     amount=bulge*row_width*sine[x]
                     pos=add(mix(a,b,v),mul(normals[row_index],amount))
+                    if deltas is not None:pos=add(pos,cross_offset(deltas,v))
                     pos=cap_blend.apply(pos,x/width,weights)
                     if row_index==0 and plan.start[0]=='edge' or row_index==len(body_a)-1 and plan.end[0]=='edge':
                         cap=plan.start if row_index==0 else plan.end
