@@ -51,7 +51,7 @@ def generate(points,boundaries,settings=None,rows=12,max_polygons=200000,previou
         local['point_density']={v:value for v,value in (kwargs.get('point_density') or {}).items() if v in used_set}
         key=tuple((indices[i],tuple(boundaries[i])) for i in members)
         signature=(tuple(tuple(float(c) for c in points[v]) for v in used),tuple(options[i] for i in members),_freeze(local['caps']),int(rows),float(kwargs['reference_length']),max_polygons,
-            tuple(tuple(sorted(local[name].items())) for name in ('directional_smoothing','local_density','point_density','layout_lengths')))
+            tuple(tuple(sorted(local[name].items())) for name in ('directional_smoothing','local_density','point_density','layout_lengths')),tuple(kwargs.get('plane_axes',())))
         saved=old.get(key)
         if saved and saved[0]==signature:part=saved[1];reused+=len(members)
         else:

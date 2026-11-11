@@ -14,7 +14,7 @@ def _clone(result,copy_mesh=True):
     return out
 
 
-def build(result,axes=(),replicate=True):
+def build(result,axes=(),replicate=True,merge=True):
     out=_clone(result,copy_mesh=bool(any(axes) and replicate))
     if not any(axes) or not replicate:return out
     source_vertices=list(out.vertices);source_keys=list(out.vertex_keys);source_faces=list(out.faces);source_owners=list(out.owners)
@@ -26,7 +26,7 @@ def build(result,axes=(),replicate=True):
         for i,p in enumerate(source_vertices):
             effective=mask
             for axis in range(3):
-                if abs(p[axis])<1e-7:effective&=~(1<<axis)
+                if merge and abs(p[axis])<1e-7:effective&=~(1<<axis)
             if not effective:mapping[i]=i;continue
             key=(i,effective)
             if key not in lookup:
@@ -49,9 +49,10 @@ def build(result,axes=(),replicate=True):
 def display(cache,obj):
     from . import groups
     group=groups.settings(obj,cache.get('group_id',1));axes=(group.mirror_x,group.mirror_y,group.mirror_z) if group else (False,)*3
-    signature=(id(cache['result']),axes)
+    merge=group.mirror_merge if group else True
+    signature=(id(cache['result']),axes,merge)
     if cache.get('display_signature')!=signature:
-        cache['display_result']=build(cache['result'],axes)
+        cache['display_result']=build(cache['result'],axes,merge=merge)
         cache['display_signature']=signature
     return cache['display_result']
 
@@ -64,9 +65,12 @@ def axes_for(cache,obj):
 
 def preview(cache,obj):
     """One source mesh for GPU copies; the bake retains welded CPU geometry."""
-    axes=axes_for(cache,obj);signature=(id(cache['result']),axes)
+    from . import groups
+    group=groups.settings(obj,cache.get('group_id',1));merge=group.mirror_merge if group else True
+    axes=axes_for(cache,obj);signature=(id(cache['result']),axes,merge)
     if cache.get('preview_signature')!=signature:
         base=build(cache['result'],axes,replicate=False)
+        base.preview_merge=merge
         # Fully planar faces need the old face-deduplication/nonmanifold rules.
         # Keep that uncommon case exact rather than drawing coincident copies.
         import numpy as np
@@ -81,7 +85,7 @@ def preview(cache,obj):
             planar=bool(np.any(np.logical_and.reduceat(on,offsets,axis=0)[:,np.asarray(effective,dtype=bool)]))
         if planar:base=display(cache,obj)
         else:
-            if pending and any(effective):
+            if pending and any(effective) and merge:
                 # An internal edge on a mirror plane has four incident faces
                 # in the welded output. Its original smoothing connection is
                 # therefore absent there as well.
@@ -116,7 +120,7 @@ def instance_matrices(result,matrix):
 def preview_normals(result,smooth,normals,cache=None,packed=False):
     """Match welded seam normals without evaluating every reflected polygon."""
     axes=getattr(result,'preview_axes',())
-    if not smooth or not any(axes) or not result.faces:return normals
+    if not smooth or not any(axes) or not result.faces or not getattr(result,'preview_merge',True):return normals
     on_plane=getattr(result,'preview_on_plane',None)
     if on_plane is not None and not on_plane[:,axes].any():return normals
     old=getattr(result,'preview_normal_cache',None)

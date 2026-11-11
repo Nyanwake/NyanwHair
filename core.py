@@ -1,4 +1,4 @@
-"""NyanwHair 1.01: shared curve contracts and editable guide surfaces.
+"""NyanwHair 1.02: shared curve contracts and editable guide surfaces.
 
 Pure Python, no Blender IDs or tags on vertices/edges. Blender face corners may
 store the user's chosen end caps; this module only consumes that choice.
@@ -465,7 +465,7 @@ def plan_widths(plans,fixed=None,warnings=None):
 
 
 def generate(points,boundaries,settings=None,rows=12,max_polygons=200000,
-             previous=None,caps=None,reference_length=0.,directional_smoothing=None,local_density=None,point_density=None,layout_lengths=None,regular_rows=False,face_indices=None,edge_evaluator=None,_track_production=False):
+             previous=None,caps=None,reference_length=0.,directional_smoothing=None,local_density=None,point_density=None,layout_lengths=None,regular_rows=False,face_indices=None,edge_evaluator=None,_track_production=False,plane_axes=()):
     points=[tuple(map(float,p)) for p in points]
     settings=list(settings or [ZoneSettings() for _ in boundaries])
     rows=max(2,min(256,int(rows)))
@@ -527,6 +527,14 @@ def generate(points,boundaries,settings=None,rows=12,max_polygons=200000,
     out.base_rows=rows
     out.directional_smoothing=dict(directional_smoothing or {})
     evaluate=edge_evaluator if edge_evaluator is not None else make_edge_evaluator(points,plans,out.directional_smoothing)
+    if any(plane_axes):
+        if edge_evaluator is not None:
+            from copy import copy
+            evaluate=copy(evaluate);evaluate.coefficients=dict(evaluate.coefficients)
+        for edge,(p,q,ma,mb) in list(evaluate.coefficients.items()):
+            locked=tuple(on and abs(p[axis])<1e-7 and abs(q[axis])<1e-7 for axis,on in enumerate(plane_axes))
+            if any(locked):
+                evaluate.coefficients[edge]=(p,q,tuple(0. if on else v for v,on in zip(ma,locked)),tuple(0. if on else v for v,on in zip(mb,locked)))
     out.edge_evaluator=evaluate
     out.local_density=dict(local_density or {})
     out.point_density=dict(point_density or {})
@@ -551,6 +559,10 @@ def generate(points,boundaries,settings=None,rows=12,max_polygons=200000,
     for edge,samples in interfaces.items():cap_widths[edge]=len(samples)-1
     out.cap_widths=cap_widths
     cap_profiles=_cap_profiles(points,plans,widths,evaluate,cap_widths)
+    if any(plane_axes):
+        for (a,b),profile in cap_profiles.items():
+            locked=tuple(on and abs(points[a][axis])<1e-7 and abs(points[b][axis])<1e-7 for axis,on in enumerate(plane_axes))
+            if any(locked):cap_profiles[a,b]=[tuple(0. if on else v for v,on in zip(point,locked)) for point in profile]
     registry.cap_keys={}
     for edge,w in cap_widths.items():
         if edge in interfaces:

@@ -1,7 +1,7 @@
 """Shared-vertex cap extension and open region extrusion on a staged BMesh."""
 from .i18n import tr
 import bpy
-from mathutils import Vector
+from mathutils import Vector,Matrix
 from . import addon as a
 from . import editing as e
 
@@ -56,11 +56,11 @@ def update_opening(bm,opening,offset):
     bm.verts.ensure_lookup_table()
     for origin,span,carrier,rows in opening:
         origin=Vector(origin);distance=offset.length
-        retreat=.6*span*max(distance,span*1e-5)/(max(distance,span*1e-5)+.5*span)
+        retreat=.9*span*distance/(distance+.22*span)
         positions=[]
         for base,end,curve in rows:
             p,q,ma,mb=map(Vector,curve);length=(q-p).length
-            t=min(.6,retreat/max(length,1e-8));t2=t*t;t3=t2*t
+            t=min(.85,retreat/max(length,1e-8));t2=t*t;t3=t2*t
             point=(2*t3-3*t2+1)*p+(-2*t3+3*t2)*q+(t3-2*t2+t)*ma+(t3-t2)*mb
             bm.verts[base].co=point;positions.append(point)
         center=positions[carrier];direction=offset.normalized() if distance>1e-8 else (origin-center).normalized()
@@ -135,6 +135,91 @@ def _extend(bm,targets,offset,result):
 def _edge_count(result,one,two,default=1):
     key=a.core.edge_key(one.index,two.index)
     return max(default,1+sum(k[0]=='s' and k[1:3]==key for k in result.vertex_keys))
+
+
+def _solid(bm,result,offset,faces):
+    """Whole strands keep their front and gain an editable, capped reverse."""
+    from . import reverse,groups
+    obj=bpy.context.edit_object
+    group=groups.settings(obj) if obj else None
+    axes=tuple(getattr(group,'mirror_'+axis) for axis in 'xyz') if group and group.mirror_merge else ()
+    indices=[face.index for face in faces]
+    vertices={v for face in faces for v in face.verts}
+    origin=sum((v.co for v in vertices),Vector())/len(vertices)
+    normal=sum((face.normal for face in faces),Vector())
+    shared_seam=any(len(edge.link_faces)==1 and any(on and all(abs(v.co[axis])<1e-7 for v in edge.verts) for axis,on in enumerate(axes)) for face in faces for edge in face.edges)
+    clips=[]
+    if shared_seam:
+        result,indices,gains,recipes=reverse.prepare_welded(bm,result,indices,obj,axes)
+        before=set(bm.verts)
+        positions={i:point-vector*a._DEFAULT_BULGE for i,(point,vector) in recipes.items()}
+        created=reverse.create(bm,result,indices,0.,obj.matrix_world,True,axes,a._DEFAULT_BULGE,True,positions,gains)
+        moving=[v for v in bm.verts if v not in before]
+        for vertex in moving:
+            locked=[axis for axis,on in enumerate(axes) if on and abs(vertex.co[axis])<1e-7]
+            vertex.co+=offset
+            for axis in locked:vertex.co[axis]=0.
+            clips.extend((vertex,axis) for axis in locked)
+    else:
+        created=reverse.create(bm,result,indices,0.,obj.matrix_world if obj else Matrix.Identity(4),
+            True,axes,translation=offset)
+        bm.faces.ensure_lookup_table()
+        moving=sorted({v for index in created for v in bm.faces[index].verts},key=lambda v:v.index)
+    bm.faces.ensure_lookup_table()
+    data=_finish(bm,offset,moving,origin,normal,'SOLID',len(faces),_records(bm))
+    data['clip_axes']=tuple((vertex.index,axis) for vertex,axis in clips)
+    for index in created:bm.faces[index].select_set(True)
+    bm.faces.active=bm.faces[created[-1]]
+    return data
+
+
+def _capped_region(bm,result,offset,faces):
+    """Move a patch on an existing surface, keeping its new outer cap."""
+    region=set(faces);records=list(_records(bm));order=bm.faces.layers.int[a.L_ORDER]
+    next_order=max((int(f[order]) for f in bm.faces),default=0)+1
+    jobs=[];walls=[];old_edges=set();vertices=set();normal=Vector()
+    for face in faces:
+        plan=result.plans_by_loop[tuple(v.index for v in face.verts)]
+        attrs=_attributes(face,bm);caps=e.boundary_vertices(face,bm)
+        jobs.append((face,list(face.verts),attrs,int(face[order]),caps))
+        old_edges.update(face.edges);vertices.update(face.verts);normal+=face.normal
+        for loop in face.loops:
+            if sum(owner in region for owner in loop.edge.link_faces)==2:continue
+            one,two=loop.vert,loop.link_loop_next.vert
+            width=_edge_count(result,one,two,plan.settings.width if frozenset((one,two)) in caps else 1)
+            walls.append((one,two,attrs,width))
+    origin=sum((v.co for v in vertices),Vector())/len(vertices)
+    moving={v:bm.verts.new(v.co+offset) for v in sorted(vertices,key=lambda v:v.index)}
+    for source,target in moving.items():
+        for layers in (bm.verts.layers.float,bm.verts.layers.int):
+            for layer in layers.values():target[layer]=source[layer]
+    for values in records:
+        values.update({(moving[u],moving[v]):value for (u,v),value in list(values.items()) if u in moving and v in moving})
+    for face,ring,attrs,identity,caps in jobs:bm.faces.remove(face)
+    created=[]
+    for face,ring,attrs,identity,caps in jobs:
+        created.append(_face(bm,[moving[v] for v in ring],attrs,identity,
+            tuple(frozenset(moving[v] for v in cap) for cap in caps)))
+    for one,two,attrs,width in walls:
+        face=_face(bm,(one,two,moving[two],moving[one]),attrs,next_order,
+            (frozenset((one,two)),frozenset((moving[one],moving[two]))));next_order+=1
+        for name,value in (('width',max(1,min(32,width))),('bulge',0.),('bias',0.),('flip',False)):
+            a._set_zone(face,bm,name,value)
+        records[0][one,moving[one]]=0.;records[0][two,moving[two]]=0.
+    for edge in old_edges:
+        if edge.is_valid and not edge.link_faces:bm.edges.remove(edge)
+    for vertex in vertices:
+        if vertex.is_valid and not vertex.link_edges:bm.verts.remove(vertex)
+    data=_finish(bm,offset,list(moving.values()),origin,normal,'SOLID',len(jobs),records)
+    for face in created:face.select_set(True)
+    bm.faces.active=created[-1]
+    return data
+
+
+def _faces(bm,result,offset,faces):
+    region=set(faces)
+    attached=any(other not in region for face in faces for edge in face.edges for other in edge.link_faces)
+    return _capped_region(bm,result,offset,faces) if attached else _solid(bm,result,offset,faces)
 
 
 def _region(bm,result,offset,faces=(),band=None):
@@ -253,10 +338,15 @@ def _chain(bm,result,offset,chain):
 
 def extrude(bm,result,offset):
     a._prepare_bmesh(bm,result);bm.verts.index_update();bm.faces.index_update();bm.normal_update()
+    from . import mirror
+    obj=bpy.context.edit_object
+    if obj:mirror.snap_bmesh(bm,obj)
     if 'FACE' in bm.select_mode:
         faces=[f for f in bm.faces if f.select]
-        if faces:return _region(bm,result,offset,faces=faces)
+        if faces:return _faces(bm,result,offset,faces)
     selected={v for v in bm.verts if v.select and not v.hide};targets=[]
+    whole=[f for f in bm.faces if not f.hide and set(f.verts)<=selected]
+    if whole and {v for f in whole for v in f.verts}==selected:return _faces(bm,result,offset,whole)
     for face in bm.faces:
         caps=a._read_caps(face,a._boundary_layer(bm))
         if not caps or any(c is None or c[0] not in ('edge','point') for c in caps):continue

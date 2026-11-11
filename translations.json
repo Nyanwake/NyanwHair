@@ -269,5 +269,16 @@
   "Connect free borders": "Соединить свободные края",
   "Bridge open borders with editable segments; shared borders stay open": "Соединить свободные края обычными сегментами; общие края с соседними сегментами остаются открытыми",
   "Distance behind the selected guides": "Расстояние от исходных направляющих до обратной стороны",
-  "Select a segment": "Выбери сегмент"
+  "Select a segment": "Выбери сегмент",
+  "Closed strand": "Замкнутый локон",
+  "Selection mode": "Режим выделения",
+  "Switch between point, edge and segment selection": "Переключить выделение точек, рёбер или сегментов",
+  "Shape the reverse side across the strand": "Поперечный выгиб обратной стороны локона",
+  "Bridge open borders; at zero offset share the contour without side walls": "Соединить свободные края; при нулевом смещении использовать общий контур без боковых стенок",
+  "Shared contour · no side walls": "Общий контур · без боковых стенок",
+  "Merge seam": "Сшивать шов",
+  "Merge distance": "Допуск слияния",
+  "Join reflected halves when guide points are within the seam distance": "Сшивать отражённые половины, когда точки направляющих находятся в пределах допуска от плоскости зеркала",
+  "Merge to Mirror plane": "На плоскость Mirror",
+  "Place selected points on the Mirror plane to join both halves": "Поместить выбранные точки на плоскость Mirror для соединения половин"
 }

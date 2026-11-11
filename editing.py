@@ -165,6 +165,12 @@ class NYANW35_MT_merge(Menu):
         for mode,label in [('CENTER','At Center'),('ACTIVE','At Active'),('FIRST','At First'),('LAST','At Last'),('CURSOR','At Cursor'),('DISTANCE','By Distance')]:
             row=translated_layout(self.layout).row();row.enabled=mode not in ('ACTIVE','FIRST','LAST') or has_history
             op=row.operator('nyanw35.merge',text=label);op.mode=mode
+        from . import mirror
+        axes,_=mirror.configuration(context.edit_object)
+        if any(axes):
+            layout=translated_layout(self.layout);layout.separator()
+            for axis,on in zip('XYZ',axes):
+                if on:layout.operator('nyanw35.mirror_seam',text=tr('Merge to Mirror plane')+' '+axis,icon='MOD_MIRROR').axis=axis
 
 
 class NYANW35_OT_merge_menu(Operator):
@@ -264,12 +270,38 @@ def validate_stage(bm,obj):
     bm.verts.index_update();bm.faces.index_update()
     from . import groups
     faces=[f for f in bm.faces if groups.face_group(f,bm,groups.active_id(obj))==groups.active_id(obj)]
-    result=a.core.generate([tuple(v.co) for v in bm.verts],[tuple(v.index for v in f.verts) for f in faces],
+    from . import mirror
+    points=mirror.positions(obj,[tuple(v.co) for v in bm.verts],{v.index for f in faces for v in f.verts})
+    axes,distance=mirror.configuration(obj)
+    result=a.core.generate(points,[tuple(v.index for v in f.verts) for f in faces],
         [a._get_zone(f,bm) for f in faces],rows=obj.nh35.rows,caps=[a.core.neutral_caps(tuple(v.index for v in f.verts),a._read_caps(f,a._boundary_layer(bm))) for f in faces],
         reference_length=(groups.settings(obj).reference_length if groups.settings(obj) else obj.nh35.detail_length),directional_smoothing=a._directional_smoothing(bm),local_density=a._edge_density(bm),
-        point_density=a._point_density(bm),layout_lengths=a._layout_lengths(bm),regular_rows=True,face_indices=[f.index for f in faces])
+        point_density=a._point_density(bm),layout_lengths=a._layout_lengths(bm),regular_rows=True,face_indices=[f.index for f in faces],plane_axes=axes if distance else ())
     if result.warnings:raise ValueError(next(iter(result.warnings.values())))
     if not result.faces:raise ValueError(tr('Could not build the surface'))
+    return result
+
+
+def draw_mode_header(layout,context,mode,label,icon):
+    index={'VERT':0,'EDGE':1,'FACE':2}[mode]
+    op=layout.operator('nyanw35.select_mode',text='%d · %s'%(index+1,tr(label)),
+        icon=icon,depress=context.tool_settings.mesh_select_mode[index])
+    op.mode=mode
+
+
+class NYANW35_OT_select_mode(Operator):
+    bl_idname='nyanw35.select_mode'
+    bl_label='Selection mode'
+    bl_description='Switch between point, edge and segment selection'
+    bl_options={'UNDO'}
+    mode:EnumProperty(items=[('VERT','Points',''),('EDGE','Edges',''),('FACE','Segments','')])
+    @classmethod
+    def poll(cls,context):return bool(a.is_guide(context.edit_object))
+    def execute(self,context):
+        bpy.ops.mesh.select_mode(type=self.mode,use_extend=False,use_expand=False)
+        a._sync_ui(context.edit_object)
+        if context.area:context.area.tag_redraw()
+        return {'FINISHED'}
 
 
 _ACTIVE=set()
@@ -294,6 +326,8 @@ class NYANW35_OT_extrude(Operator):
                 from . import wirecurve
                 start=obj.matrix_world@Vector(data['anchor']);coords=wirecurve.positions(start,start+Vector(self.offset),self.curve_bend,self.curve_points)
                 wirecurve.rebuild(bm,data['wire_start'],data['indices'][0],(),[obj.matrix_world.inverted_safe()@point for point in coords])
+            from . import mirror
+            mirror.snap_bmesh(bm,obj)
             if data['mode']!='WIRE':validate_stage(bm,obj)
             return data
         try:
@@ -328,7 +362,7 @@ class NYANW35_OT_extrude(Operator):
     def _status(self,context):
         if getattr(self,'_curve_phase',False):
             context.area.header_text_set(tr('Bend · intermediate points: %d · mouse: bend · wheel: points · LMB / Enter · Esc')%self.curve_points);return
-        label={'EXTEND':tr('Extend'),'BRANCH':tr('Branch'),'CHAIN':tr('Edge chain'),'REGION':'E-Face','WIRE':tr('Guide wire')}.get(self._data['mode'],tr('Extrude'))
+        label={'EXTEND':tr('Extend'),'BRANCH':tr('Branch'),'CHAIN':tr('Edge chain'),'SOLID':tr('Closed strand'),'REGION':'E-Face','WIRE':tr('Guide wire')}.get(self._data['mode'],tr('Extrude'))
         if self._data.get('count',1)>1:label+=' ×%d'%self._data['count']
         extra=tr(' · wheel: bend') if self._data['mode']=='WIRE' else ''
         context.area.header_text_set(label+tr(' · mouse / X Y Z / number')+extra+tr(' · LMB / Enter · Esc'))
@@ -355,9 +389,12 @@ class NYANW35_OT_extrude(Operator):
         self._delta=delta;local=self._obj.matrix_world.inverted_safe().to_3x3()@delta
         bm=bmesh.from_edit_mesh(self._obj.data);bm.verts.ensure_lookup_table()
         for index,base in zip(self._data['indices'],self._data['bases']):bm.verts[index].co=Vector(base)+local
+        for index,axis in self._data.get('clip_axes',()):bm.verts[index].co[axis]=0.
         if self._data.get('opening'):
             from . import extrusion
             extrusion.update_opening(bm,self._data['opening'],local)
+        from . import mirror
+        mirror.snap_bmesh(bm,self._obj)
         bmesh.update_edit_mesh(self._obj.data,loop_triangles=False,destructive=False)
         a._rebuild(self._obj);context.area.tag_redraw()
     def _curve_update(self,context,event=None,rebuild=False):
@@ -381,6 +418,8 @@ class NYANW35_OT_extrude(Operator):
             bm.verts[self._data['indices'][0]].co=local[-1]
         self.curve_bend=tuple(self._curve_bend)
         self._curve_preview=tuple(tuple(p) for p in wirecurve.positions(self._anchor,self._curve_end,self._curve_bend,47))
+        from . import mirror
+        mirror.snap_bmesh(bm,self._obj)
         bmesh.update_edit_mesh(self._obj.data,loop_triangles=False,destructive=rebuild)
         a._rebuild(self._obj);self._status(context);context.area.tag_redraw()
 
@@ -465,4 +504,4 @@ def cancel_all(restore=True):
     for operator in tuple(_ACTIVE):operator._end(bpy.context,restore)
 
 
-CLASSES=(NYANW35_OT_boundary,NYANW35_OT_merge,NYANW35_MT_merge,NYANW35_OT_merge_menu,NYANW35_OT_extrude)
+CLASSES=(NYANW35_OT_boundary,NYANW35_OT_merge,NYANW35_MT_merge,NYANW35_OT_merge_menu,NYANW35_OT_select_mode,NYANW35_OT_extrude)

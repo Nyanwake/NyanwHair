@@ -244,16 +244,20 @@ def _zone_ui_faces(bm,obj):
         previous=cache.get('native_selection_stamp')
         if previous is not None and previous!=stamp:cache['zone_selection_explicit']=False
         cache['native_selection_stamp']=stamp
-        if bpy.context.tool_settings.mesh_select_mode[2]:
-            uid=groups.active_id(obj)
-            faces=[f for f in bm.faces if not f.hide and groups.face_group(f,bm,uid)==uid and all(v.select for v in f.verts)]
+        uid=groups.active_id(obj)
+        faces=[f for f in bm.faces if not f.hide and groups.face_group(f,bm,uid)==uid and all(v.select for v in f.verts)]
+        face_mode=bpy.context.tool_settings.mesh_select_mode[2]
+        if face_mode or faces:
             lookup=_zone_lookup(cache['result']) if cache.get('result') else {}
+            if not lookup:return faces
             keys={i:key for key,i in lookup.items()}
-            cache['zone_selection']=frozenset(keys[f.index] for f in faces if f.index in keys)
+            selected={keys[f.index] for f in faces if f.index in keys}
+            if not face_mode and cache.get('zone_selection_explicit'):selected.update(cache.get('zone_selection',()))
+            cache['zone_selection']=frozenset(selected)
             cache['zone_selection_explicit']=True
-            indices={f.index for f in faces}
+            indices={lookup[key] for key in selected if key in lookup}
             if cache.get('active',-1) not in indices:cache['active']=min(indices,default=-1)
-            return faces
+            return [f for f in bm.faces if f.index in indices]
     if cache.get('zone_selection_explicit'):
         bm.faces.ensure_lookup_table();bm.faces.index_update()
         return [bm.faces[i] for i in sorted(_selected_zone_indices(cache)) if 0<=i<len(bm.faces)]
@@ -1001,16 +1005,21 @@ def _rebuild(obj,force=False,lazy=False,group_id=None,_background=False):
     if old is None and _CACHE.get(key,{}).get('group_id',1)==uid:old=_CACHE.get(key)
     if old is not None and not _background:_CACHE[key]=old
     group=groups.settings(obj,uid);reference=(group.reference_length if group else 0.) or (obj.nh35.detail_length if uid==1 else 0.)
-    state=(obj.mode,int(obj.nh35.rows),float(reference),True,uid)
+    from . import mirror
+    seam=mirror.configuration(obj,group)
+    state=(obj.mode,int(obj.nh35.rows),float(reference),True,uid,seam)
     if lazy and not force and old and old.get('signature') is not None and not old.get('source_dirty',True) and old.get('source_state')==state:return False
     positions,full_zones,full_options,active,full_caps,smoothing,density,point_density,layout_lengths=_capture(obj,True,True,True,True)
     indices=[i for i,o in enumerate(full_options) if o.group==uid]
     zones=[full_zones[i] for i in indices];options=[full_options[i] for i in indices];caps=[full_caps[i] for i in indices]
     used={v for loop in zones for v in loop}
+    positions=mirror.positions(obj,positions,used,group)
     smoothing={e:v for e,v in smoothing.items() if set(e)<=used};density={e:v for e,v in density.items() if set(e)<=used}
     layout_lengths={e:v for e,v in layout_lengths.items() if set(e)<=used};point_density={v:p for v,p in point_density.items() if v in used}
     rows=obj.nh35.rows
     signature=_signature([positions[i] for i in sorted(used)],zones,options,rows,caps,reference,smoothing,density,point_density,layout_lengths,True)
+    plane_axes=seam[0] if seam[1] else ()
+    signature+=(plane_axes,)
     if old and old.get('signature')==signature and not force:
         old.update(revision=_SOURCE_REVISION,source_state=state,source_dirty=False)
         if active in indices and not old.get('zone_selection_explicit'):old['active']=active
@@ -1023,7 +1032,7 @@ def _rebuild(obj,force=False,lazy=False,group_id=None,_background=False):
             except ValueError:pass
     previous=old['result'] if old and old.get('group_zones')==tuple(zones) and old.get('face_indices')==tuple(indices) else None
     try:
-        result=components.generate(positions,zones,options,rows,previous=previous,caps=[core.neutral_caps(loop,c) for loop,c in zip(zones,caps)],reference_length=reference,directional_smoothing=smoothing,local_density=density,point_density=point_density,layout_lengths=layout_lengths,regular_rows=True,face_indices=indices)
+        result=components.generate(positions,zones,options,rows,previous=previous,caps=[core.neutral_caps(loop,c) for loop,c in zip(zones,caps)],reference_length=reference,directional_smoothing=smoothing,local_density=density,point_density=point_density,layout_lengths=layout_lengths,regular_rows=True,face_indices=indices,plane_axes=plane_axes)
         warnings=result.warnings;selection={}
         if old and old.get('zone_selection_explicit'):
             lookup=_zone_lookup(result);keys=frozenset(k for k in old.get('zone_selection',()) if k in lookup)
@@ -1140,28 +1149,10 @@ class NYANW35_OT_create_guide(Operator):
 
     def execute(self,context):
         me=bpy.data.meshes.new('NyanwHair Guide')
-        # A real hair ribbon, not the old rectangle. The control polygon
-        # contains a broad root, curved shoulders and a single pointed tip.
-        # Only its face owns the direction markers; no vertex/edge tags.
-        points=[(.08,0,0),(-.34,0,.75),(-.73,0,1.65),
-                (-.72,0,2.48),(-.38,0,3.35),(.39,0,3.35),
-                (.73,0,2.50),(.72,0,1.64),(.37,0,.75)]
-        points=[tuple(c*.1 for c in point) for point in points]
-        me.from_pydata(points,[],[tuple(range(len(points)))])
-        me.update()
+        from . import starter
         bm=bmesh.new()
         try:
-            bm.from_mesh(me)
-            bm.verts.ensure_lookup_table(); bm.verts.index_update()
-            bm.faces.ensure_lookup_table(); bm.faces.index_update()
-            layer=bm.loops.layers.int.new(L_CAP)
-            width=bm.faces.layers.int.new(L_WIDTH)
-            face=bm.faces[0]
-            face[width]=4
-            # Polygon order: 4 -> 5 is the root cap; vertex 0 is the tip.
-            for loop in face.loops:
-                if loop.vert.index==4: loop[layer]=1
-                elif loop.vert.index==0: loop[layer]=4
+            starter.add(bm)
             bm.to_mesh(me)
         finally:
             bm.free()
@@ -1954,7 +1945,7 @@ def _draw_extra_panels(layout,context,obj,cached,edit):
 
 
 class NYANW35_PT_main(Panel):
-    bl_label='NyanwHair v1.01'
+    bl_label='NyanwHair v1.02'
     bl_idname='NYANW35_PT_main'
     bl_space_type='VIEW_3D'
     bl_region_type='UI'
@@ -1988,19 +1979,23 @@ class NYANW35_PT_main(Panel):
             if active is not None:
                 split=body.split(factor=.32,align=True);split.column(align=True).label(text='Mirror',icon='MOD_MIRROR');axes=split.row(align=True)
                 for axis in 'xyz':axes.prop(active,'mirror_'+axis,text=axis.upper(),toggle=True)
+                row=body.row(align=True);row.enabled=active.mirror_x or active.mirror_y or active.mirror_z
+                row.prop(active,'mirror_merge',text=tr('Merge seam'))
+                distance=row.row(align=True);distance.enabled=active.mirror_merge
+                distance.prop(active,'mirror_distance',text='')
             else:body.label(text=tr('Press ↻ to prepare groups'))
         bm=bmesh.from_edit_mesh(obj.data)
-        layout.separator();layout.label(text=tr('Segment settings'),icon='FACESEL')
+        layout.separator();editing.draw_mode_header(layout,context,'FACE','Segment settings','FACESEL')
         parameters=layout.column(align=True);parameters.enabled=bool(_zone_ui_faces(bm,obj))
         parameters.prop(ui,'detail',text=tr('Detail'));parameters.prop(ui,'width',text=tr('Width'));parameters.prop(ui,'bulge',text=tr('Convexity'));parameters.prop(ui,'bias',text=tr('Distribution'))
         parameters.separator();parameters.operator('nyanw35.create_reverse',text=tr('Create reverse side'),icon='MOD_SOLIDIFY')
         if not cached.get('zone_count',0):layout.operator('nyanw35.group_starter',text=tr('Create strand in group'),icon='ADD')
-        layout.separator();layout.label(text=tr('Segment boundaries'),icon='EDGESEL')
+        layout.separator();editing.draw_mode_header(layout,context,'EDGE','Segment boundaries','EDGESEL')
         ends=layout.column(align=True);ends.enabled=bool(_zone_ui_faces(bm,obj))
         for slot,label in [('FIRST',tr('Start')),('SECOND',tr('End'))]:
             row=ends.row(align=True);op=row.operator('nyanw35.boundary',text=label);op.slot=slot;op.clear=False
             op=row.operator('nyanw35.boundary',text='',icon='X');op.slot=slot;op.clear=True
-        layout.separator();layout.label(text=tr('Points'),icon='VERTEXSEL')
+        layout.separator();editing.draw_mode_header(layout,context,'VERT','Points','VERTEXSEL')
         row=layout.row(align=True);row.enabled=bool(_smooth_targets(bm,result));row.prop(ui,'direction_smoothing',text=tr('Smoothing'),slider=True);row.operator('nyanw35.direction_smoothing',text='',icon='LOOP_BACK').value=1.
         layout.separator(factor=.4);layout.label(text=tr('Local density'),icon='MOD_SUBSURF')
         vertices=_point_density_targets(bm,result)
@@ -2513,9 +2508,13 @@ def _draw_control_points():
         point_sets=[[],[],[],[],[],[],[]]
         if record is None or record[0]!=signature:
             occlusion=_occlusion_state(ctx)
+            from . import mirror
+            axes,distance=mirror.configuration(obj)
+            positions=cache.get('positions',()) if obj.nh35.live and distance and any(axes) else ()
             for vert in bm.verts:
                 if vert.hide or groups.vertex_group(vert,bm,groups.active_id(obj))!=groups.active_id(obj):continue
-                world=obj.matrix_world@vert.co
+                point=Vector(positions[vert.index]) if 0<=vert.index<len(positions) else vert.co
+                world=obj.matrix_world@point
                 pos=view3d_utils.location_3d_to_region_2d(ctx.region,ctx.region_data,world)
                 if pos is None or not (0<=pos.x<=ctx.region.width and 0<=pos.y<=ctx.region.height):continue
                 if not _point_visible(ctx,world,occlusion,pos):continue
@@ -2623,6 +2622,7 @@ def _on_scene_update(_scene,_depsgraph):
 @persistent
 def _on_load(_dummy):
     editing.cancel_all(False)
+    reverse.cancel_all(False)
     _clear_zone_pick()
     global _CUT_PREVIEW,_UNDOING
     _UNDOING=False;_UNDO_DISPLAY.clear();_RESTORE_GROUPS.clear()
@@ -2633,6 +2633,7 @@ def _on_load(_dummy):
 @persistent
 def _on_undo_pre(_dummy):
     editing.cancel_all(False)
+    reverse.cancel_all(False)
     _clear_zone_pick()
     global _UNDOING,_CUT_PREVIEW
     _UNDOING=True
@@ -2668,13 +2669,13 @@ def _on_undo_post(_dummy):
     _UNDO_DISPLAY.clear()
 
 
-from . import editing,reverse
+from . import editing,reverse,mirror
 
 _CLASSES=groups.CLASSES+(NHGuidedProperties,NHGuidedUISettings,NYANW35_OT_direction_smoothing,NYANW35_OT_local_density,NYANW35_OT_point_density,NYANW35_OT_density_reset,NYANW35_OT_set_cap,NYANW35_OT_refresh_layout,
           NYANW35_OT_create_guide,NYANW35_OT_disable,
           NYANW35_OT_demo,NYANW35_OT_rebuild,NYANW35_OT_bake,
           NYANW35_OT_pin_rails, NYANW35_OT_adjust,NYANW35_OT_pick_zone,
-          NYANW35_OT_hair_loop,NYANW35_PT_main)+editing.CLASSES+(reverse.NYANW35_OT_reverse,)
+          NYANW35_OT_hair_loop,NYANW35_PT_main)+editing.CLASSES+(reverse.NYANW35_OT_reverse,mirror.NYANW35_OT_mirror_seam)
 
 
 def _register_keys():
@@ -2734,6 +2735,7 @@ def register():
 def unregister():
     global _RUNNING,_DRAW_HANDLER,_POINT_HANDLER,_CUT_PREVIEW,_STROKE_SHADER
     editing.cancel_all()
+    reverse.cancel_all()
     from . import appearance
     appearance.clear()
     _STROKE_SHADER=None

@@ -44,7 +44,7 @@ def preview(result,zone,t):
     return lines
 
 
-def split(bm,zone,t,result,select_result=False):
+def split(bm,zone,t,result,select_result=False,provenance=None):
     from . import addon as a,editing
     a._prepare_bmesh(bm,result)
     for seq in (bm.verts,bm.edges,bm.faces):seq.ensure_lookup_table();seq.index_update()
@@ -106,6 +106,7 @@ def split(bm,zone,t,result,select_result=False):
             editing.assign_vertices(face,bm,caps)
             a._set_zone(face,bm,'width',widths[side]);a._set_zone(face,bm,'bulge',job['settings'].bulge*job['gains'][side])
             a._set_zone(face,bm,'bias',job['settings'].bias);a._set_zone(face,bm,'flip',job['settings'].flip)
+            if provenance is not None:provenance[int(face[order])]=(job['identity'],job['gains'][side])
         children_all.extend(children)
         if job['index']==zone:chosen=left_child;answer=(job['settings'].width,*widths)
     a._restore_cap_records(bm,neighbor_caps,exclude=children_all)

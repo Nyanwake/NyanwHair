@@ -56,6 +56,8 @@ class NH35HairGroup(PropertyGroup):
     mirror_x:BoolProperty(name='Mirror X',default=False,update=changed,description="Linked mirror on the object's local X axis; edit the source half")
     mirror_y:BoolProperty(name='Mirror Y',default=False,update=changed,description="Linked mirror on the object's local Y axis; edit the source half")
     mirror_z:BoolProperty(name='Mirror Z',default=False,update=changed,description="Linked mirror on the object's local Z axis; edit the source half")
+    mirror_merge:BoolProperty(name='Merge seam',default=True,update=changed,description='Join reflected halves when guide points are within the seam distance')
+    mirror_distance:FloatProperty(name='Merge distance',default=.001,min=.000001,soft_max=.01,subtype='DISTANCE',update=changed)
     reference_length:FloatProperty(default=0.,min=0.)
 
 def ensure(obj):
@@ -73,7 +75,7 @@ def ensure(obj):
 
 
 def _state(obj):
-    return [active_id(obj),[[g.uid,g.name,(list(_custom_color(g)) if _custom_color(g) is not None else None),[g.mirror_x,g.mirror_y,g.mirror_z],g.reference_length,_custom_color(g) is not None] for g in obj.nh35.groups]]
+    return [active_id(obj),[[g.uid,g.name,(list(_custom_color(g)) if _custom_color(g) is not None else None),[g.mirror_x,g.mirror_y,g.mirror_z],g.reference_length,_custom_color(g) is not None,g.mirror_merge,g.mirror_distance] for g in obj.nh35.groups]]
 
 
 def remember(obj):
@@ -130,6 +132,8 @@ def restore(obj):
             group=obj.nh35.groups.add();group.uid=uid;group.name=name
             if color is not None and custom:group.color=color
             group.mirror_x,group.mirror_y,group.mirror_z=axes;group.reference_length=reference
+            if len(record)>6:group.mirror_merge=record[6]
+            if len(record)>7:group.mirror_distance=record[7]
         obj.nh35.active_group=state[0]
     finally:_RESTORING=False
 
@@ -259,12 +263,9 @@ class NYANW35_OT_group_starter(Operator):
         if not a.is_guide(obj):return {'CANCELLED'}
         uid=active_id(obj)
         def operation(bm):
-            a._prepare_bmesh(bm)
-            verts=[bm.verts.new(tuple(c*.1 for c in p)) for p in ((-.4,0,0),(.4,0,0),(.45,0,1),(.2,0,2),(-.2,0,2),(-.45,0,1))]
-            face=bm.faces.new(verts);face[bm.faces.layers.int[a.L_GROUP]]=uid
-            face[bm.faces.layers.int[a.L_ORDER]]=max((f[bm.faces.layers.int[a.L_ORDER]] for f in bm.faces),default=0)+1
-            for v in verts:v[bm.verts.layers.int[a.L_VERTEX_GROUP]]=uid
-            a._write_boundary_pair(face,bm,(('edge',0),('edge',3)));editing._select(bm,verts);isolate(bm,uid)
+            from . import starter
+            verts,face=starter.add(bm,uid)
+            editing._select(bm,verts);isolate(bm,uid)
         a._edit_transaction(obj,operation);a._prepare_object(obj);a._rebuild(obj,True)
         return {'FINISHED'}
 
