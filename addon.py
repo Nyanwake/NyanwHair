@@ -245,8 +245,9 @@ def _zone_ui_faces(bm,obj):
         if previous is not None and previous!=stamp:cache['zone_selection_explicit']=False
         cache['native_selection_stamp']=stamp
         uid=groups.active_id(obj)
-        faces=[f for f in bm.faces if not f.hide and groups.face_group(f,bm,uid)==uid and all(v.select for v in f.verts)]
         face_mode=bpy.context.tool_settings.mesh_select_mode[2]
+        native_faces=[f for f in bm.faces if not f.hide and groups.face_group(f,bm,uid)==uid and f.select] if face_mode else []
+        faces=native_faces or [f for f in bm.faces if not f.hide and groups.face_group(f,bm,uid)==uid and all(v.select for v in f.verts)]
         if face_mode or faces:
             lookup=_zone_lookup(cache['result']) if cache.get('result') else {}
             if not lookup:return faces
@@ -1921,7 +1922,10 @@ def _draw_extra_panels(layout,context,obj,cached,edit):
             buttons.operator('nyanw35.extrude',text=tr('Extrude · E'),icon='CURVE_BEZCURVE').from_panel=True
             buttons.operator('nyanw35.hair_loop',text='Loop · Ctrl+R',icon='EDGESEL').mode='AUTO'
             buttons.operator('nyanw35.merge_menu',text=tr('Merge')+' · M',icon='AUTOMERGE_ON')
-            buttons.operator('mesh.rip_move',text=tr('Rip')+' · V',icon='MOD_EDGESPLIT')
+            from . import ripping
+            if ripping.candidate(bmesh.from_edit_mesh(obj.data)) is not None:
+                buttons.operator('nyanw35.rip',text=tr('Rip')+' · V',icon='MOD_EDGESPLIT').from_panel=True
+            else:buttons.operator('mesh.rip_move',text=tr('Rip')+' · V',icon='MOD_EDGESPLIT')
             buttons.operator('mesh.edge_face_add',text=tr('Fill')+' · F',icon='FACESEL')
             buttons.operator('wm.call_menu',text=tr('Delete')+' · X',icon='TRASH').name='VIEW3D_MT_edit_mesh_delete'
     header,body=layout.panel('nyanw_appearance',default_closed=True);header.label(text=tr('Appearance'),icon='SHADING_SOLID')
@@ -1946,7 +1950,7 @@ def _draw_extra_panels(layout,context,obj,cached,edit):
 
 
 class NYANW35_PT_main(Panel):
-    bl_label='NyanwHair v1.03'
+    bl_label='NyanwHair v1.04'
     bl_idname='NYANW35_PT_main'
     bl_space_type='VIEW_3D'
     bl_region_type='UI'
@@ -2685,7 +2689,7 @@ def _register_keys():
     km=kc.keymaps.new(name='Mesh',space_type='EMPTY')
     click=km.keymap_items.new('nyanw35.pick_zone','LEFTMOUSE','CLICK',any=True)
     _KEYMAPS.append((km,click))
-    for name,key in [('nyanw35.extrude','E'),('nyanw35.merge_menu','M')]:
+    for name,key in [('nyanw35.extrude','E'),('nyanw35.merge_menu','M'),('nyanw35.rip','V')]:
         item=km.keymap_items.new(name,key,'PRESS');_KEYMAPS.append((km,item))
     # Add-on Mesh keymap takes precedence over Blender's default Mesh Ctrl+R
     # only when poll() accepts a NyanwHair guide. Shift+R is untouched.

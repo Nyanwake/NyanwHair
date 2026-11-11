@@ -137,6 +137,31 @@ def _cap_profiles(points,plans,widths,evaluate,cap_widths=None,rim_caps=None):
             if length(normal)<EPS: normal=p.normal
             if dot(normal,p.normal)<0: normal=mul(normal,-1.)
             groups[key].append((p,normal))
+    # Connected coplanar cap pieces share a station plane, even while the
+    # rear is detached. A spanning original cap keeps its exact profile.
+    adjacency=defaultdict(set)
+    for edge in groups:
+        for vertex in edge:adjacency[vertex].add(edge)
+    pending=set(groups)
+    while pending:
+        first=min(pending);pending.remove(first);component=[first]
+        for edge in component:
+            for vertex in edge:
+                for other in adjacency[vertex]&pending:pending.remove(other);component.append(other)
+        if len(component)<2:continue
+        primary=min(component,key=lambda edge:min(_plan_priority(p) for p,n in groups[edge]))
+        owners=groups[primary];normal=tuple(math.fsum(n[i]*p.settings.bulge*(-1. if p.settings.flip else 1.) for p,n in owners) for i in range(3))
+        if length(normal)<EPS:normal=owners[0][1]
+        origin=points[primary[0]];across=norm(sub(points[primary[1]],origin));axis=norm(cross(across,normal))
+        vertices={v for edge in component for v in edge};span=max(length(sub(points[v],origin)) for v in vertices)
+        for vertex in sorted(vertices):
+            candidate=cross(across,norm(sub(points[vertex],origin)))
+            if length(candidate)>1e-5:axis=norm(candidate);break
+        if length(axis)<EPS or any(abs(dot(sub(points[v],origin),axis))>max(EPS,span*1e-6) for v in vertices):continue
+        for edge in component:
+            if edge==primary and len(component)>=len(vertices):continue
+            normal=norm(cross(sub(points[edge[1]],points[edge[0]]),axis))
+            if length(normal)>EPS:groups[edge]=[(p,mul(normal,-1.) if dot(normal,old)<0. else normal) for p,old in groups[edge]]
     profiles={}
     for (lo,hi),group in groups.items():
         group.sort(key=lambda item:_boundary_key(item[0].boundary))

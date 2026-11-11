@@ -1,4 +1,4 @@
-# NyanwHair 1.03
+# NyanwHair 1.04
 
 Build expressive stylized hair one strand at a time. Shape the guides and NyanwHair stitches neighbouring segments into a continuous mesh. Grow branches, open sharp tips, and add or remove polygons along and across each strand as you work.
 
@@ -22,6 +22,7 @@ Build expressive stylized hair one strand at a time. Shape the guides and NyanwH
 | E from one point → wheel | Set intermediate points; move the mouse to bend the curve |
 | Ctrl+R | Hair Loop: split a segment or add a guide support point |
 | M | Merge points while preserving strand settings |
+| V | Rip a guide point; supports sparse boundary corners |
 | Shift+wheel | Width across the segment |
 | Ctrl+Shift+wheel | Detail along the segment |
 | Ctrl+wheel | Convexity |
@@ -42,13 +43,13 @@ Click the **3 · Segment settings / 2 · Segment boundaries / 1 · Points** head
 
 **Local density** adds geometry near selected points without changing the guide shape. **Radius** sets how far the extra density spreads along the guides, with a smooth fade to the regular grid.
 
-**Create reverse side** previews offset and convexity before confirmation. The result is editable; opposing sides meet at a stable rim. At zero offset, the front and rear share their contour without side walls; a centre guide gives each side its own shape. **Mirror UV** lets reflected strands share the original texture space or use separate islands.
+**Create reverse side** keeps the front segment and adds two editable rear segments with their own centre guide. Offset and convexity have a live preview. **Connect edges** joins the sides, without walls at zero offset; the end caps stay open. **Mirror UV** lets reflected strands share the original texture space or use separate islands.
 
 **Mirror · Merge seam** joins reflected halves within the chosen distance, in Live and the converted Mesh. **M → Mirror X/Y/Z** places selected source points exactly on a mirror plane.
 
 Choose **RU / EN** in **Additional**. The initial language follows Blender; other languages use English.
 
-[Download](https://github.com/Nyanwake/NyanwHair/releases/tag/v1.0.3) · [GPL-3.0](LICENSE)
+[Download](https://github.com/Nyanwake/NyanwHair/releases/tag/v1.0.4) · [GPL-3.0](LICENSE)
 
 ---
 
@@ -70,10 +71,10 @@ Choose **RU / EN** in **Additional**. The initial language follows Blender; othe
 
 **Уплотнение** добавляет полигоны возле выбранных точек, сохраняя форму направляющих. **Радиус** задаёт область влияния вдоль кривых с плавным переходом к обычной сетке.
 
-**Создать обратную сторону** показывает смещение и выпуклость до подтверждения. При нулевом смещении контур сшивается без боковых стенок; центральная направляющая позволяет отдельно редактировать форму сторон.
+**Создать обратную сторону** сохраняет лицевой сегмент и добавляет два задних со своей центральной направляющей. Смещение и выпуклость видны в предпросмотре. **Соединить края** сшивает бока, при нулевом смещении без стенок; торцы остаются открытыми.
 
 **Mirror · Сшивать шов** соединяет половины в пределах допуска. **M → На плоскость Mirror X/Y/Z** точно ставит выбранные точки на плоскость зеркала.
 
-Горячие клавиши: **E** — продолжение торца, непрерывной цепочки рёбер или ветвление; **Ctrl+R** — Loop; **M** — Merge. **Shift+колесо** — ширина, **Ctrl+Shift+колесо** — детализация, **Ctrl+колесо** — выпуклость, **Alt+колесо** — сглаживание.
+Горячие клавиши: **E** — продолжение торца, непрерывной цепочки рёбер или ветвление; **Ctrl+R** — Loop; **M** — Merge; **V** — разделение точки, включая краевой угол сегмента. **Shift+колесо** — ширина, **Ctrl+Shift+колесо** — детализация, **Ctrl+колесо** — выпуклость, **Alt+колесо** — сглаживание.
 
 Язык **RU / EN** выбирается в **«Дополнительно»**.

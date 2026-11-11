@@ -323,13 +323,14 @@ class NYANW35_OT_extrude(Operator):
     curve_bend:FloatVectorProperty(name='Bend',subtype='TRANSLATION',default=(0.,0.,0.))
     @classmethod
     def poll(cls,context):return bool(a.is_guide(context.edit_object))
+    def _stage(self,bm,result,offset):return extrude_stage(bm,result,offset)
     def execute(self,context):
         obj=context.edit_object
         if not any(v.select and not v.hide for v in bmesh.from_edit_mesh(obj.data).verts):return {'CANCELLED'}
         if Vector(self.offset).length<1e-8:return {'CANCELLED'}
         a._rebuild(obj);backup=bmesh.from_edit_mesh(obj.data).copy();selection=a._selection_state(bmesh.from_edit_mesh(obj.data));committed=False
         def operation(bm):
-            data=extrude_stage(bm,a._CACHE[obj.as_pointer()]['result'],obj.matrix_world.inverted_safe().to_3x3()@Vector(self.offset))
+            data=self._stage(bm,a._CACHE[obj.as_pointer()]['result'],obj.matrix_world.inverted_safe().to_3x3()@Vector(self.offset))
             if data['mode']=='WIRE' and self.curve_points:
                 from . import wirecurve
                 start=obj.matrix_world@Vector(data['anchor']);coords=wirecurve.positions(start,start+Vector(self.offset),self.curve_bend,self.curve_points)
@@ -356,7 +357,7 @@ class NYANW35_OT_extrude(Operator):
         self._mouse=Vector((event.mouse_region_x,event.mouse_region_y));self._axis=None;self._number='';self._delta=Vector();self._precision=False;self._motion_offset=Vector();self._raw=Vector()
         a._rebuild(obj)
         self._zone_state={key:a._CACHE[obj.as_pointer()][key] for key in ('active','zone_selection','zone_selection_explicit') if key in a._CACHE[obj.as_pointer()]}
-        try:self._data=a._edit_transaction(obj,lambda bm:extrude_stage(bm,a._CACHE[obj.as_pointer()]['result'],Vector()))
+        try:self._data=a._edit_transaction(obj,lambda bm:self._stage(bm,a._CACHE[obj.as_pointer()]['result'],Vector()))
         except (ValueError,RuntimeError,ReferenceError) as exc:
             self._backup.free();self._backup=None;self.report({'WARNING'},str(exc));return {'CANCELLED'}
         self._anchor=obj.matrix_world@Vector(self._data['anchor'])
@@ -370,7 +371,7 @@ class NYANW35_OT_extrude(Operator):
     def _status(self,context):
         if getattr(self,'_curve_phase',False):
             context.area.header_text_set(tr('Bend · intermediate points: %d · mouse: bend · wheel: points · LMB / Enter · Esc')%self.curve_points);return
-        label={'EXTEND':tr('Extend'),'BRANCH':tr('Branch'),'CHAIN':tr('Edge chain'),'SOLID':tr('Closed strand'),'REGION':'E-Face','WIRE':tr('Guide wire')}.get(self._data['mode'],tr('Extrude'))
+        label={'EXTEND':tr('Extend'),'BRANCH':tr('Branch'),'CHAIN':tr('Edge chain'),'SOLID':tr('Closed strand'),'REGION':'E-Face','WIRE':tr('Guide wire'),'RIP':tr('Rip')}.get(self._data['mode'],tr('Extrude'))
         if self._data.get('count',1)>1:label+=' ×%d'%self._data['count']
         extra=tr(' · wheel: bend') if self._data['mode']=='WIRE' else ''
         context.area.header_text_set(label+tr(' · mouse / X Y Z / number')+extra+tr(' · LMB / Enter · Esc'))
@@ -512,4 +513,6 @@ def cancel_all(restore=True):
     for operator in tuple(_ACTIVE):operator._end(bpy.context,restore)
 
 
-CLASSES=(NYANW35_OT_boundary,NYANW35_OT_merge,NYANW35_MT_merge,NYANW35_OT_merge_menu,NYANW35_OT_select_mode,NYANW35_OT_extrude)
+from .ripping import NYANW35_OT_rip
+
+CLASSES=(NYANW35_OT_boundary,NYANW35_OT_merge,NYANW35_MT_merge,NYANW35_OT_merge_menu,NYANW35_OT_select_mode,NYANW35_OT_extrude,NYANW35_OT_rip)

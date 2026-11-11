@@ -8,7 +8,7 @@ from . import addon as a,editing,extrusion
 
 
 def create(bm,result,indices,distance,matrix,join=True,axes=(),bend=None,
-           weld=False,positions=None,bend_gains=None,translation=None):
+           weld=False,positions=None,bend_gains=None,translation=None,copied_vertices=None):
     a._prepare_bmesh(bm,result);bm.faces.ensure_lookup_table();bm.verts.index_update()
     faces=[bm.faces[i] for i in indices]
     if not faces:raise ValueError(tr('Select a segment'))
@@ -61,6 +61,8 @@ def create(bm,result,indices,distance,matrix,join=True,axes=(),bend=None,
             if on and abs(source.co[axis])<1e-7:vertex.co[axis]=source.co[axis]
         for layers in (bm.verts.layers.float,bm.verts.layers.int):
             for layer in layers.values():vertex[layer]=source[layer]
+    if copied_vertices is not None:
+        copied_vertices.extend((source,face,copies[key]) for (source,face),key in fan.items())
     next_order=max((int(f[order]) for f in bm.faces),default=0)+1;created=[]
     for source_face,ring,attrs,slots,plan,normal in jobs:
         clone=lambda v:copies[fan[v,source_face]]
@@ -118,7 +120,7 @@ def create(bm,result,indices,distance,matrix,join=True,axes=(),bend=None,
     return tuple(face.index for face in created)
 
 
-def prepare_welded(bm,result,indices,obj,axes=()):
+def prepare_closed_base(bm,result,indices,obj,axes=()):
     """Give a zero-offset shell its own interior guide, sharing the outer rim.
 
     A reversed n-gon with the same vertices is a duplicate Blender face.
@@ -180,21 +182,10 @@ def prepare_welded(bm,result,indices,obj,axes=()):
     return result,indices,gains,recipes
 
 
-def shared_seam(bm,indices,axes,result):
-    bm.faces.ensure_lookup_table()
-    points=result.source_points
-    return any(len(edge.link_faces)==1 and any(on and all(abs(points[v.index][axis])<1e-7 for v in edge.verts) for axis,on in enumerate(axes)) for index in indices for edge in bm.faces[index].edges)
-
-
 def construct(bm,result,indices,obj,distance,join,bend,axes):
-    from . import mirror
-    mirror.snap_bmesh(bm,obj)
-    if not mirror.configuration(obj)[1]:axes=()
-    gains=None;positions=None;weld=join and (distance==0. or shared_seam(bm,indices,axes,result))
-    if weld:
-        result,indices,gains,recipes=prepare_welded(bm,result,indices,obj,axes)
-        positions={index:base-vector*bend for index,(base,vector) in recipes.items()}
-    return create(bm,result,indices,distance,obj.matrix_world,join,axes,bend,weld,positions,gains)
+    from . import backside
+    prepared=backside.prepare(bm,result,indices,obj,axes)
+    return backside.apply(bm,prepared,distance,bend,join)
 
 
 _ACTIVE=set()
@@ -207,7 +198,7 @@ class NYANW35_OT_reverse(Operator):
     bl_options={'REGISTER','UNDO'}
     distance:FloatProperty(name='Offset',description='Distance behind the selected guides',default=.01,min=0.,soft_max=.1,subtype='DISTANCE')
     bend:FloatProperty(name='Convexity',description='Shape the reverse side across the strand',default=.08,min=0.,max=3.,step=5,precision=3)
-    join:BoolProperty(name='Connect edges',default=True,description='Bridge open borders; at zero offset share the contour without side walls')
+    join:BoolProperty(name='Connect edges',default=True,description='Join the side guides; at zero offset share them without walls. End caps stay open')
     @classmethod
     def poll(cls,context):return bool(a.is_guide(context.edit_object))
     def _begin(self,context):
@@ -224,27 +215,20 @@ class NYANW35_OT_reverse(Operator):
         self._zone_state={key:cache[key] for key in ('active','zone_selection','zone_selection_explicit') if key in cache}
         from . import groups
         group=groups.settings(self._obj);self._axes=tuple(getattr(group,'mirror_'+axis) for axis in 'xyz') if group and group.mirror_merge else ()
-        self._shared_seam=shared_seam(bm,self._indices,self._axes,self._source)
-        self._signature=None;self._error='';self._created=();self._weld_base=None
+        self._signature=None;self._error='';self._created=();self._rear_base=None
         _ACTIVE.add(self);return True
     def _preview(self,context):
         signature=(self.distance,self.bend,self.join)
         if signature==self._signature:return not self._error
         stage=None
         try:
-            if self.join and (self.distance==0. or self._shared_seam):
-                if self._weld_base is None:
-                    base=self._backup.copy()
-                    try:
-                        prepared=prepare_welded(base,self._source,self._indices,self._obj,self._axes)
-                        self._weld_base=(base,*prepared)
-                    except Exception:base.free();raise
-                base,result,indices,gains,recipes=self._weld_base
-                stage=base.copy();positions={index:point-vector*self.bend for index,(point,vector) in recipes.items()}
-                created=create(stage,result,indices,self.distance,self._obj.matrix_world,True,self._axes,self.bend,True,positions,gains)
-            else:
-                stage=self._backup.copy()
-                created=construct(stage,self._source,self._indices,self._obj,self.distance,self.join,self.bend,self._axes)
+            from . import backside
+            if self._rear_base is None:
+                base=self._backup.copy()
+                try:self._rear_base=(base,backside.prepare(base,self._source,self._indices,self._obj,self._axes))
+                except Exception:base.free();raise
+            base,prepared=self._rear_base;stage=base.copy()
+            created=backside.apply(stage,prepared,self.distance,self.bend,self.join)
             editing.validate_stage(stage,self._obj)
             editing.restore_backup(self._obj,stage,a._selection_state(stage))
             self._created=created;self._error='';self._signature=signature
@@ -280,7 +264,7 @@ class NYANW35_OT_reverse(Operator):
         layout=translated_layout(self.layout)
         layout.prop(self,'distance',text=tr('Offset'));layout.prop(self,'bend',text=tr('Convexity'))
         layout.prop(self,'join',text=tr('Connect edges'))
-        if self.distance==0. and self.join:layout.label(text=tr('Shared contour · no side walls'),icon='AUTOMERGE_ON')
+        if self.distance==0. and self.join:layout.label(text=tr('Shared sides · open ends'),icon='AUTOMERGE_ON')
         if getattr(self,'_error',''):layout.label(text=self._error,icon='ERROR')
     def _end(self,context,restore):
         try:
@@ -292,7 +276,7 @@ class NYANW35_OT_reverse(Operator):
         except (ReferenceError,RuntimeError):pass
         finally:
             if self._backup is not None:self._backup.free();self._backup=None
-            if self._weld_base is not None:self._weld_base[0].free();self._weld_base=None
+            if self._rear_base is not None:self._rear_base[0].free();self._rear_base=None
             _ACTIVE.discard(self)
             if context.area:context.area.tag_redraw()
     def execute(self,context):

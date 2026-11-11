@@ -1,8 +1,8 @@
-"""NyanwHair 1.03 Guided Surfaces."""
+"""NyanwHair 1.04 Guided Surfaces."""
 bl_info = {
     'name': 'NyanwHair - Guided Surfaces',
     'author': 'NyanWake',
-    'version': (1,0,3),
+    'version': (1,0,4),
     'blender': (5,1,0),
     'location': 'View3D > Sidebar > NyanwHair',
     'description': 'Guided hair with instanced GPU mirrors and flow-aligned UV islands',

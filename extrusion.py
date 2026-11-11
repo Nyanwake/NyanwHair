@@ -150,7 +150,7 @@ def _solid(bm,result,offset,faces):
     shared_seam=any(len(edge.link_faces)==1 and any(on and all(abs(v.co[axis])<1e-7 for v in edge.verts) for axis,on in enumerate(axes)) for face in faces for edge in face.edges)
     clips=[]
     if shared_seam:
-        result,indices,gains,recipes=reverse.prepare_welded(bm,result,indices,obj,axes)
+        result,indices,gains,recipes=reverse.prepare_closed_base(bm,result,indices,obj,axes)
         before=set(bm.verts)
         positions={i:point-vector*a._DEFAULT_BULGE for i,(point,vector) in recipes.items()}
         created=reverse.create(bm,result,indices,0.,obj.matrix_world,True,axes,a._DEFAULT_BULGE,True,positions,gains)
