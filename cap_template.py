@@ -26,7 +26,7 @@ def add(bm,group=1):
     for index,(ring,caps) in enumerate(zip(FACES,CAPS)):
         face=bm.faces.new([vertices[i] for i in ring]);face[order]=identity+index
         face[bm.faces.layers.int[a.L_GROUP]]=group
-        for name,value in (('width',2),('bulge',0.),('auto_curve',True)):a._set_zone(face,bm,name,value)
+        for name,value in (('width',2),('bulge',0.)):a._set_zone(face,bm,name,value)
         a._write_boundary_pair(face,bm,caps);face.select_set(True)
     for vertex in vertices:vertex[bm.verts.layers.int[a.L_VERTEX_GROUP]]=group
     return vertices

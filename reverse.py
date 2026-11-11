@@ -103,7 +103,6 @@ def create(bm,result,indices,distance,matrix,join=True,axes=(),bend=None,
         wall=extrusion._face(bm,polygon,attrs,next_order,ends);next_order+=1
         a._set_zone(wall,bm,'bulge',0.);a._set_zone(wall,bm,'bias',0.);a._set_zone(wall,bm,'flip',False)
         a._set_zone(wall,bm,'width',2 if rail else plan.settings.width)
-        a._set_zone(wall,bm,'auto_curve',False)
         if not rail:a._set_zone(wall,bm,'detail',2)
     extrusion.straight_connections(bm,records,((key[0],vertex) for key,vertex in copies.items()))
     a._restore_directions(bm,records[0]);a._restore_density(bm,records[1]);a._restore_layout(bm,records[2])
@@ -113,7 +112,6 @@ def create(bm,result,indices,distance,matrix,join=True,axes=(),bend=None,
     bm.select_history.clear()
     for face in created:face.select_set(True)
     bm.faces.active=created[-1];bm.select_history.add(created[-1]);bm.normal_update();bm.verts.index_update();bm.faces.index_update()
-    if any(len(edge.link_faces)>2 for edge in bm.edges):raise ValueError(tr('Extrusion would join three surfaces on one edge'))
     return tuple(face.index for face in created)
 
 

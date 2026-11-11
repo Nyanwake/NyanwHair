@@ -130,7 +130,6 @@ def merge_stage(bm,mode,distance,cursor):
         if slots is not None:assign_vertices(face,bm,slots)
     a._restore_directions(bm,directions);a._restore_density(bm,density);a._restore_layout(bm,layout)
     for target,(gain,radius) in values.items():target[point_gain]=gain;target[point_radius]=radius
-    if any(len(e.link_faces)>2 for e in bm.edges):raise ValueError(tr('Merge would join three surfaces on one edge'))
     _select(bm,list(selected_after))
 
 
@@ -180,77 +179,6 @@ class NYANW35_OT_merge_menu(Operator):
     def invoke(self,context,event):
         if not any(v.select and not v.hide for v in bmesh.from_edit_mesh(context.edit_object.data).verts):return {'CANCELLED'}
         bpy.ops.wm.call_menu(name='NYANW35_MT_merge');return {'FINISHED'}
-
-
-def single_extrude_stage(bm,result,offset):
-    a._prepare_bmesh(bm,result);bm.verts.index_update();bm.faces.index_update()
-    selected=[v for v in bm.verts if v.select]
-    if len(selected) not in (1,2):
-        raise ValueError(tr('Select a free boundary, branch edge or face for E-Face'))
-    directions=a._directional_smoothing(bm,True);density=a._edge_density(bm,True);layout=a._layout_lengths(bm,True)
-    edge=bm.edges.get(tuple(selected)) if len(selected)==2 else None
-    if len(selected)==2 and edge is None:raise ValueError(tr('Select one edge'))
-    owners=list(edge.link_faces) if edge else list(selected[0].link_faces)
-    if not owners:raise ValueError(tr('Select a boundary edge of an existing segment to branch'))
-    if len(owners)!=1:raise ValueError(tr('Edge already joins two surfaces. Select a free boundary edge'))
-    face=owners[0]
-    caps=a._read_caps(face,a._boundary_layer(bm))
-    if not caps or any(c is None or c[0] not in ('edge','point') for c in caps):raise ValueError(tr('Set both segment boundaries first'))
-    slots=list(boundary_vertices(face,bm));chosen=frozenset(selected)
-    cap_index=next((i for i,s in enumerate(slots) if s==chosen),None)
-    if edge is None and cap_index is None:raise ValueError(tr('Point must be a marked free boundary'))
-    ring=list(face.verts);old_edges=tuple(face.edges)
-    attributes=[(layer,face[layer]) for layers in (bm.faces.layers.int,bm.faces.layers.float,bm.faces.layers.string) for layer in layers.values()]
-    material=face.material_index;smooth=face.smooth
-    def face_values(new):
-        for layer,value in attributes:new[layer]=value
-        new.material_index=material;new.smooth=smooth
-    origin=sum((v.co for v in selected),Vector())/len(selected)
-    default_direction=Vector((0,0,1))
-    if cap_index is not None:
-        if edge:
-            i=next(i for i,v in enumerate(ring) if v in chosen and ring[(i+1)%len(ring)] in chosen)
-            first=ring[i];second=ring[(i+1)%len(ring)]
-            default_direction=origin-(ring[i-1].co+ring[(i+2)%len(ring)].co)*.5
-            one=bm.verts.new(first.co+offset);two=bm.verts.new(second.co+offset)
-            polygon=ring[:i+1]+[one,two]+ring[i+1:]
-        else:
-            first=selected[0];i=ring.index(first);old=first.co.copy()
-            default_direction=old-(ring[i-1].co+ring[(i+1)%len(ring)].co)*.5
-            across=(ring[(i+1)%len(ring)].co-ring[i-1].co)*.15
-            if across.length<1e-8:raise ValueError(tr('Could not open the pointed tip'))
-            first.co=old-across;second=bm.verts.new(old+across)
-            neighbor=ring[(i+1)%len(ring)]
-            def move_corner(records):
-                return {((second if u is first and v is neighbor else u),(second if v is first and u is neighbor else v)):value for (u,v),value in records.items()}
-            directions=move_corner(directions);density=move_corner(density);layout=move_corner(layout)
-            for name in (a.L_POINT_DENSITY,a.L_POINT_RADIUS):
-                layer=bm.verts.layers.float[name];second[layer]=first[layer]
-            one=bm.verts.new(first.co+offset);two=bm.verts.new(second.co+offset)
-            polygon=ring[:i]+[first,one,two,second]+ring[i+1:]
-        bm.faces.remove(face)
-        new=bm.faces.new(polygon);face_values(new)
-        slots[cap_index]=frozenset((one,two));assign_vertices(new,bm,slots)
-        for old_edge in old_edges:
-            if old_edge.is_valid and not old_edge.link_faces:bm.edges.remove(old_edge)
-        mode='EXTEND'
-    else:
-        first,second=next((l.vert,l.link_loop_next.vert) for l in face.loops if l.edge is edge)
-        default_direction=(second.co-first.co).cross(face.normal)
-        one=bm.verts.new(first.co+offset);two=bm.verts.new(second.co+offset)
-        new=bm.faces.new((second,first,one,two));face_values(new)
-        new[bm.faces.layers.int[a.L_ORDER]]=max(int(f[bm.faces.layers.int[a.L_ORDER]]) for f in bm.faces)+1
-        key=a.core.edge_key(first.index,second.index)
-        count=sum(k[0]=='s' and k[1:3]==key for k in result.vertex_keys)+1
-        a._set_zone(new,bm,'width',max(1,min(32,count)))
-        assign_vertices(new,bm,(frozenset((first,second)),frozenset((one,two))))
-        directions[first,one]=directions[one,first]=0.;directions[second,two]=directions[two,second]=0.;mode='BRANCH'
-    for v in (one,two):
-        v[bm.verts.layers.float[a.L_POINT_DENSITY]]=0.;v[bm.verts.layers.float[a.L_POINT_RADIUS]]=0.
-    a._restore_directions(bm,directions);a._restore_density(bm,density);a._restore_layout(bm,layout)
-    _select(bm,[one,two]);bm.normal_update();bm.verts.index_update();bm.faces.index_update()
-    if offset.length>1e-8 and a.core.length(a.core.newell([tuple(v.co) for v in bm.verts],tuple(v.index for v in new.verts)))<a.core.EPS:raise ValueError(tr('Choose a direction that creates a nonzero surface'))
-    return dict(mode=mode,indices=(one.index,two.index),bases=(tuple(one.co-offset),tuple(two.co-offset)),anchor=tuple(origin),direction=tuple(default_direction.normalized() if default_direction.length else Vector((0,0,1))))
 
 
 def extrude_stage(bm,result,offset):
@@ -310,30 +238,6 @@ class NYANW35_OT_select_mode(Operator):
     def execute(self,context):
         bpy.ops.mesh.select_mode(type=self.mode,use_extend=False,use_expand=False)
         a._sync_ui(context.edit_object)
-        if context.area:context.area.tag_redraw()
-        return {'FINISHED'}
-
-
-class NYANW35_OT_auto_curvature(Operator):
-    bl_idname='nyanw35.auto_curvature'
-    bl_label='Auto curvature'
-    bl_description='Smooth the cross-section between neighbouring guides; convexity adds to this shape'
-    bl_options={'REGISTER','UNDO'}
-    enabled:bpy.props.BoolProperty(name='Auto curvature',default=True)
-    @classmethod
-    def poll(cls,context):return bool(a.is_guide(context.edit_object))
-    def execute(self,context):
-        obj=context.edit_object;a._rebuild(obj);bm=bmesh.from_edit_mesh(obj.data)
-        indices=tuple(face.index for face in a._zone_ui_faces(bm,obj))
-        if not indices:return {'CANCELLED'}
-        def operation(stage):
-            a._prepare_bmesh(stage);stage.faces.ensure_lookup_table()
-            for index in indices:a._set_zone(stage.faces[index],stage,'auto_curve',self.enabled)
-            validate_stage(stage,obj)
-        try:a._edit_transaction(obj,operation)
-        except (ValueError,RuntimeError,ReferenceError) as exc:
-            self.report({'WARNING'},str(exc));return {'CANCELLED'}
-        a._rebuild(obj,True);a._sync_ui(obj)
         if context.area:context.area.tag_redraw()
         return {'FINISHED'}
 
@@ -569,4 +473,4 @@ def cancel_all(restore=True):
 
 from .ripping import NYANW35_OT_rip
 
-CLASSES=(NYANW35_OT_boundary,NYANW35_OT_merge,NYANW35_MT_merge,NYANW35_OT_merge_menu,NYANW35_OT_select_mode,NYANW35_OT_auto_curvature,NYANW35_OT_flip_normals,NYANW35_OT_extrude,NYANW35_OT_rip)
+CLASSES=(NYANW35_OT_boundary,NYANW35_OT_merge,NYANW35_MT_merge,NYANW35_OT_merge_menu,NYANW35_OT_select_mode,NYANW35_OT_flip_normals,NYANW35_OT_extrude,NYANW35_OT_rip)

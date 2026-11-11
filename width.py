@@ -4,7 +4,6 @@ import math
 from .core import EPS,add,sub,mul,dot,cross,length,norm,mix,bias_cross_position,edge_key
 from .surface import _rotate,CapBlend
 from .ribbon import zipper_flows
-from .crossflow import offset as cross_offset,weight
 
 
 def _limit_row_changes(values,body):
@@ -58,7 +57,7 @@ def _coherent_paths(fractions):
     return paths
 
 
-def _regular_transition(plan,width,ca,cb,left,right,caps,max_polygons,cross_profile=None):
+def _regular_transition(plan,width,ca,cb,left,right,caps,max_polygons):
     """Fair interior rows; unequal border budgets affect only the rim strips."""
     points=[];faces=[];indices={}
     def vertex(key,pos):
@@ -83,7 +82,7 @@ def _regular_transition(plan,width,ca,cb,left,right,caps,max_polygons,cross_prof
         if dot(normal,transported)<0.:normal=mul(normal,-1.)
         normals.append(normal);reference=normal;old_tangent=tangents[k]
     cap_blend=CapBlend(plan,[(aa[i][1],bb[i][1]) for i in (0,-1)],(normals[0],normals[-1]),
-        [[point for key,point in cap] if cap else None for cap in caps],cross_profile)
+        [[point for key,point in cap] if cap else None for cap in caps])
     widths=[length(sub(b,a)) for (_,a),(_,b) in zip(aa,bb)];span=max(EPS,max(widths))
     counts=[len(cap)-1 if cap else width for cap in caps]
     def smooth(t):t=max(0.,min(1.,t));return t*t*(3.-2.*t)
@@ -103,7 +102,6 @@ def _regular_transition(plan,width,ca,cb,left,right,caps,max_polygons,cross_prof
     for k,((ka,a),(kb,b)) in enumerate(zip(aa,bb)):
         n=row_counts[k];cap=caps[0] if k==0 else caps[1] if k==count else None
         weights=cap_blend.weights(flows[k])
-        deltas=cross_profile.deltas(station(fa,k/count),station(fb,k/count),a,b) if cross_profile else None
         coords=[];row=[]
         for x in range(n+1):
             if cap:key,pos=cap[x]
@@ -111,9 +109,8 @@ def _regular_transition(plan,width,ca,cb,left,right,caps,max_polygons,cross_prof
             elif x==0:key,pos=ka,a
             elif x==n:key,pos=kb,b
             else:
-                v=bias_cross_position(x/n,plan.settings.bias);amount=plan.settings.signed_bulge*widths[k]*weight(v,plan.settings.auto_curve)
+                v=bias_cross_position(x/n,plan.settings.bias);amount=plan.bulge*widths[k]*math.sin(math.pi*v)
                 key=('width',plan.index,k,x,n);pos=add(mix(a,b,v),mul(normals[k],amount))
-                if deltas is not None:pos=add(pos,cross_offset(deltas,v))
                 pos=cap_blend.apply(pos,x/n,weights)
             coords.append(pos)
             if x==0:index=borders[0][nearest(fa,station(fa,k/count))]
@@ -156,12 +153,11 @@ def build_transition(plan,width,registry,ca,cb,left,right,profiles,put,emit,max_
             if plan.left[0 if cap==plan.start else -1]!=edge[0]:keys=keys[::-1];positions=positions[::-1]
             caps.append(tuple(zip(keys,positions)))
         else:caps.append(None)
-    cross_profile=registry.crossflow.get(plan)
-    signature=('width_coherent',plan,width,ca.geometry_signature,cb.geometry_signature,tuple(left),tuple(right),tuple(caps),mapping is not None,registry.crossflow.signature(plan))
+    signature=('width_coherent',plan,width,ca.geometry_signature,cb.geometry_signature,tuple(left),tuple(right),tuple(caps),mapping is not None)
     old=previous.get(plan.boundary);reused=bool(old and old[0]==signature)
     if reused:recipe=old[1]
     elif mapping is None and width>=2 and all(cap is None or len(cap)>=3 for cap in caps):
-        recipe=_regular_transition(plan,width,ca,cb,left,right,caps,max_polygons,cross_profile)
+        recipe=_regular_transition(plan,width,ca,cb,left,right,caps,max_polygons)
     else:
         points=[];faces=[];indices={}
         def vertex(key,pos):
@@ -180,7 +176,7 @@ def build_transition(plan,width,registry,ca,cb,left,right,profiles,put,emit,max_
             if dot(normal,reference)<0.:normal=mul(normal,-1.)
             normals.append(normal);previous_normal=normal;old_tangent=tangents[k]
         ends=[(left[i][1],right[j][1]) for i,j in (path[0],path[-1])]
-        cap_blend=CapBlend(plan,ends,(normals[0],normals[-1]),[[point for key,point in cap] if cap else None for cap in caps],cross_profile)
+        cap_blend=CapBlend(plan,ends,(normals[0],normals[-1]),[[point for key,point in cap] if cap else None for cap in caps])
         counts=[len(cap)-1 if cap else width for cap in caps]
         def smooth(t):t=max(0.,min(1.,t));return t*t*(3.-2.*t)
         row_counts=[]
@@ -197,16 +193,14 @@ def build_transition(plan,width,registry,ca,cb,left,right,profiles,put,emit,max_
             cap=caps[0] if k==0 else caps[1] if k==len(path)-1 else None
             if cap:count=len(cap)-1
             row=[];coords=[];ka,pa=left[i];kb,pb=right[j]
-            deltas=cross_profile.deltas(ca.fraction(ka),cb.fraction(kb),pa,pb) if cross_profile else None
             for x in range(count+1):
                 if cap:key,pos=cap[x]
                 elif x==0:key,pos=ka,pa
                 elif x==count:key,pos=kb,pb
                 elif ka==kb:key,pos=ka,pa
                 else:
-                    v=bias_cross_position(x/count,plan.settings.bias);amount=plan.settings.signed_bulge*length(sub(pb,pa))*weight(v,plan.settings.auto_curve)
+                    v=bias_cross_position(x/count,plan.settings.bias);amount=plan.bulge*length(sub(pb,pa))*math.sin(math.pi*v)
                     key=('width',plan.index,k,x,count);pos=add(mix(pa,pb,v),mul(normals[k],amount))
-                    if deltas is not None:pos=add(pos,cross_offset(deltas,v))
                     pos=cap_blend.apply(pos,x/count,weights)
                 row.append(vertex(key,pos));coords.append(pos)
             rows.append(tuple(row));coordinates.append(coords);fractions.append([x/count for x in range(count+1)])

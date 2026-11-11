@@ -34,7 +34,6 @@ L_BULGE = 'nh35_bulge'
 L_BIAS = 'nh35_bias'
 L_FLIP = 'nh35_flip'
 L_NORMAL_FLIP = 'nh35_normal_flip'
-L_AUTO_CURVE = 'nh35_auto_curve'
 L_BOUNDARY = 'nh35_boundary_corners'
 L_CAP = 'nh35_cap_corner'  # BMLOOP, per-face direction, never a vertex/edge tag
 L_DENSITY = 'nh35_density'
@@ -123,7 +122,6 @@ def _get_zone(f,bm):
         group=int(f[ints[L_GROUP]]) if ints.get(L_GROUP) else 0,
         detail=int(f[ints[L_DETAIL]]) if ints.get(L_DETAIL) else 0,
         normal_flip=bool(f[ints[L_NORMAL_FLIP]]) if ints.get(L_NORMAL_FLIP) else False,
-        auto_curve=bool(f[ints[L_AUTO_CURVE]]) if ints.get(L_AUTO_CURVE) else False,
     )
 
 
@@ -545,7 +543,7 @@ def _prepare_bmesh(bm, result=None, group_id=None):
     """
     context_obj=bpy.context.edit_object or bpy.context.object
     current_group=group_id or (groups.active_id(context_obj) if is_guide(context_obj) else 1)
-    for name in (L_GROUP,L_DETAIL,L_NORMAL_FLIP,L_AUTO_CURVE):
+    for name in (L_GROUP,L_DETAIL,L_NORMAL_FLIP):
         if bm.faces.layers.int.get(name) is None:bm.faces.layers.int.new(name)
     if bm.verts.layers.int.get(L_VERTEX_GROUP) is None:bm.verts.layers.int.new(L_VERTEX_GROUP)
     for name,integer,default in ((L_WIDTH,True,2),(L_FLIP,True,0),(L_ORDER,True,0),
@@ -719,7 +717,6 @@ def _set_zone(f,bm,field,value):
         'flip': (L_FLIP,True),
         'detail': (L_DETAIL,True),
         'normal_flip': (L_NORMAL_FLIP,True),
-        'auto_curve': (L_AUTO_CURVE,True),
     }[field]
     layers=bm.faces.layers.int if is_integer else bm.faces.layers.float
     layer=layers.get(name)
@@ -1000,7 +997,7 @@ def _signature(positions,zones,options,rows,caps,detail_length=0.,smoothing=None
     return (bool(regular_rows),tuple(sorted((a,b,round(v,8)) for (a,b),v in (layout_lengths or {}).items())),tuple(sorted((i,round(f,6),round(r,6)) for i,(f,r) in (point_density or {}).items())),int(rows),round(detail_length,8),tuple(sorted((a,b,round(v,6)) for (a,b),v in (density or {}).items())),tuple(sorted((a,b,round(v,6)) for (a,b),v in (smoothing or {}).items())),
             tuple(tuple(round(x,6) for x in p) for p in positions),
             tuple(zones),tuple(caps),
-            tuple((o.width,round(o.bulge,5),round(o.bias,5),o.flip,o.order,o.group,o.detail,o.normal_flip,o.auto_curve) for o in options))
+            tuple((o.width,round(o.bulge,5),round(o.bias,5),o.flip,o.order,o.group,o.detail,o.normal_flip) for o in options))
 
 
 def _rebuild(obj,force=False,lazy=False,group_id=None,_background=False):
@@ -1083,7 +1080,6 @@ def _sync_ui(obj):
             if ui.detail!=detail:ui.detail=detail
             if abs(ui.bulge-data.bulge)>1e-6: ui.bulge=data.bulge
             if abs(ui.bias-data.bias)>1e-6: ui.bias=data.bias
-            if ui.auto_curve!=data.auto_curve:ui.auto_curve=data.auto_curve
         finally: _SYNCING_UI=False
     finally:
         if owned: bm.free()
@@ -1137,7 +1133,6 @@ class NHGuidedProperties(PropertyGroup):
 
 
 class NHGuidedUISettings(PropertyGroup):
-    auto_curve:BoolProperty(name='Auto curvature',default=False)
     detail:IntProperty(name='Detail',default=12,min=2,max=160,update=_on_ui_change('detail'),description='Polygon density along selected segments; guide shape is preserved')
     density_mode: EnumProperty(name='Density target',items=[('POINT','Point','Smooth density around the active point'),('EDGE','Edges','Legacy multiplier on selected edges')],default='POINT')
     point_radius: FloatProperty(name='Radius, % of length',min=.1,max=200.,get=_get_point_radius,set=_set_point_radius,description='Distance along guides as a percentage of the reference length; fades smoothly to the regular grid')
@@ -1948,7 +1943,7 @@ def _draw_presets(layout,obj):
 
 
 class NYANW35_PT_main(Panel):
-    bl_label='NyanwHair v1.06'
+    bl_label='NyanwHair v1.07'
     bl_idname='NYANW35_PT_main'
     bl_space_type='VIEW_3D'
     bl_region_type='UI'
@@ -1991,7 +1986,6 @@ class NYANW35_PT_main(Panel):
         section=editing.mode_section(layout,context,'FACE','Segment settings','FACESEL')
         parameters=section.column(align=True);parameters.enabled=bool(_zone_ui_faces(bm,obj))
         parameters.prop(ui,'detail',text=tr('Detail'));parameters.prop(ui,'width',text=tr('Width'));parameters.prop(ui,'bulge',text=tr('Convexity'));parameters.prop(ui,'bias',text=tr('Distribution'))
-        op=parameters.operator('nyanw35.auto_curvature',text=tr('Auto curvature'),icon='CHECKBOX_HLT' if ui.auto_curve else 'CHECKBOX_DEHLT',emboss=False);op.enabled=not ui.auto_curve
         parameters.separator();ui_icons.button(parameters,props,'nyanw35.create_reverse',tr('Create reverse side'),'REVERSE','MOD_SOLIDIFY')
         if not cached.get('zone_count',0):layout.operator('nyanw35.group_starter',text=tr('Create strand in group'),icon='ADD')
         section=editing.mode_section(layout,context,'EDGE','Segment boundaries','EDGESEL')

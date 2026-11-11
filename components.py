@@ -30,7 +30,7 @@ def generate(points,boundaries,settings=None,rows=12,max_polygons=200000,previou
     if len(boundaries)<2 or not kwargs.get('regular_rows') or kwargs.get('reference_length',0.)<=core.EPS or kwargs.get('edge_evaluator') is not None:return fallback()
     options=list(settings or [core.ZoneSettings() for _ in boundaries]);caps=kwargs.get('caps');indices=list(kwargs.get('face_indices') or range(len(boundaries)))
     if not caps or any(cap is None for cap in caps):return fallback()
-    parent=list(range(len(boundaries)));vertex_owner={};edge_owners=defaultdict(int)
+    parent=list(range(len(boundaries)));vertex_owner={}
     def find(i):
         while parent[i]!=i:parent[i]=parent[parent[i]];i=parent[i]
         return i
@@ -38,10 +38,9 @@ def generate(points,boundaries,settings=None,rows=12,max_polygons=200000,previou
         for v in loop:
             if v in vertex_owner:parent[find(i)]=find(vertex_owner[v])
             else:vertex_owner[v]=i
-        for a,b in zip(loop,loop[1:]+loop[:1]):edge_owners[core.edge_key(a,b)]+=1
     groups=defaultdict(list)
     for i in range(len(boundaries)):groups[find(i)].append(i)
-    if len(groups)<2 or any(n>2 for n in edge_owners.values()):return fallback()
+    if len(groups)<2:return fallback()
     old=getattr(previous,'component_cache',{});current={};parts=[];reused=0
     for members in groups.values():
         used=sorted({v for i in members for v in boundaries[i]});used_set=set(used)

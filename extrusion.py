@@ -66,7 +66,7 @@ def _build_walls(bm,walls,moving,identity):
         if not forward:polygon.reverse()
         slots=(frozenset((path[0],copied[0])),frozenset((path[-1],copied[-1]))) if rail else (frozenset(path),frozenset(copied))
         face=_face(bm,polygon,attrs,identity,slots);identity+=1
-        for name,value in (('width',width),('bulge',0.),('bias',0.),('flip',False),('auto_curve',False)):a._set_zone(face,bm,name,value)
+        for name,value in (('width',width),('bulge',0.),('bias',0.),('flip',False)):a._set_zone(face,bm,name,value)
         if not rail:a._set_zone(face,bm,'detail',2)
 
 
@@ -76,7 +76,6 @@ def _finish(bm,offset,moving,origin,direction,mode,count,records):
         vertex[bm.verts.layers.float[a.L_POINT_DENSITY]]=0.
         vertex[bm.verts.layers.float[a.L_POINT_RADIUS]]=0.
     e._select(bm,list(moving));bm.normal_update();bm.verts.index_update();bm.faces.index_update()
-    if any(len(edge.link_faces)>2 for edge in bm.edges):raise ValueError(tr('Extrusion would join three surfaces on one edge'))
     return dict(mode=mode,count=count,indices=tuple(v.index for v in moving),bases=tuple(tuple(v.co-offset) for v in moving),anchor=tuple(origin),direction=tuple(direction.normalized() if direction.length else Vector((0,0,1))))
 
 
@@ -268,6 +267,7 @@ def _region(bm,result,offset,faces=(),band=None):
         if not forward:before.reverse();after.reverse()
         original=list(e.boundary_vertices(source,bm));raw=a._read_caps(source,a._boundary_layer(bm));start=raw.index(plan.start);end=1-start
         one=original.copy();one[end]=frozenset((left[li],right[ri]));two=original.copy();two[start]=frozenset((left[li+1],right[ri+1]))
+        one[start]-=one[end];two[end]-=two[start]
         pieces=[(before,attrs,one),(after,attrs,two)]
         cross={frozenset((left[li],right[ri])),frozenset((left[li+1],right[ri+1]))}
         for one,two in zip(q,q[1:]+q[:1]):
@@ -321,65 +321,69 @@ def _wire(bm,source,offset):
         direction=tuple(direction.normalized() if direction.length else Vector((0,0,1))))
 
 
-def _edge_chain(bm,selected):
+def _edge_chains(bm,selected):
     edges=[edge for edge in bm.edges if not edge.hide and (edge.select or 'VERT' in bm.select_mode) and set(edge.verts)<=selected]
-    if not edges or len(edges)==1 and edges[0].link_faces:return None
-    neighbors={}
+    adjacency={}
     for edge in edges:
-        for v in edge.verts:neighbors.setdefault(v,[]).append(edge.other_vert(v))
-    if set(neighbors)!=selected or any(len(values)>2 for values in neighbors.values()):return None
-    ends=[v for v,values in neighbors.items() if len(values)==1]
-    if len(ends) not in (0,2):return None
-    start=min(ends or list(neighbors),key=lambda v:v.index);path=[start];previous=None;current=start
-    while True:
-        choices=[v for v in neighbors[current] if v is not previous]
-        if not choices:break
-        following=min(choices,key=lambda v:v.index)
-        if following is start:break
-        if following in path:return None
-        path.append(following);previous,current=current,following
-    return (path,not ends,edges) if len(path)==len(neighbors) else None
+        for vertex in edge.verts:adjacency.setdefault(vertex,[]).append(edge)
+    if not edges or set(adjacency)!=selected:return None
+    used=set();chains=[]
+    def walk(start,edge):
+        path=[start];run=[];vertex=start
+        while edge not in used:
+            used.add(edge);run.append(edge);vertex=edge.other_vert(vertex)
+            if vertex is start:chains.append((path,True,run));return
+            path.append(vertex)
+            if len(adjacency[vertex])!=2:break
+            edge=next(candidate for candidate in adjacency[vertex] if candidate is not edge)
+        chains.append((path,False,run))
+    for vertex in sorted(adjacency,key=lambda v:v.index):
+        if len(adjacency[vertex])!=2:
+            for edge in adjacency[vertex]:
+                if edge not in used:walk(vertex,edge)
+    for edge in edges:
+        if edge not in used:walk(min(edge.verts,key=lambda v:v.index),edge)
+    return chains
 
 
-def _chain(bm,result,offset,chain):
-    path,closed,edges=chain
-    if any(len(edge.link_faces)>1 for edge in edges):raise ValueError(tr('Select a continuous free edge chain'))
+def _chain(bm,result,offset,chains):
     records=list(_records(bm));layer=bm.faces.layers.int[a.L_ORDER]
-    parents={face for edge in edges for face in edge.link_faces}
-    parent=bm.faces.active if bm.faces.active in parents else min(parents,key=lambda f:(int(f[layer]),f.index),default=None)
-    attrs=_attributes(parent,bm) if parent else ([],0,True)
-    moving={v:bm.verts.new(v.co+offset) for v in path}
-    vertex_group=bm.verts.layers.int[a.L_VERTEX_GROUP]
-    for source,target in moving.items():target[vertex_group]=source[vertex_group]
+    vertices=sorted({v for path,closed,edges in chains for v in path},key=lambda v:v.index)
+    moving={v:bm.verts.new(v.co+offset,v) for v in vertices}
     for values in records:
         values.update({(moving[u],moving[v]):value for (u,v),value in list(values.items()) if u in moving and v in moving})
-    spans=[path] if not closed else [path[:len(path)//2+1],path[len(path)//2:]+[path[0]]]
-    next_order=max((int(f[layer]) for f in bm.faces),default=0)+1
-    direction=Vector()
-    for edge in edges:
-        if not edge.link_faces:continue
-        loop=next(loop for loop in edge.link_faces[0].loops if loop.edge is edge)
-        direction+=(loop.link_loop_next.vert.co-loop.vert.co).cross(loop.face.normal)
+    next_order=max((int(f[layer]) for f in bm.faces),default=0)+1;direction=Vector();count=0
+    for path,closed,edges in chains:
+        parents={face for edge in edges for face in edge.link_faces}
+        parent=bm.faces.active if bm.faces.active in parents else min(parents,key=lambda f:(int(f[layer]),f.index),default=None)
+        attrs=_attributes(parent,bm) if parent else ([],0,True)
+        spans=[path] if not closed else [path[:len(path)//2+1],path[len(path)//2:]+[path[0]]]
+        for edge in edges:
+            if not edge.link_faces:continue
+            source=parent if parent in edge.link_faces else min(edge.link_faces,key=lambda f:(int(f[layer]),f.index))
+            loop=next(loop for loop in source.loops if loop.edge is edge)
+            direction+=(loop.link_loop_next.vert.co-loop.vert.co).cross(source.normal)
+        for span in spans:
+            polygon=span+list(reversed([moving[v] for v in span]))
+            for one,two in zip(span,span[1:]):
+                source_edge=bm.edges.get((one,two))
+                if not source_edge.link_faces:continue
+                source=parent if parent in source_edge.link_faces else min(source_edge.link_faces,key=lambda f:(int(f[layer]),f.index))
+                source_loop=next(loop for loop in source.loops if loop.edge is source_edge)
+                if source_loop.vert is one:polygon.reverse()
+                break
+            face=_face(bm,polygon,attrs,next_order,(frozenset((span[0],moving[span[0]])),frozenset((span[-1],moving[span[-1]]))))
+            if parent is None:
+                from . import groups
+                face[bm.faces.layers.int[a.L_GROUP]]=groups.active_id(bpy.context.edit_object)
+                a._set_zone(face,bm,'width',2);a._set_zone(face,bm,'bulge',a._DEFAULT_BULGE)
+            next_order+=1;count+=1
     if not direction.length:
-        tangent=path[-1].co-path[0].co;direction=tangent.cross(Vector((0.,1.,0.)))
+        tangent=vertices[-1].co-vertices[0].co;direction=tangent.cross(Vector((0.,1.,0.)))
         if not direction.length:direction=Vector((1.,0.,0.))
-    for span in spans:
-        polygon=span+list(reversed([moving[v] for v in span]))
-        for one,two in zip(span,span[1:]):
-            source_edge=bm.edges.get((one,two))
-            if not source_edge.link_faces:continue
-            source_loop=next(loop for loop in source_edge.link_faces[0].loops if loop.edge is source_edge)
-            if source_loop.vert is one:polygon.reverse()
-            break
-        face=_face(bm,polygon,attrs,next_order,(frozenset((span[0],moving[span[0]])),frozenset((span[-1],moving[span[-1]]))))
-        if parent is None:
-            from . import groups
-            face[bm.faces.layers.int[a.L_GROUP]]=groups.active_id(bpy.context.edit_object)
-            a._set_zone(face,bm,'width',2);a._set_zone(face,bm,'bulge',a._DEFAULT_BULGE)
-        next_order+=1
     straight_connections(bm,records,moving.items())
-    origin=sum((v.co for v in path),Vector())/len(path)
-    return _finish(bm,offset,[moving[v] for v in path],origin,direction,'CHAIN',len(spans),records)
+    origin=sum((v.co for v in vertices),Vector())/len(vertices)
+    return _finish(bm,offset,[moving[v] for v in vertices],origin,direction,'CHAIN',count,records)
 
 
 def extrude(bm,result,offset):
@@ -410,20 +414,21 @@ def extrude(bm,result,offset):
         if chosen:targets.append((face,chosen))
     cap_points={v for face,chosen in targets for index in chosen for v in e.boundary_vertices(face,bm)[index]}
     cap_edges={bm.edges.get(tuple(slot)) for face,chosen in targets for index in chosen if len(slot:=e.boundary_vertices(face,bm)[index])==2}
-    selected_edges={edge for edge in bm.edges if edge.select and not edge.hide and set(edge.verts)<=selected}
+    selected_edges={edge for edge in bm.edges if (edge.select or 'VERT' in bm.select_mode) and not edge.hide and set(edge.verts)<=selected}
     if targets and cap_points==selected and selected_edges<=cap_edges and all(len(chosen)==1 for face,chosen in targets):return _extend(bm,targets,offset,result)
-    chain=_edge_chain(bm,selected)
-    if chain is not None:return _chain(bm,result,offset,chain)
     if len(selected)==1:return _wire(bm,next(iter(selected)),offset)
     # Two opposite rail edges delimit a band; its old surface is removed.
     bands=[]
     for face in bm.faces:
+        if len(selected_edges)!=2:break
         plan=result.plans_by_loop.get(tuple(v.index for v in face.verts))
         if plan is None:continue
-        selected_edges={a.core.edge_key(*[v.index for v in edge.verts]) for edge in face.edges if edge.select}
-        left=[i for i,key in enumerate(a.core.physical_edges(plan.left)) if key in selected_edges]
-        right=[i for i,key in enumerate(a.core.physical_edges(plan.right)) if key in selected_edges]
-        if len(left)==len(right)==1:bands.append((face,plan,left[0],right[0]))
+        face_edges={a.core.edge_key(*[v.index for v in edge.verts]) for edge in face.edges if edge in selected_edges}
+        left=[i for i,key in enumerate(a.core.physical_edges(plan.left)) if key in face_edges]
+        right=[i for i,key in enumerate(a.core.physical_edges(plan.right)) if key in face_edges]
+        if len(face_edges)==2 and len(left)==len(right)==1 and len(set().union(*(set(edge) for edge in face_edges)))==4:bands.append((face,plan,left[0],right[0]))
     if len(bands)==1:return _region(bm,result,offset,band=bands[0])
     if len(bands)>1:raise ValueError(tr('For E-Face, select one pair of opposite edges or use Face mode'))
-    return e.single_extrude_stage(bm,result,offset)
+    chains=_edge_chains(bm,selected)
+    if chains is not None:return _chain(bm,result,offset,chains)
+    raise ValueError(tr('Select connected edges or a segment for extrusion'))
