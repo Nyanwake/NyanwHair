@@ -48,6 +48,7 @@ class CurveNetwork:
         # End caps are not votes to break a through-curve. At a true fork,
         # keep the oldest explicit through-pair and attach other branches.
         for _,node,a,b in sorted(set(candidates)):
+            if self.smoothing.get((node,a),1.)<=0. or self.smoothing.get((node,b),1.)<=0.:continue
             if (node,a) not in self.continuations and (node,b) not in self.continuations:
                 self.continuations[node,a]=b;self.continuations[node,b]=a
         visited=set()
@@ -70,8 +71,7 @@ class CurveNetwork:
             for i in range(1,len(path)-1):self.through[path[i]].append((ci,i))
         self.coefficients={};self.derivatives={};self._solving=set()
         for ci in range(len(self.paths)):self._solve(ci)
-        # Apply directed edits AFTER solving the automatic network. A user
-        # adjustment cannot alter the opposite endpoint or another branch.
+        # Blend partial directed weights after solving independent sections.
         for (a,b),(p,q,ma,mb) in list(self.coefficients.items()):
             chord=sub(q,p)
             sa=max(0.,min(1.,self.smoothing.get((a,b),1.)))
@@ -82,6 +82,8 @@ class CurveNetwork:
     def _boundary(self,ci,first):
         path=self.paths[ci];node=path[0 if first else -1]
         chord=sub(self.points[path[1]],self.points[node]) if first else sub(self.points[node],self.points[path[-2]])
+        neighbor=path[1 if first else -2]
+        if self.smoothing.get((node,neighbor),1.)<=0.:return norm(chord)
         for parent,index in self.through.get(node,()):
             if parent==ci:continue
             if parent in self._solving:
@@ -99,7 +101,7 @@ class CurveNetwork:
         start=self._boundary(ci,True);end=self._boundary(ci,False)
         # Closed guide loops are cut at their canonical seam. Matching
         # endpoint directions keep the seam geometric-continuous.
-        if path[0]==path[-1]:
+        if path[0]==path[-1] and self.smoothing.get((path[0],path[1]),1.)>0. and self.smoothing.get((path[-1],path[-2]),1.)>0.:
             start=end=norm(add(norm(sub(self.points[path[0]],self.points[path[-2]])),
                                norm(sub(self.points[path[1]],self.points[path[0]]))))
         h,d=_spline([self.points[v] for v in path],start,end)

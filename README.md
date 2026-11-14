@@ -1,4 +1,4 @@
-# NyanwHair 1.07
+# NyanwHair 1.08
 
 Shape expressive stylized hair with a few guides. NyanwHair stitches neighbouring segments into a continuous mesh as you work. Grow branches easily and adjust polygon density both along and across a strand.
 
@@ -49,7 +49,7 @@ Volume side walls run as whole segments along the strand. Connections across the
 | **Width** | Number of columns across the segment. |
 | **Convexity** | Cross-section bulge. Side neighbours provide a small automatic base; positive and negative values adjust it in either direction. |
 | **Distribution** | Column placement across the width: **0** is uniform, **+** concentrates columns toward the centre, **−** toward the edges. |
-| **Smoothing** | Guide tangent smoothing: **1** is smooth; **0** points toward the next control point. |
+| **Smoothing** | Guide tangent smoothing: **1** is smooth; **0** separates the spline calculation at that guide end, so curves beyond the boundary do not bend the following section. |
 
 **Local density** adds polygons around selected points without changing the guides. **Density 1** is the regular grid; larger values refine it. **Radius** controls the influence along the guides, with a smooth falloff. **Reset** clears the selected points; **Reset all** clears the active group's local density.
 
@@ -71,7 +71,7 @@ Volume side walls run as whole segments along the strand. Connections across the
 
 ## Viewport and interface
 
-Six colour themes, group colours, brightness, segment highlighting and mesh-wire opacity keep the guides readable. **Transparency** fades the whole preview for working over a reference. Lighting follows the viewport's **MatCap / Studio / Flat** mode; **Smooth + Sharp** controls surface shading. The theme library is [themes.json](themes.json).
+Six colour themes, group colours, brightness, segment highlighting and mesh-wire opacity keep the guides readable. **Transparency** fades the whole preview for working over a reference. Lighting follows the viewport's **MatCap / Studio / Flat** mode; **Smooth + Sharp** controls surface shading. In Wireframe, the surface automatically becomes translucent while guides stay readable. Native opaque control faces are suppressed while the preview is visible. The theme library is [themes.json](themes.json).
 
 **Live** controls surface updates; the eye button controls preview visibility. The collapsible **Hotkeys** panel provides large buttons for mouse or tablet use.
 
@@ -146,7 +146,7 @@ For the active NyanwHair guide in Edit Mode.
 | **Ширина** | Количество колонок поперёк сегмента. |
 | **Выпуклость** | Поперечный выгиб. Боковые соседи дают небольшую автоматическую основу, а значения в плюс и минус корректируют её в обе стороны. |
 | **Распределение** | Расположение колонок по ширине: **0** — равномерно, **+** — ближе к центру, **−** — к краям. |
-| **Сглаживание** | Касательные направляющей: **1** — плавные, **0** — направлены к следующей контрольной точке. |
+| **Сглаживание** | Касательные направляющей: **1** — плавные, **0** — независимый расчёт от этого конца направляющей; изгибы за границей не влияют на следующий участок. |
 
 **Локальная плотность** добавляет полигоны возле выбранных точек, сохраняя форму направляющих. **Плотность 1** — обычная сетка, большие значения уплотняют её. **Радиус** задаёт область влияния вдоль кривых с мягким спадом. **Сброс** очищает выбранные точки, **Сброс все** — локальное уплотнение активной группы.
 
@@ -168,7 +168,7 @@ For the active NyanwHair guide in Edit Mode.
 
 ### Внешний вид и интерфейс
 
-Шесть цветовых тем, цвета групп, яркость, подсветка сегментов и прозрачность сетки помогают читать форму. **Прозрачность** ослабляет весь предпросмотр для работы по референсу. Освещение следует режиму вьюпорта **MatCap / Studio / Flat**; **Smooth + Sharp** управляет сглаживанием поверхности. Библиотека цветовых схем — [themes.json](themes.json).
+Шесть цветовых тем, цвета групп, яркость, подсветка сегментов и прозрачность сетки помогают читать форму. **Прозрачность** ослабляет весь предпросмотр для работы по референсу. Освещение следует режиму вьюпорта **MatCap / Studio / Flat**; **Smooth + Sharp** управляет сглаживанием поверхности. В Wireframe поверхность автоматически становится полупрозрачной, направляющие остаются читаемыми. Пока предпросмотр виден, штатная непрозрачная поверхность каркаса скрыта. Библиотека цветовых схем — [themes.json](themes.json).
 
 **Live** управляет обновлением поверхности, кнопка с глазом — её видимостью. Сворачиваемый раздел **Хоткеи** содержит крупные кнопки для мыши или планшета.
 

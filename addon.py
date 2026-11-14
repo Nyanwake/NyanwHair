@@ -610,6 +610,7 @@ def _prepare_bmesh(bm, result=None, group_id=None):
 
 
 def _prepare_object(obj):
+    cage_display.update(obj)
     groups.ensure(obj)
     bm,owned=_mesh_bm(obj)
     try:
@@ -1107,6 +1108,9 @@ def _on_ui_change(field):
     return update
 
 
+from . import cage_display
+
+
 class NHGuidedProperties(PropertyGroup):
     groups: CollectionProperty(type=groups.NH35HairGroup)
     group_index: IntProperty(get=groups.get_index,set=groups.set_index)
@@ -1116,7 +1120,7 @@ class NHGuidedProperties(PropertyGroup):
     transparency: FloatProperty(name='Transparency',description='Fade the entire hair preview to trace a reference; does not affect the generated Mesh',default=0.,min=0.,max=1.,subtype='FACTOR')
     enabled: BoolProperty(default=False)
     live: BoolProperty(name='Live',default=True)
-    show_preview: BoolProperty(name='Surface',default=True)
+    show_preview: BoolProperty(name='Surface',default=True,update=cage_display.changed)
     show_wire: BoolProperty(name='Wire',default=True,description='Show generated mesh edges; guides remain visible')
     wire_opacity: FloatProperty(name='Wire opacity',default=.22,min=0.,max=1.,subtype='FACTOR')
     smooth_preview: BoolProperty(name='Smooth + Sharp guides',default=True,description='Smooth shading within strands with sharp guide boundaries; transferred to the independent Mesh')
@@ -1164,6 +1168,7 @@ class NYANW35_OT_disable(Operator):
     def execute(self,context):
         guide=context.object
         if not is_guide(guide): return {'CANCELLED'}
+        cage_display.clear(guide)
         guide.nh35.enabled=False
         guide.display_type='SOLID'
         _CACHE.pop(guide.as_pointer(),None);groups.CACHE.pop(guide.as_pointer(),None)
@@ -1943,7 +1948,7 @@ def _draw_presets(layout,obj):
 
 
 class NYANW35_PT_main(Panel):
-    bl_label='NyanwHair v1.07'
+    bl_label='NyanwHair v1.08'
     bl_idname='NYANW35_PT_main'
     bl_space_type='VIEW_3D'
     bl_region_type='UI'
@@ -2405,7 +2410,7 @@ def _draw_preview():
                     for mask,reflection in instances:
                         with gpu.matrix.push_pop():
                             if mask:gpu.matrix.multiply_matrix(reflection)
-                            shader,status=appearance.bind(ctx,True,obj.nh35.brightness,1.-obj.nh35.transparency)
+                            shader,status=appearance.bind(ctx,True,obj.nh35.brightness,(1.-obj.nh35.transparency)*(.3 if ctx.space_data.shading.type=='WIREFRAME' else 1.))
                             if mask:
                                 normal_matrix=reflection.to_3x3().inverted_safe().transposed()
                                 shader.uniform_float('viewRotation',original_view.to_3x3()@normal_matrix)
@@ -2621,6 +2626,8 @@ def _on_scene_update(_scene,_depsgraph):
 
 @persistent
 def _on_load(_dummy):
+    for obj in bpy.data.objects:
+        if is_guide(obj):cage_display.update(obj)
     editing.cancel_all(False)
     reverse.cancel_all(False)
     _clear_zone_pick()
@@ -2723,6 +2730,8 @@ def register():
                                  ('redo_post',_on_undo_post)):
         handlers=getattr(bpy.app.handlers,handler_name)
         if handler not in handlers: handlers.append(handler)
+    if bpy.app.timers.is_registered(cage_display.clear_all):bpy.app.timers.unregister(cage_display.clear_all)
+    bpy.app.timers.register(cage_display.initialize,first_interval=0.)
     _RUNNING=True
     _register_keys()
     if not bpy.app.timers.is_registered(_ticker):
@@ -2743,6 +2752,9 @@ def unregister():
     _clear_zone_pick()
     _CUT_PREVIEW=None
     _unregister_keys()
+    if bpy.app.timers.is_registered(cage_display.initialize):bpy.app.timers.unregister(cage_display.initialize)
+    if hasattr(bpy.data,'objects'):cage_display.clear_all()
+    else:bpy.app.timers.register(cage_display.clear_all,first_interval=0.)
     if _DRAW_HANDLER is not None:
         bpy.types.SpaceView3D.draw_handler_remove(_DRAW_HANDLER,'WINDOW')
         _DRAW_HANDLER=None
