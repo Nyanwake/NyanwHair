@@ -1,4 +1,4 @@
-# NyanwHair 1.08
+# NyanwHair 1.09
 
 Shape expressive stylized hair with a few guides. NyanwHair stitches neighbouring segments into a continuous mesh as you work. Grow branches easily and adjust polygon density both along and across a strand.
 
@@ -17,6 +17,8 @@ Shape expressive stylized hair with a few guides. NyanwHair stitches neighbourin
 **Create new strand** and **Create hair cap** place a new object at the **3D cursor**. The cap starts with Mirror X. Shape the guides in **Edit Mode**; **Convert to Mesh** creates a separate result and keeps the guides editable.
 
 Click the **1 · Points / 2 · Segment boundaries / 3 · Segment settings** headers to switch selection modes. In modes 1 and 2, selecting every point of a segment also selects that segment for its settings.
+
+In **Object Mode**, click the visible Live surface to select its object, including Mirror copies. **Shift+click** adds or removes objects from the selection. Selected surfaces receive a subtle highlight.
 
 ## E — selection decides the action
 
@@ -73,6 +75,8 @@ Volume side walls run as whole segments along the strand. Connections across the
 
 Six colour themes, group colours, brightness, segment highlighting and mesh-wire opacity keep the guides readable. **Transparency** fades the whole preview for working over a reference. Lighting follows the viewport's **MatCap / Studio / Flat** mode; **Smooth + Sharp** controls surface shading. In Wireframe, the surface automatically becomes translucent while guides stay readable. Native opaque control faces are suppressed while the preview is visible. The theme library is [themes.json](themes.json).
 
+If Blender's **Retopology** overlay is enabled, **Hide Retopology fill** appears in **Additional** in Edit Mode. It switches off the native cage fill in this viewport while keeping other overlays enabled. This overlay is saved with the .blend file independently of RetopoFlow.
+
 **Live** controls surface updates; the eye button controls preview visibility. The collapsible **Hotkeys** panel provides large buttons for mouse or tablet use.
 
 In **Additional**: choose **EN / RU**, refresh the row layout, or disable NyanwHair on the object. The initial language follows Blender: Russian for a Russian interface, English otherwise.
@@ -114,6 +118,8 @@ For the active NyanwHair guide in Edit Mode.
 **Создать новый локон** и **Создать шапку** добавляют объект у **3D-курсора**. У шапки включён Mirror X. Форма редактируется через направляющие в **Edit Mode**; **Преобразовать в Mesh** создаёт отдельный результат, сохраняя редактируемый каркас.
 
 Заголовки **1 · Точки / 2 · Края сегмента / 3 · Настройки сегмента** переключают режим выделения. В режимах 1 и 2 выбор всех точек сегмента выделяет его и для изменения параметров.
+
+В **Object Mode** объект выбирается кликом по видимой Live-поверхности, включая Mirror. **Shift+клик** добавляет или снимает выделение. Выбранная поверхность слегка подсвечивается.
 
 ### E — действие зависит от выделения
 
@@ -169,6 +175,8 @@ For the active NyanwHair guide in Edit Mode.
 ### Внешний вид и интерфейс
 
 Шесть цветовых тем, цвета групп, яркость, подсветка сегментов и прозрачность сетки помогают читать форму. **Прозрачность** ослабляет весь предпросмотр для работы по референсу. Освещение следует режиму вьюпорта **MatCap / Studio / Flat**; **Smooth + Sharp** управляет сглаживанием поверхности. В Wireframe поверхность автоматически становится полупрозрачной, направляющие остаются читаемыми. Пока предпросмотр виден, штатная непрозрачная поверхность каркаса скрыта. Библиотека цветовых схем — [themes.json](themes.json).
+
+Если включён штатный оверлей **Retopology**, в Edit Mode в **Дополнительно** появляется **Убрать заливку Retopo**. Кнопка отключает заливку каркаса в текущем вьюпорте, сохраняя остальные оверлеи. Эта настройка хранится в .blend независимо от RetopoFlow.
 
 **Live** управляет обновлением поверхности, кнопка с глазом — её видимостью. Сворачиваемый раздел **Хоткеи** содержит крупные кнопки для мыши или планшета.
 

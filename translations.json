@@ -1,4 +1,7 @@
 {
+  "Hide Retopology fill": "Убрать заливку Retopo",
+  "Select Live surface": "Выбрать Live-поверхность",
+  "Turn off Blender Retopology overlay in this viewport; other overlays remain enabled": "Отключить штатную заливку Retopology в этом вьюпорте, сохранив остальные оверлеи",
   "Select connected edges or a segment for extrusion": "Выбери соединённые рёбра или сегмент для вытягивания",
   "No open base contour found": "Не найден открытый контур основания",
   "For E-Face, select one pair of opposite edges or use Face mode": "Для E-Face выбери одну пару противоположных рёбер или используй режим граней",

@@ -1936,6 +1936,7 @@ def _draw_extra_panels(layout,context,obj,cached,edit):
         if preferences:body.prop(preferences.preferences,'language',text='Language',expand=True)
         if edit:
             body.operator('nyanw35.refresh_layout',text=tr('Refresh row layout'),icon='FILE_REFRESH')
+            if context.space_data.overlay.show_retopology:body.operator('nyanw35.hide_retopology',text=tr('Hide Retopology fill'),icon='OVERLAY')
         body.operator('nyanw35.disable',text=tr('Disable on object'),icon='X')
 
 
@@ -1948,7 +1949,7 @@ def _draw_presets(layout,obj):
 
 
 class NYANW35_PT_main(Panel):
-    bl_label='NyanwHair v1.08'
+    bl_label='NyanwHair v1.09'
     bl_idname='NYANW35_PT_main'
     bl_space_type='VIEW_3D'
     bl_region_type='UI'
@@ -2219,6 +2220,8 @@ def _gpu_batches(cache,guide,shader):
     transform=tuple(float(x) for row in matrix for x in row)
     selected=(_selected_zone_indices(cache) if guide==bpy.context.edit_object and cache.get('group_id',1)==groups.active_id(guide) and _helpers_visible(bpy.context) and guide.nh35.show_tint and tint_strength>0 else set())
     active=cache.get('active',-1)
+    if bpy.context.mode=='OBJECT' and guide.select_get() and _helpers_visible(bpy.context):
+        selected=set(result.face_paths);active=-1;tint_strength=max(.3,tint_strength)
     tint=(tuple(sorted(selected)),active,tint_color,float(tint_strength))
     base_color=groups.color(guide,cache.get('group_id',1))
     overlays=guide==bpy.context.edit_object and cache.get('group_id',1)==groups.active_id(guide) and _helpers_visible(bpy.context)
@@ -2676,18 +2679,22 @@ def _on_undo_post(_dummy):
     _UNDO_DISPLAY.clear()
 
 
-from . import editing,reverse,mirror,presets
+from . import editing,reverse,mirror,presets,object_pick
 
 _CLASSES=groups.CLASSES+(NHGuidedProperties,NHGuidedUISettings,NYANW35_OT_direction_smoothing,NYANW35_OT_local_density,NYANW35_OT_point_density,NYANW35_OT_density_reset,NYANW35_OT_set_cap,NYANW35_OT_refresh_layout,
           NYANW35_OT_create_guide,NYANW35_OT_disable,
           NYANW35_OT_demo,NYANW35_OT_rebuild,NYANW35_OT_bake,presets.NYANW35_OT_create_cap,
           NYANW35_OT_pin_rails, NYANW35_OT_adjust,NYANW35_OT_pick_zone,
-          NYANW35_OT_hair_loop,NYANW35_PT_main)+editing.CLASSES+(reverse.NYANW35_OT_reverse,mirror.NYANW35_OT_apply_mirror,mirror.NYANW35_OT_mirror_seam)
+          NYANW35_OT_hair_loop,NYANW35_PT_main)+editing.CLASSES+(reverse.NYANW35_OT_reverse,mirror.NYANW35_OT_apply_mirror,mirror.NYANW35_OT_mirror_seam,object_pick.NYANW35_OT_pick_object,object_pick.NYANW35_OT_hide_retopology)
 
 
 def _register_keys():
     kc=bpy.context.window_manager.keyconfigs.addon
     if kc is None: return
+    objects=kc.keymaps.new(name='Object Mode',space_type='EMPTY')
+    preferences=bpy.context.window_manager.keyconfigs.active.preferences
+    button='RIGHTMOUSE' if getattr(preferences,'select_mouse','LEFT')=='RIGHT' else 'LEFTMOUSE'
+    item=objects.keymap_items.new('nyanw35.pick_object',button,'PRESS',any=True,head=True);_KEYMAPS.append((objects,item))
     km=kc.keymaps.new(name='Mesh',space_type='EMPTY')
     click=km.keymap_items.new('nyanw35.pick_zone','LEFTMOUSE','CLICK',any=True)
     _KEYMAPS.append((km,click))
