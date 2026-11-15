@@ -4,7 +4,7 @@ import math
 from .core import EPS,add,sub,mul,dot,cross,length,norm,mix,bias_cross_position,edge_key
 from .surface import _rotate,CapBlend
 from .ribbon import zipper_flows
-from .row_layout import correspondence,rows as matched_rows
+from .row_layout import correspondence,rows as matched_rows,profile_grid,profile_normals
 
 
 def _limit_row_changes(values,body):
@@ -58,7 +58,7 @@ def _coherent_paths(fractions):
     return paths
 
 
-def _regular_transition(plan,width,ca,cb,left,right,caps,max_polygons,mapping=None):
+def _regular_transition(plan,width,ca,cb,left,right,caps,max_polygons,mapping=None,previous_recipe=None):
     """Fair interior rows; unequal border budgets affect only the rim strips."""
     points=[];faces=[];indices={}
     def vertex(key,pos):
@@ -71,14 +71,7 @@ def _regular_transition(plan,width,ca,cb,left,right,caps,max_polygons,mapping=No
         offset=t*(len(values)-1);i=min(len(values)-2,int(offset));blend=offset-i
         return values[i]*(1.-blend)+values[i+1]*blend
     aa,bb,flows,fa,fb=matched_rows(ca,cb,left,right,count,mapping)
-    centers=[mul(add(a,b),.5) for (_,a),(_,b) in zip(aa,bb)]
-    tangents=[norm(sub(centers[min(count,i+1)],centers[max(0,i-1)])) for i in range(count+1)]
-    normals=[];reference=plan.normal;old_tangent=tangents[0]
-    for k,((ka,a),(kb,b)) in enumerate(zip(aa,bb)):
-        transported=_rotate(reference,old_tangent,tangents[k]);normal=norm(cross(sub(b,a),tangents[k]))
-        if length(normal)<EPS:normal=transported
-        if dot(normal,transported)<0.:normal=mul(normal,-1.)
-        normals.append(normal);reference=normal;old_tangent=tangents[k]
+    normals=profile_normals(aa,bb,plan.normal)
     cap_blend=CapBlend(plan,[(aa[i][1],bb[i][1]) for i in (0,-1)],(normals[0],normals[-1]),
         [[point for key,point in cap] if cap else None for cap in caps])
     widths=[length(sub(b,a)) for (_,a),(_,b) in zip(aa,bb)]
@@ -90,6 +83,12 @@ def _regular_transition(plan,width,ca,cb,left,right,caps,max_polygons,mapping=No
         row_counts.append(max(2,int(value+.5)))
     row_counts[0]=counts[0];row_counts[-1]=counts[1]
     row_counts=_limit_row_changes(row_counts,width)
+    profiles={n:[bias_cross_position(x/n,plan.settings.bias) for x in range(n+1)] for n in set(row_counts)}
+    positions={}
+    for n,profile in profiles.items():
+        members=[i for i,value in enumerate(row_counts) if value==n]
+        grid=profile_grid([aa[i] for i in members],[bb[i] for i in members],[normals[i] for i in members],plan.bulge,profile,cap_blend,[flows[i] for i in members])
+        if grid is not None:positions.update(zip(members,grid))
     rows=[];inner=[];fractions=[];sections=[]
     # Grid border entries are references to existing shared rail samples.
     import bisect
@@ -97,7 +96,7 @@ def _regular_transition(plan,width,ca,cb,left,right,caps,max_polygons,mapping=No
         j=min(len(values)-1,bisect.bisect_left(values,u));return j-1 if j and abs(values[j-1]-u)<abs(values[j]-u) else j
     for k,((ka,a),(kb,b)) in enumerate(zip(aa,bb)):
         n=row_counts[k];cap=caps[0] if k==0 else caps[1] if k==count else None
-        weights=cap_blend.weights(flows[k])
+        weights=cap_blend.weights(flows[k]) if k not in positions else None
         coords=[];row=[]
         for x in range(n+1):
             if cap:key,pos=cap[x]
@@ -105,9 +104,12 @@ def _regular_transition(plan,width,ca,cb,left,right,caps,max_polygons,mapping=No
             elif x==0:key,pos=ka,a
             elif x==n:key,pos=kb,b
             else:
-                v=bias_cross_position(x/n,plan.settings.bias);amount=plan.bulge*widths[k]*math.sin(math.pi*v)
-                key=('width',plan.index,k,x,n);pos=add(mix(a,b,v),mul(normals[k],amount))
-                pos=cap_blend.apply(pos,x/n,weights)
+                key=('width',plan.index,k,x,n)
+                if k in positions:pos=tuple(positions[k][x])
+                else:
+                    v=profiles[n][x];amount=plan.bulge*widths[k]*math.sin(math.pi*v)
+                    pos=add(mix(a,b,v),mul(normals[k],amount))
+                    pos=cap_blend.apply(pos,x/n,weights)
             coords.append(pos)
             if x==0:index=borders[0][nearest(fa,flows[k] if mapping else station(fa,k/count))]
             elif x==n:index=borders[1][nearest(fb,flows[k] if mapping else station(fb,k/count))]
@@ -121,8 +123,11 @@ def _regular_transition(plan,width,ca,cb,left,right,caps,max_polygons,mapping=No
         for x in range(width+1):
             value=x/width*n;j=min(n-1,int(value));section.append(mix(coords[j],coords[j+1],value-j))
         sections.append(tuple(section))
-    for k,path in enumerate(_coherent_paths(fractions)):
-        for (i,j),(ni,nj) in zip(path,path[1:]):faces.append((inner[k][i],inner[k][ni],inner[k+1][nj],inner[k+1][j]))
+    frozen=previous_recipe and tuple(key for key,pos in points)==tuple(key for key,pos in previous_recipe[0])
+    if frozen:faces=list(previous_recipe[1])
+    else:
+        for k,path in enumerate(_coherent_paths(fractions)):
+            for (i,j),(ni,nj) in zip(path,path[1:]):faces.append((inner[k][i],inner[k][ni],inner[k+1][nj],inner[k+1][j]))
     columns=[borders[0]]
     for x in range(1,width):
         line=[]
@@ -133,12 +138,13 @@ def _regular_transition(plan,width,ca,cb,left,right,caps,max_polygons,mapping=No
         columns.append(line)
     columns.append(borders[1])
     first=[row[0] for row in inner];last=[row[-1] for row in inner]
-    for one,two,fu,fv in ((borders[0],first,fa,flows),(last,borders[1],flows,fb)):
-        if mapping:
-            from .surface import geometry_path
-            path=geometry_path([points[i][1] for i in one],[points[i][1] for i in two],fu,fv)
-        else:path=zipper_flows(fu,fv)
-        for (i,j),(ni,nj) in zip(path,path[1:]):faces.append((one[i],two[j],two[nj],one[ni]))
+    if not frozen:
+        for one,two,fu,fv in ((borders[0],first,fa,flows),(last,borders[1],flows,fb)):
+            if mapping:
+                from .surface import geometry_path
+                path=geometry_path([points[i][1] for i in one],[points[i][1] for i in two],fu,fv)
+            else:path=zipper_flows(fu,fv)
+            for (i,j),(ni,nj) in zip(path,path[1:]):faces.append((one[i],two[j],two[nj],one[ni]))
     if len(faces)>max_polygons:raise ValueError(tr('Width-transition polygon limit exceeded'))
     return tuple(points),tuple(faces),tuple(sections),tuple(tuple(c) for c in columns),tuple(rows)
 
@@ -156,7 +162,7 @@ def build_transition(plan,width,registry,ca,cb,left,right,profiles,put,emit,max_
     old=previous.get(plan.boundary);reused=bool(old and old[0]==signature)
     if reused:recipe=old[1]
     elif mapping is None and width>=2 and all(cap is None or len(cap)>=3 for cap in caps):
-        recipe=_regular_transition(plan,width,ca,cb,left,right,caps,max_polygons,correspondence(registry,ca,cb))
+        recipe=_regular_transition(plan,width,ca,cb,left,right,caps,max_polygons,correspondence(registry,ca,cb),old[1] if registry.frozen and old else None)
     else:
         points=[];faces=[];indices={}
         def vertex(key,pos):

@@ -179,8 +179,79 @@ def _bad_quad(a0,a1,b0,b1):
     return False
 
 
+def _quad_flags(a0,a1,b0,b1):
+    first=np.cross(b0-a0,b1-a0);second=np.cross(b1-a0,a1-a0)
+    na=np.linalg.norm(first,axis=-1);nb=np.linalg.norm(second,axis=-1)
+    folded=(na>0.)&(nb>0.)&(np.einsum('ij,ij->i',first,second)<.25*na*nb)
+    normal=first+second;area=np.linalg.norm(normal,axis=-1)
+    edges=(b0-a0,b1-b0,a1-b1,a0-a1)
+    sizes=[np.linalg.norm(edge,axis=-1) for edge in edges]
+    for i in range(4):
+        signed=np.einsum('ij,ij->i',np.cross(edges[i],edges[(i+1)%4]),normal)
+        folded|=(signed<0.)&(signed<-.015*sizes[i]*sizes[(i+1)%4]*area)
+    return folded
+
+
+def _geometry_path_numpy(a,b,fa,fb,baseline):
+    a=np.asarray(a);b=np.asarray(b)
+    def tangents(points):
+        indices=np.arange(len(points))
+        values=points[np.minimum(indices+1,len(points)-1)]-points[np.maximum(0,indices-1)]
+        sizes=np.linalg.norm(values,axis=1)
+        return np.divide(values,sizes[:,None],out=np.zeros_like(values),where=sizes[:,None]>EPS)
+    ta=tangents(a);tb=tangents(b)
+    def skew(i,j):
+        delta=b[j]-a[i];tangent=ta[i]+tb[j]
+        sizes=np.linalg.norm(delta,axis=1);normals=np.linalg.norm(tangent,axis=1)
+        value=np.abs(np.einsum('ij,ij->i',delta,tangent))
+        return np.divide(value,sizes*normals,out=np.zeros_like(value),where=(sizes>EPS)&(normals>EPS))
+    bi,bj=np.asarray(baseline).T
+    severe=bool(np.any(skew(bi,bj)>.65))
+    if not severe:
+        valid=(np.diff(bi)>0)&(np.diff(bj)>0)
+        severe=bool(np.any(_quad_flags(a[bi[:-1][valid]],a[bi[1:][valid]],b[bj[:-1][valid]],b[bj[1:][valid]])))
+    if not severe:return baseline
+    corridor=[[] for _ in a]
+    for i,j in baseline:corridor[i].append(j)
+    bounds=[];ii=[];jj=[]
+    for i in range(len(a)):
+        center=min(len(b)-1,bisect.bisect_left(fb,fa[i]))
+        lo=max(0,min(center,min(corridor[i]))-2);hi=min(len(b),max(center,max(corridor[i]))+3)
+        bounds.append((lo,hi));ii.extend([i]*(hi-lo));jj.extend(range(lo,hi))
+    ii=np.asarray(ii);jj=np.asarray(jj)
+    local=(skew(ii,jj)**2+.1*(np.asarray(fa)[ii]-np.asarray(fb)[jj])**2).tolist()
+    folded=np.zeros(len(ii),dtype=bool);valid=(ii>0)&(jj>0)
+    ai=ii[valid];bj=jj[valid]
+    folded[valid]=_quad_flags(a[ai-1],a[ai],b[bj-1],b[bj]);folded=folded.tolist()
+    width=len(b);previous=bytearray(len(a)*width);before=[float('inf')]*width;index=0
+    for i,(lo,hi) in enumerate(bounds):
+        current=[float('inf')]*width
+        for j in range(lo,hi):
+            value=local[index];penalty=5. if folded[index] else 0.;index+=1
+            if i==j==0:current[j]=0.;continue
+            best=before[j-1]+value+penalty if i and j else float('inf');step=1
+            if i:
+                trial=before[j]+value+.22
+                if trial<best:best=trial;step=2
+            if j:
+                trial=current[j-1]+value+.22
+                if trial<best:best=trial;step=3
+            current[j]=best;previous[i*width+j]=step
+        before=current
+    if not math.isfinite(before[-1]):return baseline
+    i=len(a)-1;j=width-1;path=[(i,j)]
+    while i or j:
+        step=previous[i*width+j]
+        if step in (1,2):i-=1
+        if step in (1,3):j-=1
+        path.append((i,j))
+    return path[::-1]
+
+
 def geometry_path(a,b,fa,fb):
     baseline=zipper_flows(fa,fb)
+    if len(a)*len(b)>160000:return baseline
+    if np is not None:return _geometry_path_numpy(a,b,fa,fb,baseline)
     def tangent(points,i):return norm(sub(points[min(len(points)-1,i+1)],points[max(0,i-1)]))
     ta=[tangent(a,i) for i in range(len(a))];tb=[tangent(b,i) for i in range(len(b))]
     def skew(i,j):

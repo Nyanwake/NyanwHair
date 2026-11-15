@@ -94,11 +94,14 @@ class RibbonMap:
                         square=tx*tx+ty*ty+tz*tz
                         projection=dx*tx+dy*ty+dz*tz
                         local=dx*dx+dy*dy+dz*dz+(4*projection*projection/square if square>EPS*EPS else 0.)
-                    candidates=[]
-                    if i and j:candidates.append((cost[(i-1)*size+j-1]+local,1))
-                    if i:candidates.append((cost[(i-1)*size+j]+local*.55,2))
-                    if j:candidates.append((cost[i*size+j-1]+local*.55,3))
-                    value,step=min(candidates);cost[i*size+j]=value;previous[i*size+j]=step
+                    value=cost[(i-1)*size+j-1]+local if i and j else float('inf');step=1
+                    if i:
+                        trial=cost[(i-1)*size+j]+local*.55
+                        if trial<value:value=trial;step=2
+                    if j:
+                        trial=cost[i*size+j-1]+local*.55
+                        if trial<value:value=trial;step=3
+                    cost[i*size+j]=value;previous[i*size+j]=step
             matches=[[] for _ in us];i=j=n
             while True:
                 matches[i].append(j/n)
@@ -113,10 +116,11 @@ class RibbonMap:
         for k in range(n-1,0,-1):vs[k]=min(vs[k],vs[k+1]-1e-7)
         self.u_to_v=MonotoneMap(us,vs);self.v_to_u=MonotoneMap(vs,us)
         turn=sum(math.acos(max(-1.,min(1.,dot(p,q)))) for tangent in (ta,tb) for p,q in zip(tangent,tangent[1:]))*.5
-        widths=[norm(sub(b.at(v)[1],p)) for p,v in zip(aa,vs)]
+        matched=b.sample(vs)
+        widths=[norm(sub(sample[1],p)) for p,sample in zip(aa,matched)]
         twist=sum(math.acos(max(-1.,min(1.,dot(p,q)))) for p,q in zip(widths,widths[1:]) if length(p)>EPS and length(q)>EPS)
         self.strong_turn=turn>1.6 or twist>1.6
-        centers=[mul(add(p,b.at(v)[1]),.5) for p,v in zip(aa,vs)]
+        centers=[mul(add(p,sample[1]),.5) for p,sample in zip(aa,matched)]
         distance=[0.]
         for p,q in zip(centers,centers[1:]):distance.append(distance[-1]+max(EPS,length(sub(q,p))))
         self.total=distance[-1]
@@ -133,6 +137,12 @@ class RibbonMap:
         u=curve.fraction(key)
         if curve is self.b:u=self.v_to_u(u)
         return self.u_to_flow(u)
+
+    def sample(self,flows):
+        missing=list(dict.fromkeys(u for u in flows if u not in self._samples))
+        left=[self.flow_to_u(u) for u in missing];right=[self.u_to_v(u) for u in left]
+        self._samples.update(zip(missing,zip(self.a.sample(left),self.b.sample(right))))
+        return [self._samples[u] for u in flows]
 
     def normal(self,flow,left,right):
         lo=self.at(max(0.,flow-.001));hi=self.at(min(1.,flow+.001))

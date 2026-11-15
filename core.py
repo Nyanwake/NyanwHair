@@ -501,7 +501,7 @@ def plan_widths(plans,fixed=None,warnings=None):
 
 
 def generate(points,boundaries,settings=None,rows=12,max_polygons=200000,
-             previous=None,caps=None,reference_length=0.,directional_smoothing=None,local_density=None,point_density=None,layout_lengths=None,regular_rows=False,face_indices=None,edge_evaluator=None,_track_production=False,plane_axes=()):
+             previous=None,caps=None,reference_length=0.,directional_smoothing=None,local_density=None,point_density=None,layout_lengths=None,regular_rows=False,face_indices=None,edge_evaluator=None,_track_production=False,plane_axes=(),frozen_layout=False):
     points=[tuple(map(float,p)) for p in points]
     settings=list(settings or [ZoneSettings() for _ in boundaries])
     rows=max(2,min(256,int(rows)))
@@ -582,7 +582,7 @@ def generate(points,boundaries,settings=None,rows=12,max_polygons=200000,
     for p in plans:
         for rail in (p.left,p.right):
             for edge in physical_edges(rail):edge_details[edge]=max(edge_details.get(edge,0.),details[p.index]/base)
-    registry=RailRegistry(points,evaluate,base,plans,reference_length,max_polygons,out.local_density,out.point_density,previous,layout_lengths,edge_details)
+    registry=RailRegistry(points,evaluate,base,plans,reference_length,max_polygons,out.local_density,out.point_density,previous,layout_lengths,edge_details,frozen_layout)
     rail_edges={edge for p in plans for rail in (p.left,p.right) for edge in physical_edges(rail)}
     interfaces={};cap_widths={}
     for p in plans:
