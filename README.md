@@ -1,4 +1,4 @@
-# NyanwHair 1.11
+# NyanwHair 1.12
 
 Shape expressive stylized hair with a few guides. NyanwHair stitches neighbouring segments into a continuous mesh as you work. Grow branches easily and adjust polygon density both along and across a strand.
 
@@ -8,7 +8,7 @@ Shape expressive stylized hair with a few guides. NyanwHair stitches neighbourin
 
 ## What it does
 
-- Live hair surfaces with automatic stitching and local topology transitions.
+- Live hair surfaces with automatic stitching, aligned rows around curls and local topology transitions.
 - Adjustable detail, width and convexity, plus local density around selected points.
 - Strand extension, branching, edge extrusion and editable closed volumes.
 - A hair cap preset, independent hair groups, Mirror and editable reverse sides.
@@ -111,7 +111,7 @@ For the active NyanwHair guide in Edit Mode.
 
 ### Возможности
 
-- Live-поверхность с автоматическим сшиванием и локальными переходами топологии.
+- Live-поверхность со сшиванием, выравниванием рядов на завитках и локальными переходами топологии.
 - Детализация, ширина, выпуклость и локальное уплотнение возле выбранных точек.
 - Продолжение локонов, ответвления, вытягивание рёбер и замкнутый редактируемый объём.
 - Пресет шапки, независимые группы волос, Mirror и редактируемая обратная сторона.

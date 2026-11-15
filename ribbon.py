@@ -59,9 +59,10 @@ def _projected_match(a,b,us,aa,ta):
 
 
 class RibbonMap:
-    def __init__(self,a,b):
+    def __init__(self,a,b,samples=0):
         self.a=a;self.b=b;self._samples={}
         n=max(24,min(64,8*max(len(a.path),len(b.path))))
+        if samples:n=min(n,max(16,int(samples)))
         us=[i/n for i in range(n+1)]
         if np is None:aa=[a.at(u)[1] for u in us];bb=[b.at(u)[1] for u in us]
         else:aa=a.positions(us).tolist();bb=b.positions(us).tolist()

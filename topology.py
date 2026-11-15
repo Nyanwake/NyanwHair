@@ -353,17 +353,17 @@ class RailRegistry:
         self.complete_boundaries[curve.path]=ordered
         return ordered
 
-    def pair(self,left,right,reference=True):
+    def pair(self,left,right,reference=True,match_samples=0):
         from .ribbon import RibbonMap
         a=self.curve(left);b=self.curve(right)
         left_samples=self.boundary(a);right_samples=self.boundary(b)
-        key=(a.path,b.path);signature=(a.geometry_signature,b.geometry_signature)
+        key=(a.path,b.path);signature=(a.geometry_signature,b.geometry_signature,int(match_samples))
         old=self.old_maps.get(key)
         if key in self.maps:mapping=self.maps[key]
         elif old and old[0]==signature:
             mapping=RibbonMap.__new__(RibbonMap)
             mapping.__dict__.update(old[1]);mapping.a=a;mapping.b=b;mapping._samples={}
-        else:mapping=RibbonMap(a,b)
+        else:mapping=RibbonMap(a,b,match_samples)
         self.maps[key]=mapping
         self.map_cache[key]=(signature,{k:v for k,v in mapping.__dict__.items() if k not in ('a','b','_samples')})
         if not reference:return a,b,left_samples,right_samples,(),(),()

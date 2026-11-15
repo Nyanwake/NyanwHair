@@ -4,6 +4,7 @@ import math
 from .core import EPS,add,sub,mul,dot,cross,length,norm,mix,bias_cross_position,edge_key
 from .surface import _rotate,CapBlend
 from .ribbon import zipper_flows
+from .row_layout import correspondence,rows
 
 
 def build_strip(plan,width,registry,ca,cb,left,right,profiles,put,emit,max_polygons,cache,previous):
@@ -12,7 +13,7 @@ def build_strip(plan,width,registry,ca,cb,left,right,profiles,put,emit,max_polyg
         if kind=='edge':
             edge=edge_key(plan.boundary[i],plan.boundary[(i+1)%len(plan.boundary)])
             cap_data.append((edge,tuple(profiles[edge]),tuple(registry.cap_keys.get(edge,()))))
-    signature=('strip',plan,width,ca.geometry_signature,cb.geometry_signature,tuple(left),tuple(right),tuple(cap_data))
+    signature=('strip_rows',plan,width,ca.geometry_signature,cb.geometry_signature,tuple(left),tuple(right),tuple(cap_data))
     old=previous.get(plan.boundary);reused=bool(old and old[0]==signature)
     if reused:recipe=old[1]
     else:
@@ -21,14 +22,9 @@ def build_strip(plan,width,registry,ca,cb,left,right,profiles,put,emit,max_polyg
             if key not in indices:indices[key]=len(points);points.append((key,pos))
             return indices[key]
         actual_a=[vertex(k,p) for k,p in left];actual_b=[vertex(k,p) for k,p in right]
-        fa=[ca.fraction(key) for key,pos in left];fb=[cb.fraction(key) for key,pos in right]
         count=max(1,int(((len(left)-1)+(len(right)-1))*.5+.5))
-        def station(values,t):
-            offset=t*(len(values)-1);i=min(len(values)-2,int(offset));f=offset-i
-            return values[i]*(1.-f)+values[i+1]*f
-        fractions=[(station(fa,i/count)+station(fb,i/count))*.5 for i in range(count+1)]
-        body_a=left if len(left)==count+1 else [ca.at(station(fa,i/count)) for i in range(count+1)]
-        body_b=right if len(right)==count+1 else [cb.at(station(fb,i/count)) for i in range(count+1)]
+        mapping=correspondence(registry,ca,cb) if width>1 else None
+        body_a,body_b,fractions,fa,fb=rows(ca,cb,left,right,count,mapping)
         if len(body_a)*(width+1)>2*max_polygons:raise ValueError(tr('Strip vertex limit exceeded'))
         centers=[mul(add(a,b),.5) for (_,a),(_,b) in zip(body_a,body_b)]
         tangents=[norm(sub(centers[min(count,i+1)],centers[max(0,i-1)])) for i in range(count+1)]
@@ -67,7 +63,11 @@ def build_strip(plan,width,registry,ca,cb,left,right,profiles,put,emit,max_polyg
         flows_a=fa;flows_b=fb
         for x in range(width):
             fa=flows_a if x==0 else fractions;fb=flows_b if x==width-1 else fractions
-            for (i,j),(ni,nj) in zip((path:=zipper_flows(fa,fb)),path[1:]):
+            if mapping and x in (0,width-1):
+                from .surface import geometry_path
+                path=geometry_path([points[i][1] for i in columns[x]],[points[i][1] for i in columns[x+1]],fa,fb)
+            else:path=zipper_flows(fa,fb)
+            for (i,j),(ni,nj) in zip(path,path[1:]):
                 faces.append((columns[x][i],columns[x+1][j],columns[x+1][nj],columns[x][ni]))
         if len(faces)>max_polygons:raise ValueError(tr('Strip polygon limit exceeded'))
         recipe=(tuple(points),tuple(faces),tuple(sections),tuple(tuple(c) for c in columns),tuple(grid))
