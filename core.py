@@ -101,6 +101,7 @@ class MeshResult:
     phase_cache: object=field(default=None,repr=False,compare=False)
     row_cache: dict=field(default_factory=dict,repr=False)
     sampling_cache: dict=field(default_factory=dict,repr=False)
+    edge_sampling_cache: dict=field(default_factory=dict,repr=False)
     correspondence_cache: dict=field(default_factory=dict,repr=False)
     patch_cache: dict=field(default_factory=dict,repr=False)
     final_sampling_cache: dict=field(default_factory=dict,repr=False)
@@ -501,7 +502,7 @@ def plan_widths(plans,fixed=None,warnings=None):
 
 
 def generate(points,boundaries,settings=None,rows=12,max_polygons=200000,
-             previous=None,caps=None,reference_length=0.,directional_smoothing=None,local_density=None,point_density=None,layout_lengths=None,regular_rows=False,face_indices=None,edge_evaluator=None,_track_production=False,plane_axes=(),frozen_layout=False):
+             previous=None,caps=None,reference_length=0.,directional_smoothing=None,local_density=None,point_density=None,layout_lengths=None,regular_rows=False,face_indices=None,edge_evaluator=None,_track_production=False,plane_axes=()):
     points=[tuple(map(float,p)) for p in points]
     settings=list(settings or [ZoneSettings() for _ in boundaries])
     rows=max(2,min(256,int(rows)))
@@ -582,7 +583,7 @@ def generate(points,boundaries,settings=None,rows=12,max_polygons=200000,
     for p in plans:
         for rail in (p.left,p.right):
             for edge in physical_edges(rail):edge_details[edge]=max(edge_details.get(edge,0.),details[p.index]/base)
-    registry=RailRegistry(points,evaluate,base,plans,reference_length,max_polygons,out.local_density,out.point_density,previous,layout_lengths,edge_details,frozen_layout)
+    registry=RailRegistry(points,evaluate,base,plans,reference_length,max_polygons,out.local_density,out.point_density,previous,layout_lengths,edge_details)
     rail_edges={edge for p in plans for rail in (p.left,p.right) for edge in physical_edges(rail)}
     interfaces={};cap_widths={}
     for p in plans:
@@ -716,6 +717,7 @@ def generate(points,boundaries,settings=None,rows=12,max_polygons=200000,
     out.phase_cache=registry.phase_cache
     out.row_cache=registry.row_cache
     out.sampling_cache=registry.geometry_cache
+    out.edge_sampling_cache=registry.edge_cache
     out.correspondence_cache=registry.map_cache
     out.faces,out.owners=registry.stitch(out.vertices,out.faces,out.owners,vertex_index)
     if len(out.faces)>max_polygons:raise ValueError(tr('Polygon limit exceeded after stitching'))

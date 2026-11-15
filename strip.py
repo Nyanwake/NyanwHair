@@ -55,17 +55,14 @@ def build_strip(plan,width,registry,ca,cb,left,right,profiles,put,emit,max_polyg
             grid.append(tuple(row));sections.append(tuple(coords))
         columns=[actual_a]+[[row[x] for row in grid] for x in range(1,width)]+[actual_b]
         flows_a=fa;flows_b=fb
-        frozen=registry.frozen and old and tuple(key for key,pos in points)==tuple(key for key,pos in old[1][0])
-        if frozen:faces=list(old[1][1])
-        else:
-            for x in range(width):
-                fa=flows_a if x==0 else fractions;fb=flows_b if x==width-1 else fractions
-                if mapping and x in (0,width-1):
-                    from .surface import geometry_path
-                    path=geometry_path([points[i][1] for i in columns[x]],[points[i][1] for i in columns[x+1]],fa,fb)
-                else:path=zipper_flows(fa,fb)
-                for (i,j),(ni,nj) in zip(path,path[1:]):
-                    faces.append((columns[x][i],columns[x+1][j],columns[x+1][nj],columns[x][ni]))
+        for x in range(width):
+            fa=flows_a if x==0 else fractions;fb=flows_b if x==width-1 else fractions
+            if mapping and x in (0,width-1):
+                from .surface import geometry_path
+                path=geometry_path([points[i][1] for i in columns[x]],[points[i][1] for i in columns[x+1]],fa,fb)
+            else:path=zipper_flows(fa,fb)
+            for (i,j),(ni,nj) in zip(path,path[1:]):
+                faces.append((columns[x][i],columns[x+1][j],columns[x+1][nj],columns[x][ni]))
         if len(faces)>max_polygons:raise ValueError(tr('Strip polygon limit exceeded'))
         recipe=(tuple(points),tuple(faces),tuple(sections),tuple(tuple(c) for c in columns),tuple(grid))
     cache[plan.boundary]=(signature,recipe)

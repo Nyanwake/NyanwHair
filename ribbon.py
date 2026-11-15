@@ -38,8 +38,12 @@ class MonotoneMap:
 def _projected_match(a,b,us,aa,ta):
     if np is None:return None
     u=np.asarray(us);v=u.copy();pa=np.asarray(aa);ta=np.asarray(ta)
+    def samples(values):
+        size=len(values)
+        points=b.positions(np.concatenate((values,np.minimum(1.,values+1e-4),np.maximum(0.,values-1e-4))))
+        return points[:size],(points[size:2*size]-points[2*size:])/2e-4
     for _ in range(8):
-        pb=b.positions(v);derivative=(b.positions(np.minimum(1.,v+1e-4))-b.positions(np.maximum(0.,v-1e-4)))/2e-4
+        pb,derivative=samples(v)
         tangent=ta+derivative/np.maximum(EPS,np.linalg.norm(derivative,axis=1))[:,None]
         tangent/=np.maximum(EPS,np.linalg.norm(tangent,axis=1))[:,None]
         residual=np.einsum('ij,ij->i',pb-pa,tangent)
@@ -50,8 +54,7 @@ def _projected_match(a,b,us,aa,ta):
         # Bounded monotone projection, independent of output row counts.
         for i in range(1,len(v)-1):v[i]=max(v[i],v[i-1]+1e-6)
         for i in range(len(v)-2,0,-1):v[i]=min(v[i],v[i+1]-1e-6)
-    pb=b.positions(v);width=pb-pa
-    derivative=(b.positions(np.minimum(1.,v+1e-4))-b.positions(np.maximum(0.,v-1e-4)))/2e-4
+    pb,derivative=samples(v);width=pb-pa
     tangent=ta+derivative/np.maximum(EPS,np.linalg.norm(derivative,axis=1))[:,None]
     cosine=np.abs(np.einsum('ij,ij->i',width,tangent))/np.maximum(EPS,np.linalg.norm(width,axis=1)*np.linalg.norm(tangent,axis=1))
     if np.any(np.diff(v)<1e-5) or np.mean(cosine[1:-1]**2)>.18:return None

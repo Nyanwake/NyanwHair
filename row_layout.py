@@ -58,10 +58,6 @@ def station(values,t):
 
 
 def correspondence(registry,a,b):
-    if registry.frozen:
-        if (a.path,b.path) not in registry.old_maps:return None
-        registry.pair(a.path,b.path,False,match_samples=32)
-        return registry.maps[a.path,b.path]
     values=[i/16 for i in range(17)]
     pairs=[(one[1],two[1]) for one,two in zip(a.sample(values),b.sample(values))]
     centers=[mul(add(p,q),.5) for p,q in pairs]

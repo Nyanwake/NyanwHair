@@ -14,14 +14,41 @@ from collections import defaultdict
 from .core import EPS,CURVE_SUBDIVISIONS,sub,length,edge_key,newell,mix,mul
 
 
+def _edge_arcs(evaluate,paths,previous):
+    if np is None or not hasattr(evaluate,'coefficients'):return {}
+    cache={};pending=[];coefficients=[]
+    edges={edge for path in paths for edge in zip(path,path[1:])}
+    edges.update(edge_key(*edge) for edge in tuple(edges))
+    for edge in sorted(edges):
+        data=evaluate.coefficients.get(edge)
+        if data is None:
+            q,p,mb,ma=evaluate.coefficients[edge[::-1]];data=(p,q,mul(ma,-1.),mul(mb,-1.))
+        old=previous.get(edge)
+        if old and old[0]==data:cache[edge]=old
+        else:pending.append(edge);coefficients.append(data)
+    if pending:
+        t=np.linspace(0.,1.,CURVE_SUBDIVISIONS+1);tt=t*t;ttt=tt*t
+        basis=np.stack((2*ttt-3*tt+1,-2*ttt+3*tt,ttt-2*tt+t,ttt-tt),axis=1)
+        positions=np.einsum('si,eij->esj',basis,np.asarray(coefficients))
+        distances=np.linalg.norm(np.diff(positions,axis=1),axis=2)
+        arcs=np.concatenate((np.zeros((len(pending),1)),np.cumsum(distances,axis=1)),axis=1)
+        cache.update((edge,(data,table)) for edge,data,table in zip(pending,coefficients,arcs.tolist()))
+    return cache
+
+
 class CurvePath:
-    def __init__(self,points,path,evaluate,cached=None):
+    def __init__(self,points,path,evaluate,cached=None,edge_arcs=None):
         self.points=points; self.path=tuple(path); self.evaluate=evaluate
         self.vertices={v:i for i,v in enumerate(path)}
         self.edges={edge_key(a,b):(i,a,b) for i,(a,b) in enumerate(zip(path,path[1:]))}
         self.tables=[]; self.offsets=[0.]; self._samples={}
         if cached is not None:
             self.tables,self.offsets,self.total,self._old_samples=cached
+            return
+        if edge_arcs:
+            self.tables=[edge_arcs[a,b][1] for a,b in zip(path,path[1:])]
+            self.offsets=np.concatenate(([0.],np.cumsum([table[-1] for table in self.tables]))).tolist();self.total=self.offsets[-1]
+            if self.total<EPS:raise ValueError(tr('Guide has zero length'))
             return
         if np is not None and hasattr(evaluate,'coefficients'):
             coefficients=[]
@@ -161,13 +188,14 @@ class RailRegistry:
     Logical junctions are mandatory anchors. Regular support vertices do
     not allocate rows. No RAM cache or per-zone length budget is involved.
     """
-    def __init__(self,points,evaluate,rows,plans,reference_length=0.,max_samples=200000,local_density=None,point_density=None,previous=None,layout_lengths=None,edge_details=None,frozen_layout=False):
+    def __init__(self,points,evaluate,rows,plans,reference_length=0.,max_samples=200000,local_density=None,point_density=None,previous=None,layout_lengths=None,edge_details=None):
         self.points=points;self.evaluate=evaluate;self.rows=rows
         self.stations=defaultdict(dict);self.paths={};self.boundaries=[];self.complete_boundaries={};self.needs_stitch=False
         self.maps={};self.geometry_cache={};self.map_cache={}
         self.old_geometry=getattr(previous,'sampling_cache',{})
         self.old_maps=getattr(previous,'correspondence_cache',{})
-        self.frozen=bool(frozen_layout and previous)
+        paths=list(evaluate.paths)+[rail for plan in plans for rail in (plan.left,plan.right)]
+        self.edge_cache=_edge_arcs(evaluate,paths,getattr(previous,'edge_sampling_cache',{}))
         self.density={key:max(1.,min(8.,float(value))) for key,value in (local_density or {}).items()}
         chains=[]
         for path in evaluate.paths:
@@ -191,11 +219,6 @@ class RailRegistry:
         self.phases=old_phase[1] if old_phase and old_phase[0]==phase_signature else self._phases(chains,plans,mandatory)
         self.phase_cache=(phase_signature,self.phases)
         self.row_cache={};old_rows=getattr(previous,'row_cache',{})
-        if self.frozen:
-            self.row_cache=dict(old_rows);self.final_sampling_cache=dict(previous.final_sampling_cache)
-            for (path,first,last),record in self.final_sampling_cache.items():
-                self._register_samples(self.curve(path),first,last,record[1])
-            return
         allocated=0;sections=[]
         for curve in chains:
             spacing=self.spacing
@@ -381,8 +404,7 @@ class RailRegistry:
                 tuple((coefficients.get((a,b)),coefficients.get((b,a))) for a,b in zip(path,path[1:])))
             old=self.old_geometry.get(path)
             cached=old[1] if coefficients and old and old[0]==signature else None
-            if self.frozen and old:cached=(*old[1][:3],{})
-            curve=CurvePath(self.points,path,self.evaluate,cached)
+            curve=CurvePath(self.points,path,self.evaluate,cached,self.edge_cache)
             curve.geometry_signature=signature
             self.paths[path]=curve
             self.geometry_cache[path]=(signature,(curve.tables,curve.offsets,curve.total,curve._samples))
@@ -406,7 +428,7 @@ class RailRegistry:
         key=(a.path,b.path);signature=(a.geometry_signature,b.geometry_signature,int(match_samples))
         old=self.old_maps.get(key)
         if key in self.maps:mapping=self.maps[key]
-        elif old and (old[0]==signature or self.frozen):
+        elif old and old[0]==signature:
             mapping=RibbonMap.__new__(RibbonMap)
             mapping.__dict__.update(old[1]);mapping.a=a;mapping.b=b;mapping._samples={}
         else:mapping=RibbonMap(a,b,match_samples)

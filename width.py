@@ -58,7 +58,7 @@ def _coherent_paths(fractions):
     return paths
 
 
-def _regular_transition(plan,width,ca,cb,left,right,caps,max_polygons,mapping=None,previous_recipe=None):
+def _regular_transition(plan,width,ca,cb,left,right,caps,max_polygons,mapping=None):
     """Fair interior rows; unequal border budgets affect only the rim strips."""
     points=[];faces=[];indices={}
     def vertex(key,pos):
@@ -123,11 +123,8 @@ def _regular_transition(plan,width,ca,cb,left,right,caps,max_polygons,mapping=No
         for x in range(width+1):
             value=x/width*n;j=min(n-1,int(value));section.append(mix(coords[j],coords[j+1],value-j))
         sections.append(tuple(section))
-    frozen=previous_recipe and tuple(key for key,pos in points)==tuple(key for key,pos in previous_recipe[0])
-    if frozen:faces=list(previous_recipe[1])
-    else:
-        for k,path in enumerate(_coherent_paths(fractions)):
-            for (i,j),(ni,nj) in zip(path,path[1:]):faces.append((inner[k][i],inner[k][ni],inner[k+1][nj],inner[k+1][j]))
+    for k,path in enumerate(_coherent_paths(fractions)):
+        for (i,j),(ni,nj) in zip(path,path[1:]):faces.append((inner[k][i],inner[k][ni],inner[k+1][nj],inner[k+1][j]))
     columns=[borders[0]]
     for x in range(1,width):
         line=[]
@@ -138,13 +135,12 @@ def _regular_transition(plan,width,ca,cb,left,right,caps,max_polygons,mapping=No
         columns.append(line)
     columns.append(borders[1])
     first=[row[0] for row in inner];last=[row[-1] for row in inner]
-    if not frozen:
-        for one,two,fu,fv in ((borders[0],first,fa,flows),(last,borders[1],flows,fb)):
-            if mapping:
-                from .surface import geometry_path
-                path=geometry_path([points[i][1] for i in one],[points[i][1] for i in two],fu,fv)
-            else:path=zipper_flows(fu,fv)
-            for (i,j),(ni,nj) in zip(path,path[1:]):faces.append((one[i],two[j],two[nj],one[ni]))
+    for one,two,fu,fv in ((borders[0],first,fa,flows),(last,borders[1],flows,fb)):
+        if mapping:
+            from .surface import geometry_path
+            path=geometry_path([points[i][1] for i in one],[points[i][1] for i in two],fu,fv)
+        else:path=zipper_flows(fu,fv)
+        for (i,j),(ni,nj) in zip(path,path[1:]):faces.append((one[i],two[j],two[nj],one[ni]))
     if len(faces)>max_polygons:raise ValueError(tr('Width-transition polygon limit exceeded'))
     return tuple(points),tuple(faces),tuple(sections),tuple(tuple(c) for c in columns),tuple(rows)
 
@@ -162,7 +158,7 @@ def build_transition(plan,width,registry,ca,cb,left,right,profiles,put,emit,max_
     old=previous.get(plan.boundary);reused=bool(old and old[0]==signature)
     if reused:recipe=old[1]
     elif mapping is None and width>=2 and all(cap is None or len(cap)>=3 for cap in caps):
-        recipe=_regular_transition(plan,width,ca,cb,left,right,caps,max_polygons,correspondence(registry,ca,cb),old[1] if registry.frozen and old else None)
+        recipe=_regular_transition(plan,width,ca,cb,left,right,caps,max_polygons,correspondence(registry,ca,cb))
     else:
         points=[];faces=[];indices={}
         def vertex(key,pos):

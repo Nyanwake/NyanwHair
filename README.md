@@ -1,4 +1,4 @@
-# NyanwHair 1.13
+# NyanwHair 1.14
 
 Shape expressive stylized hair with a few guides. NyanwHair stitches neighbouring segments into a continuous mesh as you work. Grow branches easily and adjust polygon density both along and across a strand.
 
@@ -79,7 +79,7 @@ Six colour themes, group colours, brightness, segment highlighting and mesh-wire
 
 If Blender's **Retopology** overlay is enabled, **Hide Retopology fill** appears in **Additional** in Edit Mode. It switches off the native cage fill in this viewport while keeping other overlays enabled. This overlay is saved with the .blend file independently of RetopoFlow.
 
-**Live** controls surface updates; the eye button controls preview visibility. Moving, rotating or scaling points keeps the current row layout for a faster preview; confirming or cancelling restores full automatic alignment. The collapsible **Hotkeys** panel provides large buttons for mouse or tablet use.
+**Live** controls surface updates; the eye button controls preview visibility. The viewport and Mesh conversion use the same current curve lengths and row alignment, including while points move. The collapsible **Hotkeys** panel provides large buttons for mouse or tablet use.
 
 In **Additional**: choose **EN / RU**, refresh the row layout, or disable NyanwHair on the object. The initial language follows Blender: Russian for a Russian interface, English otherwise.
 
@@ -182,7 +182,7 @@ For the active NyanwHair guide in Edit Mode.
 
 Если включён штатный оверлей **Retopology**, в Edit Mode в **Дополнительно** появляется **Убрать заливку Retopo**. Кнопка отключает заливку каркаса в текущем вьюпорте, сохраняя остальные оверлеи. Эта настройка хранится в .blend независимо от RetopoFlow.
 
-**Live** управляет обновлением поверхности, кнопка с глазом — её видимостью. Во время перемещения, вращения и масштабирования точек текущая раскладка рядов сохраняется для быстрого предпросмотра. После подтверждения или отмены снова выполняется полное выравнивание. Сворачиваемый раздел **Хоткеи** содержит крупные кнопки для мыши или планшета.
+**Live** управляет обновлением поверхности, кнопка с глазом — её видимостью. Предпросмотр и преобразование в Mesh используют одинаковый расчёт длины кривых и рядов, в том числе во время движения точек. Сворачиваемый раздел **Хоткеи** содержит крупные кнопки для мыши или планшета.
 
 В **Дополнительно** можно выбрать **EN / RU**, обновить раскладку рядов или отключить NyanwHair на объекте. При первом запуске русский интерфейс Blender выбирает RU, остальные языки — EN.
 
