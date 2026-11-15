@@ -4,7 +4,13 @@ from .core import edge_key
 
 
 def _guide_edges(result,sharp_only):
-    indices={key:i for i,key in enumerate(result.vertex_keys)};sharp=set()
+    signature=(id(result.vertex_keys),len(result.vertex_keys),id(result.rail_samples),id(result.cap_widths),id(result.rim_caps),id(result.smooth_rails))
+    saved=getattr(result,'guide_edge_cache',None)
+    if saved is None or saved[0]!=signature:
+        saved=(signature,{key:i for i,key in enumerate(result.vertex_keys)},{})
+        result.guide_edge_cache=saved
+    if sharp_only in saved[2]:return saved[2][sharp_only]
+    indices=saved[1];sharp=set()
     for rails in result.rail_samples.values():
         for samples in rails:
             for (ka,pa),(kb,pb) in zip(samples,samples[1:]):
@@ -16,12 +22,51 @@ def _guide_edges(result,sharp_only):
         keys=[('v',lo)]+[('cap',lo,hi,x,width) for x in range(1,width)]+[('v',hi)]
         for one,two in zip(keys,keys[1:]):
             if one in indices and two in indices and indices[one]!=indices[two]:sharp.add(edge_key(indices[one],indices[two]))
+    saved[2][sharp_only]=sharp
     return sharp
 
 
 def sharp_edges(result):return _guide_edges(result,True)|set(getattr(result,'extra_sharp_edges',()))
 def guide_edges(result):return _guide_edges(result,False)|set(getattr(result,'extra_seam_edges',()))
 
+
+
+def _normal_groups(vertices,next_vertices,offsets,sharp,count):
+    import numpy as np
+    size=len(vertices);codes=np.minimum(vertices,next_vertices)*count+np.maximum(vertices,next_vertices)
+    order=np.argsort(codes,kind='stable');sorted_codes=codes[order]
+    starts=np.r_[0,np.flatnonzero(sorted_codes[1:]!=sorted_codes[:-1])+1]
+    starts=starts[np.diff(np.r_[starts,size])==2]
+    if sharp:
+        sharp_codes=np.fromiter((a*count+b for a,b in sharp),dtype=np.int64)
+        starts=starts[~np.isin(sorted_codes[starts],sharp_codes)]
+    parents=np.arange(size,dtype=np.intp)
+    if not len(starts):return parents
+    one=order[starts];two=order[starts+1]
+    following=np.arange(size,dtype=np.intp)+1;following[np.r_[offsets[1:]-1,size-1]]=offsets
+    same=vertices[one]==vertices[two]
+    a=np.r_[one,following[one]];b=np.r_[np.where(same,two,following[two]),np.where(same,following[two],two)]
+    # Hook whole fan roots; pointer jumping preserves exact connectivity.
+    while True:
+        while True:
+            flattened=parents[parents]
+            if np.array_equal(flattened,parents):break
+            parents=flattened
+        ra=parents[a];rb=parents[b]
+        if np.all(ra==rb):return parents
+        np.minimum.at(parents,np.maximum(ra,rb),np.minimum(ra,rb))
+
+
+class _CornerNormals:
+    __slots__=('values','offsets','sizes')
+    def __init__(self,values,offsets,faces):
+        self.values=values;self.offsets=offsets;self.sizes=tuple(map(len,faces))
+    def __len__(self):return len(self.offsets)
+    def __getitem__(self,index):
+        if isinstance(index,slice):return tuple(self[i] for i in range(*index.indices(len(self))))
+        offset=self.offsets[index];return self.values[offset:offset+self.sizes[index]]
+    def __iter__(self):
+        for i in range(len(self)):yield self[i]
 
 def corner_normals(result,smooth=True,topology=None,packed=False):
     old=getattr(result,'normal_cache',None)
@@ -34,27 +79,12 @@ def corner_normals(result,smooth=True,topology=None,packed=False):
     signature=(bool(smooth),tuple(faces),sharp)
     topology=topology or getattr(result,'normal_topology',None)
     if topology is None or topology[0]!=signature:
-        offsets=[];vertices=[];next_vertices=[];face_ids=[];edges={}
+        offsets=[];vertices=[];next_vertices=[];face_ids=[]
         for fi,face in enumerate(faces):
-            offset=len(vertices);offsets.append(offset)
-            vertices.extend(face);next_vertices.extend(face[1:]+face[:1]);face_ids.extend([fi]*len(face))
-            if smooth:
-                for i,a in enumerate(face):
-                    j=(i+1)%len(face);b=face[j]
-                    edges.setdefault(edge_key(a,b),[]).append(((a,offset+i),(b,offset+j)))
-        if smooth:
-            parents=list(range(len(vertices)))
-            def root(x):
-                while parents[x]!=x:parents[x]=parents[parents[x]];x=parents[x]
-                return x
-            for key,group in edges.items():
-                if key in sharp or len(group)!=2:continue
-                one=dict(group[0]);two=dict(group[1])
-                for vertex in key:parents[root(one[vertex])]=root(two[vertex])
-            groups=np.asarray([root(i) for i in range(len(vertices))],dtype=np.intp)
-        else:groups=None
-        topology=(signature,np.asarray(offsets,dtype=np.intp),np.asarray(vertices,dtype=np.intp),
-            np.asarray(next_vertices,dtype=np.intp),np.asarray(face_ids,dtype=np.intp),groups)
+            offsets.append(len(vertices));vertices.extend(face);next_vertices.extend(face[1:]+face[:1]);face_ids.extend([fi]*len(face))
+        offsets=np.asarray(offsets,dtype=np.intp);vertices=np.asarray(vertices,dtype=np.intp);next_vertices=np.asarray(next_vertices,dtype=np.intp)
+        groups=_normal_groups(vertices,next_vertices,offsets,sharp,len(result.vertices)) if smooth else None
+        topology=(signature,offsets,vertices,next_vertices,np.asarray(face_ids,dtype=np.intp),groups)
     _,offsets,vertices,next_vertices,face_ids,groups=topology
     points=np.asarray(result.vertices,dtype=np.float64)
     areas=np.add.reduceat(np.cross(points[vertices],points[next_vertices]),offsets,axis=0)
@@ -67,7 +97,7 @@ def corner_normals(result,smooth=True,topology=None,packed=False):
         size=np.linalg.norm(areas,axis=1);areas/=np.where(size>1e-10,size,1.)[:,None];areas[size<=1e-10]=0.
         values=areas[face_ids]
     result.normal_array=values
-    output=tuple(values[offset:offset+len(face)] for offset,face in zip(offsets,faces))
+    output=_CornerNormals(values,offsets,faces)
     result.normal_topology=topology;result.normal_cache=(smooth,output)
     return output if packed else tuple(tuple(tuple(v) for v in face) for face in output)
 

@@ -71,8 +71,8 @@ def correspondence(registry,a,b):
 
 
 def rows(a,b,left,right,count,mapping=None):
-    fa=[mapping.fraction(a,key) if mapping else a.fraction(key) for key,pos in left]
-    fb=[mapping.fraction(b,key) if mapping else b.fraction(key) for key,pos in right]
+    fa=mapping.fractions(a,[key for key,pos in left]) if mapping else [a.fraction(key) for key,pos in left]
+    fb=mapping.fractions(b,[key for key,pos in right]) if mapping else [b.fraction(key) for key,pos in right]
     fractions=[(station(fa,i/count)+station(fb,i/count))*.5 for i in range(count+1)]
     if mapping:
         pairs=mapping.sample(fractions)

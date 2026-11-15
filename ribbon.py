@@ -30,7 +30,9 @@ class MonotoneMap:
 
     def many(self,t):
         if np is None:return [self(value) for value in t]
-        t=np.clip(np.asarray(t),self.x[0],self.x[-1]);x=np.asarray(self.x);y=np.asarray(self.y);d=np.asarray(self.d)
+        numeric=getattr(self,'_numeric',None)
+        if numeric is None:numeric=tuple(np.asarray(values) for values in (self.x,self.y,self.d));self._numeric=numeric
+        x,y,d=numeric;t=np.clip(np.asarray(t),self.x[0],self.x[-1])
         i=np.clip(np.searchsorted(x,t,side='right')-1,0,len(x)-2);h=x[i+1]-x[i];u=(t-x[i])/h
         u2=u*u;u3=u2*u
         return (2*u3-3*u2+1)*y[i]+(u3-2*u2+u)*h*d[i]+(-2*u3+3*u2)*y[i+1]+(u3-u2)*h*d[i+1]
@@ -141,9 +143,17 @@ class RibbonMap:
         if curve is self.b:u=self.v_to_u(u)
         return self.u_to_flow(u)
 
+    def fractions(self,curve,keys):
+        if np is None or len(keys)<8:return [self.fraction(curve,key) for key in keys]
+        values=[curve.fraction(key) for key in keys]
+        if curve is self.b:values=self.v_to_u.many(values)
+        return self.u_to_flow.many(values).tolist()
+
     def sample(self,flows):
         missing=list(dict.fromkeys(u for u in flows if u not in self._samples))
-        left=[self.flow_to_u(u) for u in missing];right=[self.u_to_v(u) for u in left]
+        if np is not None and len(missing)>=8:
+            left=self.flow_to_u.many(missing);right=self.u_to_v.many(left).tolist();left=left.tolist()
+        else:left=[self.flow_to_u(u) for u in missing];right=[self.u_to_v(u) for u in left]
         self._samples.update(zip(missing,zip(self.a.sample(left),self.b.sample(right))))
         return [self._samples[u] for u in flows]
 

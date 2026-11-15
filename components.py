@@ -2,6 +2,7 @@
 from .i18n import tr
 from collections import defaultdict
 from . import core
+from .mesh_views import IndexRows,CutLines,OwnerEdges
 
 
 class _Network:
@@ -72,12 +73,13 @@ def generate(points,boundaries,settings=None,rows=12,max_polygons=200000,previou
     for part in parts:
         remap=remaps[id(part)]
         for face,owner in zip(part.faces,part.owners):faces[owner].append(tuple(remap[v] for v in face))
-        for name in ('warnings','face_paths','guide_curves','cut_lines','effective_widths','cap_widths','rim_caps','smooth_rails','width_transitions','samples_per_edge','plans_by_loop','transitions','orientation_by_face','surface_sections','rail_samples','layout_lengths','row_cache','sampling_cache','edge_sampling_cache','correspondence_cache','patch_cache','final_sampling_cache','valid_cache'):
+        for name in ('warnings','face_paths','guide_curves','effective_widths','cap_widths','rim_caps','smooth_rails','width_transitions','samples_per_edge','plans_by_loop','transitions','orientation_by_face','surface_sections','rail_samples','layout_lengths','row_cache','sampling_cache','edge_sampling_cache','correspondence_cache','patch_cache','final_sampling_cache','valid_cache'):
             getattr(out,name).update(getattr(part,name,{}))
-        out.surface_columns.update((owner,tuple(tuple(remap[v] for v in column) for column in columns)) for owner,columns in part.surface_columns.items())
-        out.surface_grids.update((owner,tuple(tuple(remap[v] if v is not None else None for v in row) for row in grid)) for owner,grid in part.surface_grids.items())
+        out.surface_columns.update((owner,columns.remapped(remap)) for owner,columns in part.surface_columns.items())
+        out.surface_grids.update((owner,grid.remapped(remap)) for owner,grid in part.surface_grids.items())
     for plan in all_plans:out.faces.extend(faces[plan.index]);out.owners.extend([plan.index]*len(faces[plan.index]))
     if len(out.faces)>max_polygons or sum(out.samples_per_edge.values())>2*max_polygons:raise ValueError(tr('Group polygon or sample limit exceeded'))
     for name in ('directional_smoothing','local_density','point_density'):setattr(out,name,dict(kwargs.get(name) or {}))
+    out.cut_lines=CutLines(out.vertices,out.surface_columns,OwnerEdges(out.faces,out.owners))
     out.edge_evaluator=_Network(parts,out.source_points,out.directional_smoothing);out.parts=tuple(parts);out.component_cache=current;out.reused_components=sum(1 for part in parts if any(part is v[1] for v in old.values()));out.reused_patches=reused
     return out

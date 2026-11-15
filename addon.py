@@ -1045,7 +1045,7 @@ def _rebuild(obj,force=False,lazy=False,group_id=None,_background=False):
             selected=next((_zone_key(p) for p in old['result'].plans_by_loop.values() if p.index==old.get('active',-1)),None)
             active=lookup.get(selected,min((lookup[k] for k in keys),default=-1));selection={'zone_selection':keys,'zone_selection_explicit':True}
         if active not in indices:active=indices[0] if indices else -1
-        reuse={k:old[k] for k in ('gpu_chunks','gpu_wire_chunks','gpu_rails','gpu_rail_records','gpu_rail_signature','native_selection_stamp','normal_topology','gpu_layout','preview_normal_groups','preview_axis_sharp','render_parts') if old and k in old}
+        reuse={k:old[k] for k in ('gpu_chunks','gpu_wire_chunks','gpu_rails','gpu_rail_records','gpu_rail_signature','native_selection_stamp','normal_topology','gpu_layout','gpu_boundary_layout','preview_normal_groups','preview_axis_sharp','render_parts') if old and k in old}
         cached=dict(selection,**reuse,signature=signature,topology=tuple(full_zones),face_indices=tuple(indices),group_zones=tuple(zones),group_id=uid,object_pointer=key,
                     rows=rows,revision=_SOURCE_REVISION,source_state=state,source_dirty=False,data_pointer=obj.data.as_pointer(),positions=tuple(positions),zones=tuple(full_zones),
                     result=result,active=active,status='; '.join(tr('Segment %d: %s')%(i+1,v) for i,v in list(sorted(warnings.items()))[:3]) if warnings else tr('%d segments, %d polygons')%(len(zones),len(result.faces)),
@@ -1951,7 +1951,7 @@ def _draw_presets(layout,obj):
 
 
 class NYANW35_PT_main(Panel):
-    bl_label='NyanwHair v1.14'
+    bl_label='NyanwHair v1.15 Preview'
     bl_idname='NYANW35_PT_main'
     bl_space_type='VIEW_3D'
     bl_region_type='UI'
@@ -2154,7 +2154,17 @@ def _buffer_layout(result,indices,offsets,edges):
         if n>4:dynamic=True
         normal.extend((offset,offset+i,offset+i+1) for i in range(1,n-1))
         reflected.extend((offset+n-1,offset+i,offset+i-1) for i in range(n-2,0,-1))
-    return dict(vertices=np.asarray(vertices,dtype=np.int32),corners=np.asarray(corners,dtype=np.int32),owners=np.asarray(owners,dtype=np.int32),normal=np.asarray(normal,dtype=np.int32),reflected=np.asarray(reflected,dtype=np.int32),edges=np.asarray(edges,dtype=np.int32).reshape(-1,2),dynamic=dynamic)
+    vertices=np.asarray(vertices,dtype=np.int32);corners=np.asarray(corners,dtype=np.int32);owners=np.asarray(owners,dtype=np.int32)
+    normal=np.asarray(normal,dtype=np.int32);reflected=np.asarray(reflected,dtype=np.int32)
+    groups=result.normal_topology[5]
+    if not dynamic and len(vertices) and groups is not None:
+        first_owner=int(owners.min());span=int(owners.max())-first_owner+1
+        # A normal fan belongs to one vertex; owner keeps highlight boundaries.
+        codes=groups[corners]*span+owners-first_owner
+        _,first,remap=np.unique(codes,return_index=True,return_inverse=True)
+        vertices=vertices[first];corners=corners[first];owners=owners[first]
+        normal=remap[normal].astype(np.int32);reflected=remap[reflected].astype(np.int32)
+    return dict(vertices=vertices,corners=corners,owners=owners,normal=normal,reflected=reflected,edges=np.asarray(edges,dtype=np.int32).reshape(-1,2),dynamic=dynamic)
 
 
 def _gpu_mesh_records(cache,result,smooth):
@@ -2175,9 +2185,9 @@ def _gpu_mesh_records(cache,result,smooth):
     boundary=tuple(i for i,key in enumerate(boundary_keys) if key[0] in ('v','s'))
     front_count=len(cache['result'].faces)
     layout_signature=(tuple(result.faces),tuple(result.owners),boundary,front_count,
-        tuple(sorted((owner,p.settings.order) for owner,p in plans.items())))
+        tuple(sorted((owner,p.settings.order) for owner,p in plans.items())),bool(smooth),result.normal_topology[0][2] if result.faces else frozenset())
     saved=cache.get('gpu_layout')
-    if saved and saved[0]==layout_signature:layout=saved[1]
+    if saved and saved[0]==layout_signature and 'gpu_boundary_layout' in cache:layout=saved[1]
     else:
         chunks={};edge_groups={}
         for fi,(face,owner) in enumerate(zip(result.faces,result.owners)):
@@ -2197,19 +2207,25 @@ def _gpu_mesh_records(cache,result,smooth):
             layout.append((key,tuple(indices),owners,vertices,faces_key,edges,keys,info))
         cache['gpu_layout']=(layout_signature,tuple(layout))
         boundary=set(boundary)
-        cache['gpu_boundary_corners']=tuple((vertex,owner,fi,corner) for fi,(face,owner) in enumerate(zip(result.faces[:front_count],result.owners[:front_count])) for corner,vertex in enumerate(face) if vertex in boundary)
+        grouped={};corners=[];indices=[]
+        for fi,(face,owner) in enumerate(zip(result.faces[:front_count],result.owners[:front_count])):
+            for corner,vertex in enumerate(face):
+                if vertex in boundary:
+                    key=(vertex,owner)
+                    if key not in grouped:grouped[key]=len(grouped)
+                    corners.append(int(result.normal_topology[1][fi])+corner);indices.append(grouped[key])
+        cache['gpu_boundary_layout']=(tuple(grouped),np.asarray(corners,dtype=np.intp),np.asarray(indices,dtype=np.intp))
     records=[]
     cache['gpu_buffer_layout']={row[0]:row[-1] for row in layout}
     for key,indices,owners,vertices,faces_key,edges,keys,info in layout:
-        faces=tuple((result.faces[fi],result.owners[fi],normals[fi]) for fi in indices)
+        faces=tuple((result.faces[fi],result.owners[fi],normals[fi]) for fi in indices) if info['dynamic'] else ()
         geometry=(faces_key,positions[np.asarray(vertices)].tobytes(),values[info['corners']].tobytes())
         records.append((key,faces,owners,geometry,edges,keys))
-    boundary_normals={}
-    for vertex,owner,fi,corner in cache.get('gpu_boundary_corners',()):
-        key=(boundary_keys[vertex],owner);value=normals[fi][corner]
-        if key in boundary_normals:boundary_normals[key]=core.add(boundary_normals[key],value)
-        else:boundary_normals[key]=value
-    cache['gpu_boundary_normals']={key:core.norm(value) for key,value in boundary_normals.items()}
+    pairs,corners,groups=cache['gpu_boundary_layout']
+    boundary_values=values[corners]
+    sums=np.stack([np.bincount(groups,weights=boundary_values[:,axis],minlength=len(pairs)) for axis in range(3)],axis=1)
+    sizes=np.linalg.norm(sums,axis=1);sums/=np.where(sizes>core.EPS,sizes,1.)[:,None];sums[sizes<=core.EPS]=0.
+    cache['gpu_boundary_normals']={(boundary_keys[vertex],owner):tuple(normal) for (vertex,owner),normal in zip(pairs,sums.tolist())}
     cache['gpu_mesh_signature']=signature;cache['gpu_mesh_records']=tuple(records)
     return cache['gpu_mesh_records']
 

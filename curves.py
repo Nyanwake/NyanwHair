@@ -116,6 +116,16 @@ class CurveNetwork:
             data=self.coefficients.get((b,a));t=1.-t
         if data is None:raise ValueError(tr('Edge does not belong to the guide'))
         p0,p1,m0,m1=data
-        tt=t*t;ttt=tt*t
-        return add(add(mul(p0,2*ttt-3*tt+1),mul(p1,-2*ttt+3*tt)),
-                   add(mul(m0,ttt-2*tt+t),mul(m1,ttt-tt)))
+        if t==0.:return p0
+        if t==1.:return p1
+        cache=getattr(self,'_powers',None)
+        if cache is None:cache={};self._powers=cache
+        key=(a,b);stored=cache.get(key)
+        if stored is None or stored[0] is not data:
+            cubic=tuple(2*p0[i]-2*p1[i]+m0[i]+m1[i] for i in range(3))
+            quadratic=tuple(-3*p0[i]+3*p1[i]-2*m0[i]-m1[i] for i in range(3))
+            stored=(data,cubic,quadratic);cache[key]=stored
+        _,c,q=stored
+        return (((c[0]*t+q[0])*t+m0[0])*t+p0[0],
+                ((c[1]*t+q[1])*t+m0[1])*t+p0[1],
+                ((c[2]*t+q[2])*t+m0[2])*t+p0[2])

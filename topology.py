@@ -41,7 +41,7 @@ class CurvePath:
         self.points=points; self.path=tuple(path); self.evaluate=evaluate
         self.vertices={v:i for i,v in enumerate(path)}
         self.edges={edge_key(a,b):(i,a,b) for i,(a,b) in enumerate(zip(path,path[1:]))}
-        self.tables=[]; self.offsets=[0.]; self._samples={}
+        self.tables=[]; self.offsets=[0.]; self._samples={}; self._fractions={}
         if cached is not None:
             self.tables,self.offsets,self.total,self._old_samples=cached
             return
@@ -83,6 +83,8 @@ class CurvePath:
         return i+(key[3] if a<b else 1.-key[3])
 
     def fraction(self,key):
+        value=self._fractions.get(key)
+        if value is not None:return value
         s=self.parameter(key)
         if s is None:raise ValueError(tr('Point does not belong to the guide'))
         i=min(len(self.tables)-1,int(s));t=s-i
@@ -90,7 +92,8 @@ class CurvePath:
         x=max(0.,min(float(subdivisions),t*subdivisions))
         j=min(subdivisions-1,int(x));blend=x-j
         arc=self.tables[i]
-        return (self.offsets[i]+arc[j]*(1.-blend)+arc[j+1]*blend)/self.total
+        value=(self.offsets[i]+arc[j]*(1.-blend)+arc[j+1]*blend)/self.total
+        self._fractions[key]=value;return value
 
     def at(self,u):
         if u in self._samples:return self._samples[u]

@@ -618,6 +618,7 @@ def generate(points,boundaries,settings=None,rows=12,max_polygons=200000,
             vertex_index[key]=len(out.vertices)
             out.vertices.append(pos)
         return vertex_index[key]
+    from .mesh_views import IndexRows,OwnerEdges,CutLines
     production={};ordered=sorted(plans,key=_plan_priority)
     out.plan_order=tuple(p.boundary for p in ordered);prefix_same=out.plan_order==getattr(previous,'plan_order',())
     for p in ordered:
@@ -702,11 +703,11 @@ def generate(points,boundaries,settings=None,rows=12,max_polygons=200000,
                     local_keys.add(signature);accepted.append(face)
                 local=tuple(accepted);local_keys=frozenset(local_keys)
             out.accepted_cache[p.boundary]=(raw,valid_flags,local,local_keys)
-            out.surface_columns[p.index]=tuple(tuple(column) for column in columns)
+            out.surface_columns[p.index]=columns if isinstance(columns,IndexRows) else IndexRows(columns)
             if len(local)+len(out.faces)>max_polygons:raise ValueError(tr('Polygon limit exceeded'))
             produced.update(local_keys)
             out.faces.extend(local);out.owners.extend([p.index]*len(local))
-            out.surface_grids[p.index]=tuple(tuple(row) for row in grid)
+            out.surface_grids[p.index]=grid if isinstance(grid,IndexRows) else IndexRows(grid,keep_none=True)
             out.surface_sections[p.index]=sections if getattr(sections,'lazy',False) else tuple(sections)
             out.rail_samples[p.index]=(tuple(left),tuple(right))
             registry.register(ca,left);registry.register(cb,right)
@@ -730,22 +731,13 @@ def generate(points,boundaries,settings=None,rows=12,max_polygons=200000,
     else:
         used=sorted({v for face in out.faces for v in face});remap={old:new for new,old in enumerate(used)}
         compact_faces=[tuple(remap[v] for v in face) for face in out.faces]
-        owner_edges=defaultdict(set)
-        for face,owner in zip(compact_faces,out.owners):owner_edges[owner].update(edge_key(a,b) for a,b in zip(face,face[1:]+face[:1]))
+        owner_edges=OwnerEdges(compact_faces,out.owners)
     keys=tuple(vertex_index)
     out.vertex_keys=[keys[v] for v in used];out.vertices=[out.vertices[v] for v in used];out.faces=compact_faces
     out.assembly_cache=(topology_key,used,remap,compact_faces,owner_edges)
-    out.surface_grids={zone:tuple(tuple(remap.get(v) if v is not None else None for v in row) for row in grid)
-                       for zone,grid in out.surface_grids.items()}
-    out.surface_columns={zone:tuple(tuple(remap[v] for v in column if v in remap) for column in columns)
-                         for zone,columns in out.surface_columns.items()}
-    for zone,columns in out.surface_columns.items():
-        w=len(columns)-1
-        out.cut_lines[zone]={}
-        for x in range(1,w):
-            line=columns[x]
-            if len(line)>1 and all(a==b or edge_key(a,b) in owner_edges[zone] for a,b in zip(line,line[1:])):
-                out.cut_lines[zone][x/w]=tuple(out.vertices[v] for v in line)
+    out.surface_grids={zone:grid.remapped(remap) for zone,grid in out.surface_grids.items()}
+    out.surface_columns={zone:columns.remapped(remap) for zone,columns in out.surface_columns.items()}
+    out.cut_lines=CutLines(out.vertices,out.surface_columns,owner_edges)
     if _track_production:out.production={owner:tuple(remap[v] for v in values if v in remap) for owner,values in production.items()}
     out.samples_per_edge={edge:max(0,len(stations)-1) for edge,stations in registry.stations.items()}
     return out

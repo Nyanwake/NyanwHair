@@ -1,4 +1,5 @@
 """Progressive cross-row transitions with exact inherited cap samples."""
+from .mesh_views import IndexRows,Sections
 from .i18n import tr
 import math
 from .core import EPS,add,sub,mul,dot,cross,length,norm,mix,bias_cross_position,edge_key
@@ -89,7 +90,7 @@ def _regular_transition(plan,width,ca,cb,left,right,caps,max_polygons,mapping=No
         members=[i for i,value in enumerate(row_counts) if value==n]
         grid=profile_grid([aa[i] for i in members],[bb[i] for i in members],[normals[i] for i in members],plan.bulge,profile,cap_blend,[flows[i] for i in members])
         if grid is not None:positions.update(zip(members,grid))
-    rows=[];inner=[];fractions=[];sections=[]
+    rows=[];inner=[];fractions=[];sections=Sections([],width)
     # Grid border entries are references to existing shared rail samples.
     import bisect
     def nearest(values,u):
@@ -119,10 +120,7 @@ def _regular_transition(plan,width,ca,cb,left,right,caps,max_polygons,mapping=No
         for x in range(1,n):
             if not inside or inside[-1]!=row[x]:inside.append(row[x]);values.append(x/n)
         inner.append(inside);fractions.append(values)
-        section=[]
-        for x in range(width+1):
-            value=x/width*n;j=min(n-1,int(value));section.append(mix(coords[j],coords[j+1],value-j))
-        sections.append(tuple(section))
+        sections.rows.append(tuple(coords))
     for k,path in enumerate(_coherent_paths(fractions)):
         for (i,j),(ni,nj) in zip(path,path[1:]):faces.append((inner[k][i],inner[k][ni],inner[k+1][nj],inner[k+1][j]))
     columns=[borders[0]]
@@ -142,7 +140,7 @@ def _regular_transition(plan,width,ca,cb,left,right,caps,max_polygons,mapping=No
         else:path=zipper_flows(fu,fv)
         for (i,j),(ni,nj) in zip(path,path[1:]):faces.append((one[i],two[j],two[nj],one[ni]))
     if len(faces)>max_polygons:raise ValueError(tr('Width-transition polygon limit exceeded'))
-    return tuple(points),tuple(faces),tuple(sections),tuple(tuple(c) for c in columns),tuple(rows)
+    return tuple(points),tuple(faces),sections,tuple(tuple(c) for c in columns),tuple(rows)
 
 
 def build_transition(plan,width,registry,ca,cb,left,right,profiles,put,emit,max_polygons,cache,previous,mapping=None):
@@ -186,7 +184,7 @@ def build_transition(plan,width,registry,ca,cb,left,right,profiles,put,emit,max_
             row_counts.append(max(1,int(width+(counts[0]-width)*(1.-smooth(u/.4))+(counts[1]-width)*smooth((u-.6)/.4)+.5)))
         row_counts[0]=counts[0];row_counts[-1]=counts[1]
         row_counts=_limit_row_changes(row_counts,width)
-        rows=[];sections=[];coordinates=[];fractions=[]
+        rows=[];coordinates=[];sections=Sections(coordinates,width);fractions=[]
         for k,(i,j) in enumerate(path):
             u=(fa[i]+fb[j])*.5
             weights=cap_blend.weights(u)
@@ -205,11 +203,7 @@ def build_transition(plan,width,registry,ca,cb,left,right,profiles,put,emit,max_
                     pos=cap_blend.apply(pos,x/count,weights)
                 row.append(vertex(key,pos));coords.append(pos)
             rows.append(tuple(row));coordinates.append(coords);fractions.append([x/count for x in range(count+1)])
-            # Cut supports lie on the actual transverse mesh edges.
-            section=[]
-            for x in range(width+1):
-                value=x/width*count;index=min(count-1,int(value));section.append(mix(coords[index],coords[index+1],value-index))
-            sections.append(tuple(section))
+
         for k,path in enumerate(_coherent_paths(fractions)):
             for (i,j),(ni,nj) in zip(path,path[1:]):faces.append((rows[k][i],rows[k][ni],rows[k+1][nj],rows[k+1][j]))
         if len(faces)>max_polygons:raise ValueError(tr('Width-transition polygon limit exceeded'))
@@ -221,9 +215,9 @@ def build_transition(plan,width,registry,ca,cb,left,right,profiles,put,emit,max_
                 if not column or column[-1]!=v:column.append(v)
             if 0<x<width and (length(sub(points[column[0]][1],sections[0][x]))>1e-7 or length(sub(points[column[-1]][1],sections[-1][x]))>1e-7):column=[]
             columns.append(tuple(column))
-        recipe=(tuple(points),tuple(faces),tuple(sections),tuple(columns),tuple(rows))
+        recipe=(tuple(points),tuple(faces),sections,tuple(columns),tuple(rows))
     cache[plan.boundary]=(signature,recipe);points,faces,sections,columns,rows=recipe;remap=[put(k,p) for k,p in points]
     if hasattr(emit,'bulk'):emit.bulk(faces,remap)
     else:
         for face in faces:emit([remap[v] for v in face])
-    return sections,[[remap[v] for v in col] for col in columns],[[remap[v] for v in row] for row in rows],reused
+    return sections,IndexRows(columns,(remap,)),IndexRows(rows,(remap,),True),reused
