@@ -37,18 +37,17 @@ class CurveNetwork:
     def __init__(self,points,plans,smoothing=None):
         self.smoothing=dict(smoothing or {})
         self.points=points;self.edges=set();self.continuations={};self.paths=[]
-        candidates=[];priorities={};self.ends=set()
+        candidates=[];priorities={}
         for plan in sorted(plans,key=_plan_priority):
             priority=_plan_priority(plan)
             for rail in (plan.left,plan.right):
-                if rail:self.ends.update((rail[0],rail[-1]))
                 for a,b in zip(rail,rail[1:]):
                     edge=edge_key(a,b);self.edges.add(edge);priorities.setdefault(edge,priority)
                 for a,node,b in zip(rail,rail[1:],rail[2:]):
                     candidates.append((priority,node,*sorted((a,b))))
-        # Logical ends split the solve; shared physical edges keep one evaluator.
+        # End caps are not votes to break a through-curve. At a true fork,
+        # keep the oldest explicit through-pair and attach other branches.
         for _,node,a,b in sorted(set(candidates)):
-            if node in self.ends:continue
             if self.smoothing.get((node,a),1.)<=0. or self.smoothing.get((node,b),1.)<=0.:continue
             if (node,a) not in self.continuations and (node,b) not in self.continuations:
                 self.continuations[node,a]=b;self.continuations[node,b]=a
@@ -65,9 +64,12 @@ class CurveNetwork:
                 if nxt is None:break
                 a,b=b,nxt
             self.paths.append(tuple(path))
+        self.through=defaultdict(list)
         self.adjacency=defaultdict(set)
         for a,b in self.edges:self.adjacency[a].add(b);self.adjacency[b].add(a)
-        self.coefficients={};self.derivatives={}
+        for ci,path in enumerate(self.paths):
+            for i in range(1,len(path)-1):self.through[path[i]].append((ci,i))
+        self.coefficients={};self.derivatives={};self._solving=set()
         for ci in range(len(self.paths)):self._solve(ci)
         # Blend partial directed weights after solving independent sections.
         for (a,b),(p,q,ma,mb) in list(self.coefficients.items()):
@@ -80,21 +82,33 @@ class CurveNetwork:
     def _boundary(self,ci,first):
         path=self.paths[ci];node=path[0 if first else -1]
         chord=sub(self.points[path[1]],self.points[node]) if first else sub(self.points[node],self.points[path[-2]])
-        return (0.,0.,0.) if node in self.ends else norm(chord)
+        neighbor=path[1 if first else -2]
+        if self.smoothing.get((node,neighbor),1.)<=0.:return norm(chord)
+        for parent,index in self.through.get(node,()):
+            if parent==ci:continue
+            if parent in self._solving:
+                p=self.paths[parent]
+                tangent=norm(add(norm(sub(self.points[node],self.points[p[index-1]])),
+                                 norm(sub(self.points[p[index+1]],self.points[node]))))
+            else:
+                self._solve(parent);tangent=self.derivatives[parent][index]
+            return mul(tangent,-1. if dot(tangent,chord)<0 else 1.)
+        return (0.,0.,0.)
 
     def _solve(self,ci):
         if ci in self.derivatives:return
-        path=self.paths[ci]
+        self._solving.add(ci);path=self.paths[ci]
         start=self._boundary(ci,True);end=self._boundary(ci,False)
         # Closed guide loops are cut at their canonical seam. Matching
         # endpoint directions keep the seam geometric-continuous.
-        if path[0]==path[-1] and path[0] not in self.ends and self.smoothing.get((path[0],path[1]),1.)>0. and self.smoothing.get((path[-1],path[-2]),1.)>0.:
+        if path[0]==path[-1] and self.smoothing.get((path[0],path[1]),1.)>0. and self.smoothing.get((path[-1],path[-2]),1.)>0.:
             start=end=norm(add(norm(sub(self.points[path[0]],self.points[path[-2]])),
                                norm(sub(self.points[path[1]],self.points[path[0]]))))
         h,d=_spline([self.points[v] for v in path],start,end)
         self.derivatives[ci]=d
         for i,(a,b) in enumerate(zip(path,path[1:])):
             self.coefficients[a,b]=(self.points[a],self.points[b],mul(d[i],h[i]),mul(d[i+1],h[i]))
+        self._solving.remove(ci)
 
     def __call__(self,a,b,t):
         data=self.coefficients.get((a,b))

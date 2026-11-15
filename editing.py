@@ -472,5 +472,6 @@ def cancel_all(restore=True):
 
 
 from .ripping import NYANW35_OT_rip
+from .joining import NYANW35_OT_join_segments
 
-CLASSES=(NYANW35_OT_boundary,NYANW35_OT_merge,NYANW35_MT_merge,NYANW35_OT_merge_menu,NYANW35_OT_select_mode,NYANW35_OT_flip_normals,NYANW35_OT_extrude,NYANW35_OT_rip)
+CLASSES=(NYANW35_OT_boundary,NYANW35_OT_merge,NYANW35_MT_merge,NYANW35_OT_merge_menu,NYANW35_OT_select_mode,NYANW35_OT_flip_normals,NYANW35_OT_extrude,NYANW35_OT_rip,NYANW35_OT_join_segments)

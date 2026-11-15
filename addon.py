@@ -1918,6 +1918,7 @@ def _draw_extra_panels(layout,context,obj,cached,edit):
             else:ui_icons.button(buttons,props,'mesh.rip_move',tr('Rip')+' · V','RIP','MOD_EDGESPLIT')
             ui_icons.button(buttons,props,'mesh.edge_face_add',tr('Fill')+' · F','FILL','FACESEL')
             ui_icons.button(buttons,props,'wm.call_menu',tr('Delete')+' · X','DELETE','TRASH').name='VIEW3D_MT_edit_mesh_delete'
+            ui_icons.button(buttons,props,'nyanw35.join_segments',tr('Join segments'),'MERGE','DISSOLVE_FACES')
     header,body=layout.panel('nyanw_appearance',default_closed=True);header.label(text=tr('Appearance'),icon='SHADING_SOLID')
     if body is not None:
         if edit:body.prop(props,'palette',text=tr('Theme'))
@@ -1949,7 +1950,7 @@ def _draw_presets(layout,obj):
 
 
 class NYANW35_PT_main(Panel):
-    bl_label='NyanwHair v1.10'
+    bl_label='NyanwHair v1.11'
     bl_idname='NYANW35_PT_main'
     bl_space_type='VIEW_3D'
     bl_region_type='UI'

@@ -294,5 +294,11 @@
   "Join reflected halves when guide points are within the seam distance": "Сшивать отражённые половины, когда точки направляющих находятся в пределах допуска от плоскости зеркала",
   "Merge to Mirror plane": "На плоскость Mirror",
   "Place selected points on the Mirror plane to join both halves": "Поместить выбранные точки на плоскость Mirror для соединения половин",
-  "Connect edges": "Соединить края"
+  "Connect edges": "Соединить края",
+  "Join segments": "Объединить сегменты",
+  "Remove the shared seam of two segments, keep their outer points and average segment settings": "Убрать общий стык двух сегментов, сохранив внешние точки и усреднив параметры сегментов",
+  "Select two neighbouring segments or their shared edge": "Выбери два соседних сегмента или их общее ребро",
+  "Join segments within the active hair group": "Объединяй сегменты внутри активной группы волос",
+  "Segments must share one continuous edge chain": "Сегменты должны соприкасаться одной непрерывной цепочкой рёбер",
+  "The joined contour must be a single closed loop": "Объединённый контур должен быть одним замкнутым кольцом"
 }

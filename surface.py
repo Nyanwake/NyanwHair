@@ -57,11 +57,11 @@ class CapBlend:
 
 class FlowSurface:
     def __init__(self,plan,width,mapping,cap_profiles,cap_keys=None):
-        self.plan=plan;self.width=width;self.mapping=mapping;self.caps={};self._samples={};self.frames={};self.cap_keys=cap_keys or {};self.bulge=plan.bulge
+        self.plan=plan;self.width=width;self.mapping=mapping;self.caps={};self._samples={};self.cap_keys=cap_keys or {};self.bulge=plan.bulge
         for kind,i in (plan.start,plan.end):
             if kind=='edge':
                 edge=edge_key(plan.boundary[i],plan.boundary[(i+1)%len(plan.boundary)]);self.caps[edge]=cap_profiles[edge]
-        self.n=max(32,min(128,8*max(len(mapping.a.path),len(mapping.b.path))))
+        self.n=max(64,min(192,16*max(len(mapping.a.path),len(mapping.b.path))))
         self.u=[i/self.n for i in range(self.n+1)]
         if np is None:pairs=[mapping.at(u) for u in self.u]
         else:
@@ -109,27 +109,17 @@ class FlowSurface:
         if key not in self._samples:self._samples[key]=self._at(u,x)
         return self._samples[key]
 
-    def position(self,u,t):
-        (ka,a),(kb,b)=self.mapping.at(u)
-        if t==0.:return a
-        if t==1. or ka==kb:return b
-        return self._position(u,t,a,b)
-
-    def _position(self,u,t,a,b):
-        v=bias_cross_position(t,self.plan.settings.bias)
-        if u not in self.frames:
-            i=min(self.n-1,int(u*self.n));blend=u*self.n-i
-            self.frames[u]=(norm(mix(self.normals[i],self.normals[i+1],blend)),length(sub(b,a)),self.cap_blend.weights(u))
-        normal,size,weights=self.frames[u]
-        pos=add(mix(a,b,v),mul(normal,self.bulge*size*math.sin(math.pi*v)))
-        return self.cap_blend.apply(pos,t,weights)
-
     def _at(self,u,x):
         (ka,a),(kb,b)=self.mapping.at(u)
         if x==0:return ka,a
         if x==self.width:return kb,b
         if ka==kb:return ka,a
-        pos=self._position(u,x/self.width,a,b)
+        v=bias_cross_position(x/self.width,self.plan.settings.bias)
+        t=min(self.n-1,int(u*self.n));blend=u*self.n-t
+        normal=norm(mix(self.normals[t],self.normals[t+1],blend))
+        amplitude=self.bulge*length(sub(b,a))*math.sin(math.pi*v)
+        pos=add(mix(a,b,v),mul(normal,amplitude))
+        pos=self.cap_blend.apply(pos,x/self.width,self.cap_blend.weights(u))
         if u==0. or u==1.:
             end=u==1.;cap=self.plan.end if end else self.plan.start
             if cap[0]=='edge':
@@ -138,17 +128,6 @@ class FlowSurface:
                 keys=self.cap_keys.get((lo,hi))
                 return (keys[aligned] if keys is not None else ('cap',lo,hi,aligned,self.width)),self.caps[lo,hi][aligned]
         return None,pos
-
-
-class _Identity:
-    def __call__(self,u):return u
-    def many(self,values):return np.asarray(values)
-
-
-class AlignedMap:
-    def __init__(self,a,b):
-        self.a=a;self.b=b;self.flow_to_u=self.u_to_v=_Identity()
-    def at(self,u):return self.a.at(u),self.b.at(u)
 
 
 def _density(curve,fraction,values):
