@@ -20,16 +20,28 @@ from collections import defaultdict
 EPS = 1e-10
 CURVE_SUBDIVISIONS = 48
 
-def add(a,b): return (a[0]+b[0],a[1]+b[1],a[2]+b[2])
-def sub(a,b): return (a[0]-b[0],a[1]-b[1],a[2]-b[2])
-def mul(a,s): return (a[0]*s,a[1]*s,a[2]*s)
-def dot(a,b): return a[0]*b[0]+a[1]*b[1]+a[2]*b[2]
-def cross(a,b): return (a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0])
+def add(a,b):
+    ax,ay,az=a;bx,by,bz=b
+    return (ax+bx,ay+by,az+bz)
+def sub(a,b):
+    ax,ay,az=a;bx,by,bz=b
+    return (ax-bx,ay-by,az-bz)
+def mul(a,s):
+    ax,ay,az=a
+    return (ax*s,ay*s,az*s)
+def dot(a,b):
+    ax,ay,az=a;bx,by,bz=b
+    return ax*bx+ay*by+az*bz
+def cross(a,b):
+    ax,ay,az=a;bx,by,bz=b
+    return (ay*bz-az*by,az*bx-ax*bz,ax*by-ay*bx)
 def length(a): return math.sqrt(dot(a,a))
 def norm(a):
     v=length(a)
     return mul(a,1.0/v) if v>EPS else (0.0,0.0,0.0)
-def mix(a,b,t): return add(mul(a,1.0-t),mul(b,t))
+def mix(a,b,t):
+    ax,ay,az=a;bx,by,bz=b;u=1.-t
+    return (ax*u+bx*t,ay*u+by*t,az*u+bz*t)
 def edge_key(a,b): return (a,b) if a<b else (b,a)
 
 @dataclass(frozen=True)
@@ -107,6 +119,9 @@ class MeshResult:
     final_sampling_cache: dict=field(default_factory=dict,repr=False)
     valid_cache: dict=field(default_factory=dict,repr=False)
     production: dict=field(default_factory=dict,repr=False)
+    orientation_cache: object=field(default=None,repr=False,compare=False)
+    corner_layout: object=field(default=None,repr=False,compare=False)
+    dense_assembly_cache: object=field(default=None,repr=False,compare=False)
     assembly_cache: object=field(default=None,repr=False,compare=False)
     emission_cache: dict=field(default_factory=dict,repr=False)
     accepted_cache: dict=field(default_factory=dict,repr=False)
@@ -352,11 +367,11 @@ def plan_face(points,boundary,index,settings,hint=None,caps=None):
         if any(c is None for c in caps):caps=neutral_caps(loop,complete_caps(points,loop,caps,hint))
         if any(c[0] not in ('point','edge') for c in caps):raise ValueError(tr('Segment boundary needs clarification after guide changes'))
         c0,c1=caps
-        paths=cap_paths(loop,c0,c1)
+        paths=(hint.left,hint.right) if hint and hint.boundary==loop and (hint.start,hint.end)==(c0,c1) else cap_paths(loop,c0,c1)
         if not paths: raise ValueError(tr('Saved boundaries no longer form two curves'))
     elif hint is not None and hint.boundary==loop:
         c0,c1=hint.start,hint.end
-        paths=cap_paths(loop,c0,c1)
+        paths=(hint.left,hint.right)
         if not paths: raise ValueError(tr('Connection between guides is broken'))
     else:
         c0,c1=auto_caps(points,loop)
@@ -501,26 +516,27 @@ def plan_widths(plans,fixed=None,warnings=None):
 
 
 
-def generate(points,boundaries,settings=None,rows=12,max_polygons=200000,
-             previous=None,caps=None,reference_length=0.,directional_smoothing=None,local_density=None,point_density=None,layout_lengths=None,regular_rows=False,face_indices=None,edge_evaluator=None,_track_production=False,plane_axes=()):
-    points=[tuple(map(float,p)) for p in points]
-    settings=list(settings or [ZoneSettings() for _ in boundaries])
-    rows=max(2,min(256,int(rows)))
-    out=MeshResult()
-    out.source_points=tuple(points);out.regular_rows=bool(regular_rows)
-    plans=[]
-    for i,boundary in enumerate(boundaries):
-        try:
-            hint=previous.plans_by_loop.get(tuple(boundary)) if previous else None
-            explicit=caps[i] if caps and i<len(caps) else None
-            index=face_indices[i] if face_indices is not None else i
-            plan=plan_face(points,boundary,index,settings[i],hint=hint,caps=explicit)
-            plans.append(plan)
-            out.face_paths[plan.index]=(plan.left,plan.right)
-            out.plans_by_loop[plan.boundary]=plan
-        except (ValueError,IndexError,TypeError) as exc:
-            out.warnings[face_indices[i] if face_indices is not None else i]=str(exc)
-    if not plans: return out
+
+class _FaceEmitter:
+    """Emit without a callback cycle retaining previous meshes."""
+    __slots__=('local','reverse','old','boundary','cache')
+    def __init__(self,local,reverse,old,boundary,cache):
+        self.local=local;self.reverse=reverse;self.old=old;self.boundary=boundary;self.cache=cache
+    def __call__(self,face):
+        face=[v for j,v in enumerate(face) if v!=face[j-1]]
+        if len(face)>1 and face[0]==face[-1]:face.pop()
+        if len(set(face))<3:return
+        if self.reverse:face.reverse()
+        self.local.append(tuple(face))
+    def bulk(self,faces,remap):
+        old=self.old;mapping_key=tuple(remap)
+        if old and old[0]==faces and old[1]==mapping_key and old[2]==self.reverse:self.local.extend(old[3])
+        else:
+            for face in faces:self([remap[v] for v in face])
+        self.cache[self.boundary]=(faces,mapping_key,self.reverse,tuple(self.local))
+
+def _orientation(plans):
+    issues=set()
     face_owners=defaultdict(set)
     for p in plans:
         for i,u in enumerate(p.boundary):
@@ -549,10 +565,39 @@ def generate(points,boundaries,settings=None,rows=12,max_polygons=200000,
                 desired=signs[i]*parity
                 if j in signs:
                     if signs[j]!=desired:
-                        out.warnings[j]=tr('Non-orientable segment connection')
+                        issues.add(j)
                     continue
                 signs[j]=desired
                 queue.append(j)
+    return face_owners,signs,tuple(sorted(issues))
+
+
+def generate(points,boundaries,settings=None,rows=12,max_polygons=200000,
+             previous=None,caps=None,reference_length=0.,directional_smoothing=None,local_density=None,point_density=None,layout_lengths=None,regular_rows=False,face_indices=None,edge_evaluator=None,_track_production=False,plane_axes=()):
+    points=[tuple(map(float,p)) for p in points]
+    settings=list(settings or [ZoneSettings() for _ in boundaries])
+    rows=max(2,min(256,int(rows)))
+    out=MeshResult()
+    out.source_points=tuple(points);out.regular_rows=bool(regular_rows)
+    plans=[]
+    for i,boundary in enumerate(boundaries):
+        try:
+            hint=previous.plans_by_loop.get(tuple(boundary)) if previous else None
+            explicit=caps[i] if caps and i<len(caps) else None
+            index=face_indices[i] if face_indices is not None else i
+            plan=plan_face(points,boundary,index,settings[i],hint=hint,caps=explicit)
+            plans.append(plan)
+            out.face_paths[plan.index]=(plan.left,plan.right)
+            out.plans_by_loop[plan.boundary]=plan
+        except (ValueError,IndexError,TypeError) as exc:
+            out.warnings[face_indices[i] if face_indices is not None else i]=str(exc)
+    if not plans: return out
+    topology_key=tuple((p.index,p.boundary,p.settings.order) for p in plans)
+    saved=getattr(previous,'orientation_cache',None)
+    if saved and saved[0]==topology_key:face_owners,signs,issues=saved[1:]
+    else:face_owners,signs,issues=_orientation(plans)
+    out.orientation_cache=(topology_key,face_owners,signs,issues)
+    out.warnings.update((index,tr('Non-orientable segment connection')) for index in issues)
     plans=[replace(p,normal=mul(p.normal,signs[p.index])) for p in plans]
     from .curvature import rounded
     plans,out.smooth_rails=rounded(points,plans,face_owners,directional_smoothing or {})
@@ -639,19 +684,7 @@ def generate(points,boundaries,settings=None,rows=12,max_polygons=200000,
             if p.settings.normal_flip:reverse=not reverse
             out.orientation_by_face[p.index]=reverse
             local=[];local_keys=set()
-            def emit(face):
-                face=[v for j,v in enumerate(face) if v!=face[j-1]]
-                if len(face)>1 and face[0]==face[-1]:face.pop()
-                if len(set(face))<3:return
-                if reverse:face.reverse()
-                local.append(tuple(face))
-            def emit_bulk(faces,remap):
-                old=getattr(previous,'emission_cache',{}).get(p.boundary);mapping_key=tuple(remap)
-                if old and old[0]==faces and old[1]==mapping_key and old[2]==reverse:local.extend(old[3])
-                else:
-                    for face in faces:emit([remap[v] for v in face])
-                out.emission_cache[p.boundary]=(faces,mapping_key,reverse,tuple(local))
-            emit.bulk=emit_bulk
+            emit=_FaceEmitter(local,reverse,getattr(previous,'emission_cache',{}).get(p.boundary),p.boundary,out.emission_cache)
             mapping=registry.maps.get((ca.path,cb.path))
             density_here=any(registry.density.get(edge,1.)>1. for curve in (ca,cb) for edge in curve.edges)
             start_width,body_width,end_width=out.width_transitions[p.index]
@@ -671,42 +704,13 @@ def generate(points,boundaries,settings=None,rows=12,max_polygons=200000,
                 sections,columns,grid,reused=build_strip(p,w,registry,ca,cb,left,right,cap_profiles,put,emit,max_polygons,
                     out.patch_cache,getattr(previous,'patch_cache',{}))
                 out.reused_patches+=reused
-            entry=out.patch_cache.get(p.boundary);old_valid=getattr(previous,'valid_cache',{}).get(p.boundary)
-            cached_valid=old_valid[1] if reused and old_valid and entry and old_valid[0] is entry[1] and len(old_valid[1])==len(local) else None
-            # Batch Newell validation instead of Python vector operations for
-            # every edge of every output polygon, on every pointer movement.
-            from .topology import np
-            if cached_valid is not None:valid=cached_valid
-            elif np is not None and local:
-                offsets=[];aa=[];bb=[]
-                for face in local:
-                    offsets.append(len(aa));aa.extend(face);bb.extend(face[1:]+face[:1])
-                a=np.asarray([out.vertices[v] for v in aa]);b=np.asarray([out.vertices[v] for v in bb])
-                components=(a-b)*np.roll(a+b,-1,axis=1)
-                # Newell x uses y,z; y uses z,x; z uses x,y.
-                vectors=np.add.reduceat(np.roll(components,-1,axis=1),offsets,axis=0)
-                edge_square=np.einsum('ij,ij->i',a-b,a-b)
-                scale_square=np.maximum.reduceat(edge_square,offsets)
-                valid=np.einsum('ij,ij->i',vectors,vectors)>(EPS*scale_square)**2
-            else:valid=[length(newell(out.vertices,face))>=EPS for face in local]
-            valid_flags=cached_valid if cached_valid is not None else tuple(bool(v) for v in valid)
-            if entry:out.valid_cache[p.boundary]=(entry[1],valid_flags)
-            raw=tuple(local);prior=getattr(previous,'accepted_cache',{}).get(p.boundary)
-            if prefix_same and prior and prior[0]==raw and prior[1]==valid_flags:
-                local=prior[2];local_keys=prior[3]
-            else:
-                prefix_same=False;accepted=[]
-                for face,keep in zip(local,valid_flags):
-                    if not keep:continue
-                    signature=tuple(sorted(face))
-                    if signature in produced or signature in local_keys:continue
-                    local_keys.add(signature);accepted.append(face)
-                local=tuple(accepted);local_keys=frozenset(local_keys)
-            out.accepted_cache[p.boundary]=(raw,valid_flags,local,local_keys)
+            local=tuple(local)
             out.surface_columns[p.index]=columns if isinstance(columns,IndexRows) else IndexRows(columns)
-            if len(local)+len(out.faces)>max_polygons:raise ValueError(tr('Polygon limit exceeded'))
-            produced.update(local_keys)
             out.faces.extend(local);out.owners.extend([p.index]*len(local))
+            if len(out.faces)>2*max_polygons:
+                from . import assembly
+                out.faces,out.owners=assembly.filter_faces(out.vertices,out.faces,out.owners)
+                if len(out.faces)>max_polygons:raise ValueError(tr('Polygon limit exceeded'))
             out.surface_grids[p.index]=grid if isinstance(grid,IndexRows) else IndexRows(grid,keep_none=True)
             out.surface_sections[p.index]=sections if getattr(sections,'lazy',False) else tuple(sections)
             out.rail_samples[p.index]=(tuple(left),tuple(right))
@@ -720,21 +724,12 @@ def generate(points,boundaries,settings=None,rows=12,max_polygons=200000,
     out.sampling_cache=registry.geometry_cache
     out.edge_sampling_cache=registry.edge_cache
     out.correspondence_cache=registry.map_cache
-    out.faces,out.owners=registry.stitch(out.vertices,out.faces,out.owners,vertex_index)
-    if len(out.faces)>max_polygons:raise ValueError(tr('Polygon limit exceeded after stitching'))
-    # Connectivity usually survives a drag even though sample parameters do
-    # not. Reuse index compaction and owner-edge sets, never vertex positions.
-    topology_key=(len(out.vertices),tuple(out.faces),tuple(out.owners))
-    old_assembly=getattr(previous,'assembly_cache',None)
-    if old_assembly and old_assembly[0]==topology_key:
-        _,used,remap,compact_faces,owner_edges=old_assembly
-    else:
-        used=sorted({v for face in out.faces for v in face});remap={old:new for new,old in enumerate(used)}
-        compact_faces=[tuple(remap[v] for v in face) for face in out.faces]
-        owner_edges=OwnerEdges(compact_faces,out.owners)
+    from . import assembly
+    kept,owners,used,remap,compact_faces,owner_edges,saved,corner_layout=assembly.build(out.vertices,out.faces,out.owners,getattr(previous,'dense_assembly_cache',None),max_polygons,registry,vertex_index)
+    out.dense_assembly_cache=saved;out.corner_layout=corner_layout
+    out.owners=owners
     keys=tuple(vertex_index)
     out.vertex_keys=[keys[v] for v in used];out.vertices=[out.vertices[v] for v in used];out.faces=compact_faces
-    out.assembly_cache=(topology_key,used,remap,compact_faces,owner_edges)
     out.surface_grids={zone:grid.remapped(remap) for zone,grid in out.surface_grids.items()}
     out.surface_columns={zone:columns.remapped(remap) for zone,columns in out.surface_columns.items()}
     out.cut_lines=CutLines(out.vertices,out.surface_columns,owner_edges)

@@ -6,7 +6,7 @@ from . import core,appearance
 
 def _clone(result,copy_mesh=True):
     out=core.MeshResult()
-    for field in fields(out):setattr(out,field.name,getattr(result,field.name))
+    for field in fields(out):setattr(out,field.name,getattr(result,field.name,getattr(out,field.name)))
     if copy_mesh:
         out.vertices=list(result.vertices);out.vertex_keys=list(result.vertex_keys);out.faces=list(result.faces);out.owners=list(result.owners)
     out.source_result=result

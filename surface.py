@@ -135,6 +135,13 @@ def _density(curve,fraction,values):
     return values.get(edge_key(curve.path[i],curve.path[i+1]),1.)
 
 
+def _refine_column(surface,x,spacing,a,b,depth=0):
+    middle=(a+b)*.5
+    if depth<5 and length(sub(surface.at(middle,x)[1],mix(surface.at(a,x)[1],surface.at(b,x)[1],.5)))>spacing*.065:
+        return _refine_column(surface,x,spacing,a,middle,depth+1)[:-1]+_refine_column(surface,x,spacing,middle,b,depth+1)
+    return [a,b]
+
+
 def _column(surface,x,spacing,density):
     us=surface.u;surface.prime(us,x);positions=[surface.at(u,x)[1] for u in us];arc=[0.]
     for a,b in zip(positions,positions[1:]):arc.append(arc[-1]+length(sub(b,a)))
@@ -143,15 +150,10 @@ def _column(surface,x,spacing,density):
         i=min(len(arc)-1,max(1,bisect.bisect_left(arc,distance)))
         t=(distance-arc[i-1])/max(EPS,arc[i]-arc[i-1])
         return us[i-1]*(1.-t)+us[i]*t
-    def refine(a,b,depth=0):
-        middle=(a+b)*.5
-        if depth<5 and length(sub(surface.at(middle,x)[1],mix(surface.at(a,x)[1],surface.at(b,x)[1],.5)))>spacing*.065:
-            return refine(a,middle,depth+1)[:-1]+refine(middle,b,depth+1)
-        return [a,b]
     base=[inverse(arc[-1]*i/count) for i in range(count+1)];base[0]=0.;base[-1]=1.
     surface.prime(base+[(a+b)*.5 for a,b in zip(base,base[1:])],x)
     samples=[]
-    for a,b in zip(base,base[1:]):samples.extend(refine(a,b)[:-1])
+    for a,b in zip(base,base[1:]):samples.extend(_refine_column(surface,x,spacing,a,b)[:-1])
     samples.append(1.)
     if not density:return samples
     output=[];v=bias_cross_position(x/surface.width,surface.plan.settings.bias)
@@ -193,6 +195,9 @@ def _quad_flags(a0,a1,b0,b1):
 
 
 def _geometry_path_numpy(a,b,fa,fb,baseline):
+    from . import kernels
+    accelerated=kernels.geometry(a,b,fa,fb,baseline)
+    if accelerated is not NotImplemented:return accelerated
     a=np.asarray(a);b=np.asarray(b)
     def tangents(points):
         indices=np.arange(len(points))

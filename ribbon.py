@@ -39,6 +39,9 @@ class MonotoneMap:
 
 def _projected_match(a,b,us,aa,ta):
     if np is None:return None
+    from . import kernels
+    accelerated=kernels.projection(b,us,aa,ta)
+    if accelerated is not NotImplemented:return accelerated
     u=np.asarray(us);v=u.copy();pa=np.asarray(aa);ta=np.asarray(ta)
     def samples(values):
         size=len(values)
@@ -174,6 +177,10 @@ def zipper_flows(a,b):
     long,short=(b,a) if swap else (a,b)
     na=len(long)-1;nb=len(short)-1;extra=na-nb
     if extra==0:return [(i,i) for i in range(na+1)]
+    if (nb+1)*(extra+1)<=400000:
+        from . import kernels
+        accelerated=kernels.zipper(long,short)
+        if accelerated is not NotImplemented:return [(j,i) for i,j in accelerated] if swap else accelerated
     if (nb+1)*(extra+1)>400000:
         # Bounded-memory fallback for extreme detail or count imbalance.
         j=k=0;path=[(0,0)]

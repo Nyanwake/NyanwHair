@@ -8,6 +8,9 @@ except ImportError:
 
 
 def profile_normals(aa,bb,reference):
+    from . import kernels
+    accelerated=kernels.normals(aa,bb,reference)
+    if accelerated is not NotImplemented:return accelerated
     from .surface import _rotate
     if np is None:
         centers=[mul(add(a,b),.5) for (_,a),(_,b) in zip(aa,bb)];last=len(centers)-1
@@ -39,6 +42,9 @@ def profile_normals(aa,bb,reference):
 
 
 def profile_grid(aa,bb,normals,bulge,profile,blend,fractions):
+    from . import kernels
+    accelerated=kernels.grid(aa,bb,normals,bulge,profile,blend,fractions)
+    if accelerated is not NotImplemented:return accelerated
     if np is None:return None
     a=np.asarray([p for key,p in aa]);b=np.asarray([p for key,p in bb])
     v=np.asarray(profile);sine=np.asarray([math.sin(math.pi*x) for x in profile])

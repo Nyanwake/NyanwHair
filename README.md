@@ -1,12 +1,14 @@
-# NyanwHair 1.15 Preview
+# NyanwHair 1.16 Preview
 
 Shape expressive stylized hair with a few guides. NyanwHair stitches neighbouring segments into a continuous mesh as you work. Grow branches easily and adjust polygon density both along and across a strand.
 
-**Blender 5.1+ · English / Русский**
+**Blender 5.1+ · English / Русский · Native Windows / Linux x64**
 
-[Download](https://github.com/Nyanwake/NyanwHair/releases/tag/v1.0.15-preview.1) · [Русский](#русский) · [GPL-3.0](LICENSE)
+[Download](https://github.com/Nyanwake/NyanwHair/releases/tag/v1.0.16-preview.1) · [Русский](#русский) · [GPL-3.0](LICENSE)
 
 ## What it does
+
+Accelerated geometry kernels reduce Live update work on Windows and Linux x64. Other systems use the Python fallback. Both paths keep the same current surface calculation. The active engine is shown in **Additional**.
 
 - Live hair surfaces with automatic stitching, aligned rows around curls and local topology transitions.
 - Adjustable detail, width and convexity, plus local density around selected points.
@@ -110,6 +112,8 @@ For the active NyanwHair guide in Edit Mode.
 Формируй выразительные стилизованные локоны несколькими направляющими. NyanwHair автоматически сшивает соседние сегменты в единый меш. Добавляй ответвления и меняй плотность вдоль и поперёк пряди по ходу работы.
 
 ### Возможности
+
+На Windows и Linux x64 массовые расчёты Live выполняет ускоренное ядро. На других системах работает Python. Оба варианта используют текущую форму направляющих; активное ядро видно в **Дополнительно**.
 
 - Live-поверхность со сшиванием, выравниванием рядов на завитках и локальными переходами топологии.
 - Детализация, ширина, выпуклость и локальное уплотнение возле выбранных точек.

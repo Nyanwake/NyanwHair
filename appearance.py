@@ -79,23 +79,30 @@ def corner_normals(result,smooth=True,topology=None,packed=False):
     signature=(bool(smooth),tuple(faces),sharp)
     topology=topology or getattr(result,'normal_topology',None)
     if topology is None or topology[0]!=signature:
-        offsets=[];vertices=[];next_vertices=[];face_ids=[]
-        for fi,face in enumerate(faces):
-            offsets.append(len(vertices));vertices.extend(face);next_vertices.extend(face[1:]+face[:1]);face_ids.extend([fi]*len(face))
-        offsets=np.asarray(offsets,dtype=np.intp);vertices=np.asarray(vertices,dtype=np.intp);next_vertices=np.asarray(next_vertices,dtype=np.intp)
+        layout=getattr(result,'corner_layout',None)
+        if layout is not None and layout[0]==tuple(faces):
+            _,offsets,vertices,next_vertices,face_ids=layout
+        else:
+            offsets=[];vertices=[];next_vertices=[];face_ids=[]
+            for fi,face in enumerate(faces):
+                offsets.append(len(vertices));vertices.extend(face);next_vertices.extend(face[1:]+face[:1]);face_ids.extend([fi]*len(face))
+            offsets=np.asarray(offsets,dtype=np.intp);vertices=np.asarray(vertices,dtype=np.intp);next_vertices=np.asarray(next_vertices,dtype=np.intp)
         groups=_normal_groups(vertices,next_vertices,offsets,sharp,len(result.vertices)) if smooth else None
         topology=(signature,offsets,vertices,next_vertices,np.asarray(face_ids,dtype=np.intp),groups)
     _,offsets,vertices,next_vertices,face_ids,groups=topology
     points=np.asarray(result.vertices,dtype=np.float64)
-    areas=np.add.reduceat(np.cross(points[vertices],points[next_vertices]),offsets,axis=0)
-    if smooth:
-        weighted=areas[face_ids]
-        sums=np.stack([np.bincount(groups,weights=weighted[:,axis],minlength=len(vertices)) for axis in range(3)],axis=1)
-        size=np.linalg.norm(sums,axis=1);sums/=np.where(size>1e-10,size,1.)[:,None];sums[size<=1e-10]=0.
-        values=sums[groups]
-    else:
-        size=np.linalg.norm(areas,axis=1);areas/=np.where(size>1e-10,size,1.)[:,None];areas[size<=1e-10]=0.
-        values=areas[face_ids]
+    from . import kernels
+    values=kernels.shade(points,topology,smooth)
+    if values is NotImplemented:
+        areas=np.add.reduceat(np.cross(points[vertices],points[next_vertices]),offsets,axis=0)
+        if smooth:
+            weighted=areas[face_ids]
+            sums=np.stack([np.bincount(groups,weights=weighted[:,axis],minlength=len(vertices)) for axis in range(3)],axis=1)
+            size=np.linalg.norm(sums,axis=1);sums/=np.where(size>1e-10,size,1.)[:,None];sums[size<=1e-10]=0.
+            values=sums[groups]
+        else:
+            size=np.linalg.norm(areas,axis=1);areas/=np.where(size>1e-10,size,1.)[:,None];areas[size<=1e-10]=0.
+            values=areas[face_ids]
     result.normal_array=values
     output=_CornerNormals(values,offsets,faces)
     result.normal_topology=topology;result.normal_cache=(smooth,output)

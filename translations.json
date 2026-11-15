@@ -300,5 +300,7 @@
   "Select two neighbouring segments or their shared edge": "Выбери два соседних сегмента или их общее ребро",
   "Join segments within the active hair group": "Объединяй сегменты внутри активной группы волос",
   "Segments must share one continuous edge chain": "Сегменты должны соприкасаться одной непрерывной цепочкой рёбер",
-  "The joined contour must be a single closed loop": "Объединённый контур должен быть одним замкнутым кольцом"
+  "The joined contour must be a single closed loop": "Объединённый контур должен быть одним замкнутым кольцом",
+  "Accelerated engine": "Ускоренное ядро",
+  "Python engine": "Ядро Python"
 }

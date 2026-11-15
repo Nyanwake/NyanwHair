@@ -31,7 +31,7 @@ def _coherent_paths(fractions):
         path=[(i,i) for i in range(j+1)]+[(j+1,j)]+[(i+1,i) for i in range(j+1,nb+1)]
         return [(b,a) for a,b in path] if swap else path
     def cost(k,path):
-        a,b=fractions[k:k+2]
+        a,b=fractions[k],fractions[k+1]
         return sum((a[i]-b[j])**2 for i,j in path)
     runs=[];run=[];direction=0
     for k,(a,b) in enumerate(zip(fractions,fractions[1:])):

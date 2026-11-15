@@ -16,7 +16,7 @@ def rails(cache,result,evaluate,matrix,normal_matrix,visible):
     positions={key:point for key,point in zip(result.vertex_keys,result.vertices) if key[0] in ('v','s')}
     for key in positions:
         if key[0]=='s' and key[1:3] in samples:samples[key[1:3]][float(key[3])]=key
-    normals=cache.get('gpu_boundary_normals',{});old=cache.get('gpu_rail_records',{});records={};segments={};attributes={}
+    normals=cache.get('gpu_boundary_normals',{});old=cache.get('gpu_rail_records',{});records={};segments={};attributes={};pending=[]
     linear=matrix.to_3x3()
     for edge,owners in sorted(edges.items()):
         owners=sorted(owners)[:2];one,two=edge
@@ -37,27 +37,49 @@ def rails(cache,result,evaluate,matrix,normal_matrix,visible):
             if c:
                 p,q,ma,mb=map(Vector,c);quadratic=-3*p+3*q-2*ma-mb;cubic=2*p-2*q+ma+mb
                 chord_error=max((linear@(2*quadratic)).length,(linear@(2*quadratic+6*cubic)).length)/(8.*24.*24.)
-            import numpy as np
-            ts=np.arange(25,dtype=np.float64)/24.;tt=ts*ts;ttt=tt*ts
-            if c:
-                p0,p1,m0,m1=np.asarray(c,dtype=np.float64)
-                local=((2*ttt-3*tt+1)[:,None]*p0+(-2*ttt+3*tt)[:,None]*p1)+((ttt-2*tt+ts)[:,None]*m0+(ttt-tt)[:,None]*m1)
-            else:local=np.asarray([evaluate(one,two,t) for t in ts])
-            local=local.astype(np.float32);ks=np.asarray(knots);indices=np.clip(np.searchsorted(ks,ts,side='right')-1,0,len(ks)-2)
-            blend=((ts-ks[indices])/np.maximum(1e-12,ks[indices+1]-ks[indices])).astype(np.float32)
-            sample_positions=np.asarray(points,dtype=np.float32);chords=(1-blend[:,None])*sample_positions[indices]+blend[:,None]*sample_positions[indices+1]
-            linear_array=np.asarray(matrix.to_3x3(),dtype=np.float32);normal_transform=np.asarray(normal_matrix,dtype=np.float32)
-            world_positions=local@linear_array.T+np.asarray(matrix.translation,dtype=np.float32)
-            source_normals=np.asarray(rows,dtype=np.float32)
-            interpolated=(1-blend[:,None,None])*source_normals[indices]+blend[:,None,None]*source_normals[indices+1]
-            adjusted=interpolated@normal_transform.T;adjusted/=np.maximum(1e-12,np.linalg.norm(adjusted,axis=2))[:,:,None]
-            if len(owners)==1:adjusted=np.repeat(adjusted,2,axis=1)
-            gap=np.empty((25,4),dtype=np.float32);gap[:,:3]=(local-chords)@linear_array.T;gap[:,3]=chord_error
-            pair_indices=np.column_stack((np.arange(24),np.arange(1,25))).reshape(-1)
-            data={'pos':np.ascontiguousarray(world_positions[pair_indices]),'normalA':np.ascontiguousarray(adjusted[pair_indices,0]),'normalB':np.ascontiguousarray(adjusted[pair_indices,1]),'curveGap':np.ascontiguousarray(gap[pair_indices])}
-        records[edge]=(stamp,data);segments[edge]=data['pos'];attributes[edge]=data
+            pending.append((edge,knots,points,rows,c,chord_error));data=None
+        records[edge]=(stamp,data)
+    for edge,data in _rail_geometry(pending,evaluate,matrix,normal_matrix):records[edge]=(records[edge][0],data)
+    for edge,(_,data) in records.items():segments[edge]=data['pos'];attributes[edge]=data
     cache['gpu_guide_geometry_signature']=signature
     return records,segments,attributes
+
+
+def _rail_geometry(jobs,evaluate,matrix,normal_matrix):
+    """Evaluate dirty guide ribbons together; no per-edge NumPy kernels."""
+    if not jobs:return ()
+    import numpy as np
+    ts=np.arange(25,dtype=np.float64)/24.;tt=ts*ts;ttt=tt*ts
+    coefficients=[];knots=[];points=[];normals=[];offsets=[0]
+    for edge,ks,ps,ns,c,error in jobs:
+        coefficients.append(c or ((0.,0.,0.),)*4)
+        knots.extend(ks);points.extend(ps)
+        normals.extend(row if len(row)==2 else (row[0],row[0]) for row in ns)
+        offsets.append(len(knots))
+    values=np.asarray(coefficients);p0,p1,m0,m1=(values[:,i,None,:] for i in range(4))
+    local=((2*ttt-3*tt+1)[None,:,None]*p0+(-2*ttt+3*tt)[None,:,None]*p1)+((ttt-2*tt+ts)[None,:,None]*m0+(ttt-tt)[None,:,None]*m1)
+    for i,(edge,ks,ps,ns,c,error) in enumerate(jobs):
+        if c is None:local[i]=[evaluate(*edge,t) for t in ts]
+    local=local.astype(np.float32);ks=np.asarray(knots);offsets=np.asarray(offsets)
+    # Disjoint [2*i,2*i+1] ranges allow one search over ragged knot rows.
+    bucket=2.*np.arange(len(jobs))
+    shifted=ks+np.repeat(bucket,np.diff(offsets))
+    index=np.searchsorted(shifted,bucket[:,None]+ts,side='right')-1
+    index=np.clip(index,offsets[:-1,None],offsets[1:,None]-2)
+    blend=((ts-ks[index])/np.maximum(1e-12,ks[index+1]-ks[index])).astype(np.float32)
+    sample_positions=np.asarray(points,dtype=np.float32)
+    chords=(1-blend[:,:,None])*sample_positions[index]+blend[:,:,None]*sample_positions[index+1]
+    linear=np.asarray(matrix.to_3x3(),dtype=np.float32);translation=np.asarray(matrix.translation,dtype=np.float32)
+    world=local@linear.T+translation
+    source=np.asarray(normals,dtype=np.float32)
+    interpolated=(1-blend[:,:,None,None])*source[index]+blend[:,:,None,None]*source[index+1]
+    adjusted=interpolated@np.asarray(normal_matrix,dtype=np.float32).T
+    adjusted/=np.maximum(1e-12,np.linalg.norm(adjusted,axis=3))[:,:,:,None]
+    gap=np.empty((len(jobs),25,4),dtype=np.float32);gap[:,:,:3]=(local-chords)@linear.T
+    gap[:,:,3]=np.asarray([job[-1] for job in jobs])[:,None]
+    pairs=np.column_stack((np.arange(24),np.arange(1,25))).reshape(-1)
+    arrays={'pos':world[:,pairs],'normalA':adjusted[:,pairs,0],'normalB':adjusted[:,pairs,1],'curveGap':gap[:,pairs]}
+    return [(job[0],{name:np.array(data[i],copy=True,order='C') for name,data in arrays.items()}) for i,job in enumerate(jobs)]
 
 
 def view_style(cache,obj,context,pixel=False):

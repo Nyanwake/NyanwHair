@@ -1936,6 +1936,8 @@ def _draw_extra_panels(layout,context,obj,cached,edit):
         from . import i18n
         preferences=context.preferences.addons.get(__package__)
         if preferences:body.prop(preferences.preferences,'language',text='Language',expand=True)
+        from . import kernels
+        body.label(text=tr('Accelerated engine') if kernels.available() else tr('Python engine'),icon='INFO')
         if edit:
             body.operator('nyanw35.refresh_layout',text=tr('Refresh row layout'),icon='FILE_REFRESH')
             if context.space_data.overlay.show_retopology:body.operator('nyanw35.hide_retopology',text=tr('Hide Retopology fill'),icon='OVERLAY')
@@ -1951,7 +1953,7 @@ def _draw_presets(layout,obj):
 
 
 class NYANW35_PT_main(Panel):
-    bl_label='NyanwHair v1.15 Preview'
+    bl_label='NyanwHair v1.16 Preview'
     bl_idname='NYANW35_PT_main'
     bl_space_type='VIEW_3D'
     bl_region_type='UI'
@@ -2147,15 +2149,19 @@ class _BatchGroup:
 
 def _buffer_layout(result,indices,offsets,edges):
     import numpy as np
-    vertices=[];corners=[];owners=[];normal=[];reflected=[];dynamic=False
-    for fi in indices:
-        face=result.faces[fi];n=len(face);offset=len(vertices)
-        vertices.extend(face);corners.extend(range(int(offsets[fi]),int(offsets[fi])+n));owners.extend([result.owners[fi]]*n)
-        if n>4:dynamic=True
-        normal.extend((offset,offset+i,offset+i+1) for i in range(1,n-1))
-        reflected.extend((offset+n-1,offset+i,offset+i-1) for i in range(n-2,0,-1))
-    vertices=np.asarray(vertices,dtype=np.int32);corners=np.asarray(corners,dtype=np.int32);owners=np.asarray(owners,dtype=np.int32)
-    normal=np.asarray(normal,dtype=np.int32);reflected=np.asarray(reflected,dtype=np.int32)
+    selected=np.asarray(indices,dtype=np.intp)
+    sizes=np.diff(np.r_[offsets,len(result.normal_topology[2])])[selected]
+    starts=np.cumsum(sizes)-sizes
+    corners=np.repeat(offsets[selected]-starts,sizes)+np.arange(sizes.sum())
+    vertices=result.normal_topology[2][corners].astype(np.int32)
+    owners=np.repeat(np.asarray(result.owners,dtype=np.int32)[selected],sizes)
+    counts=sizes-2;triangles=np.repeat(np.arange(len(selected)),counts)
+    local=np.arange(counts.sum())-np.repeat(np.cumsum(counts)-counts,counts)+1
+    base=starts[triangles]
+    normal=np.column_stack((base,base+local,base+local+1)).astype(np.int32)
+    back=sizes[triangles]-1-local
+    reflected=np.column_stack((base+sizes[triangles]-1,base+back,base+back-1)).astype(np.int32)
+    corners=corners.astype(np.int32);dynamic=bool(np.any(sizes>4))
     groups=result.normal_topology[5]
     if not dynamic and len(vertices) and groups is not None:
         first_owner=int(owners.min());span=int(owners.max())-first_owner+1
@@ -2173,6 +2179,10 @@ def _gpu_mesh_records(cache,result,smooth):
     if cache.get('gpu_mesh_signature')==signature:return cache['gpu_mesh_records']
     from . import appearance
     import numpy as np
+    if not result.faces:
+        cache.update(gpu_normal_array=np.empty((0,3)),gpu_vertex_array=np.empty((0,3)),normal_topology=None,
+            gpu_buffer_layout={},gpu_boundary_normals={},gpu_mesh_signature=signature,gpu_mesh_records=())
+        return ()
     base_normals=appearance.corner_normals(result,smooth,cache.get('normal_topology'),packed=True)
     from . import decorations
     normals=decorations.preview_normals(result,smooth,base_normals,cache,packed=True)
@@ -2189,21 +2199,26 @@ def _gpu_mesh_records(cache,result,smooth):
     saved=cache.get('gpu_layout')
     if saved and saved[0]==layout_signature and 'gpu_boundary_layout' in cache:layout=saved[1]
     else:
-        chunks={};edge_groups={}
-        for fi,(face,owner) in enumerate(zip(result.faces,result.owners)):
-            plan=plans[owner];key=(plan.settings.order if plan.settings.order>0 else owner)//4
-            chunks.setdefault(key,[]).append(fi)
-            for a,b in zip(face,face[1:]+face[:1]):
-                if a!=b:edge_groups.setdefault(core.edge_key(a,b),key)
-        owned_edges={key:[] for key in chunks}
-        for edge,key in edge_groups.items():owned_edges[key].append(edge)
+        corner_vertices=result.normal_topology[2];next_vertices=result.normal_topology[3]
+        face_ids=result.normal_topology[4]
+        chunk_by_owner={owner:(p.settings.order if p.settings.order>0 else owner)//4 for owner,p in plans.items()}
+        face_chunks=np.asarray([chunk_by_owner[owner] for owner in result.owners])
+        chunks={int(key):np.flatnonzero(face_chunks==key).tolist() for key in dict.fromkeys(face_chunks.tolist())}
+        count=len(result.vertices)
+        codes=np.minimum(corner_vertices,next_vertices)*count+np.maximum(corner_vertices,next_vertices)
+        first=np.sort(np.unique(codes,return_index=True)[1])
+        first=first[corner_vertices[first]!=next_vertices[first]]
+        pairs=np.column_stack((np.minimum(corner_vertices[first],next_vertices[first]),np.maximum(corner_vertices[first],next_vertices[first])))
+        edge_chunks=face_chunks[face_ids[first]]
+        owned_edges={key:[tuple(edge) for edge in pairs[edge_chunks==key].tolist()] for key in chunks}
         layout=[]
         for key,indices in chunks.items():
             owners=tuple(sorted({result.owners[fi] for fi in indices}))
             vertices=tuple(sorted({v for fi in indices for v in result.faces[fi]}))
-            faces_key=(tuple((result.owners[fi],result.faces[fi]) for fi in indices),vertices)
-            edges=tuple(owned_edges[key]);keys=edges
+            edges=tuple(owned_edges[key])
             info=_buffer_layout(result,indices,result.normal_topology[1],edges)
+            faces_key=(tuple((result.owners[fi],result.faces[fi]) for fi in indices),vertices)
+            keys=edges
             layout.append((key,tuple(indices),owners,vertices,faces_key,edges,keys,info))
         cache['gpu_layout']=(layout_signature,tuple(layout))
         boundary=set(boundary)
@@ -2741,6 +2756,8 @@ def _unregister_keys():
 
 def register():
     global _RUNNING,_DRAW_HANDLER,_POINT_HANDLER
+    from . import kernels
+    kernels.reset()
     from . import i18n
     bpy.utils.register_class(i18n.NHLanguagePreferences)
     for cls in _CLASSES: bpy.utils.register_class(cls)
