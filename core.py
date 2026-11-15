@@ -68,10 +68,9 @@ class FacePlan:
     end: tuple[str,int]
     normal: tuple[float,float,float]
     settings: ZoneSettings
-    curvature: float=0.
 
     @property
-    def bulge(self):return self.settings.signed_bulge+self.curvature
+    def bulge(self):return self.settings.signed_bulge
 
 @dataclass
 class MeshResult:
@@ -599,8 +598,21 @@ def generate(points,boundaries,settings=None,rows=12,max_polygons=200000,
     out.orientation_cache=(topology_key,face_owners,signs,issues)
     out.warnings.update((index,tr('Non-orientable segment connection')) for index in issues)
     plans=[replace(p,normal=mul(p.normal,signs[p.index])) for p in plans]
-    from .curvature import rounded
-    plans,out.smooth_rails=rounded(points,plans,face_owners,directional_smoothing or {})
+    rail_owners=defaultdict(set)
+    for p in plans:
+        straight=True
+        for kind,i in (p.start,p.end):
+            a,b=p.boundary[i],p.boundary[(i+1)%len(p.boundary)]
+            if kind!='edge' or (directional_smoothing or {}).get((a,b),1.)!=0. or (directional_smoothing or {}).get((b,a),1.)!=0.:
+                straight=False;break
+        if straight:continue
+        for path in (p.left,p.right):
+            for edge in physical_edges(path):rail_owners[edge].add(p.index)
+    by_index={p.index:p for p in plans}
+    for edge,owners in rail_owners.items():
+        if len(owners)!=2 or len(face_owners[edge])!=2:continue
+        one,two=(by_index[i] for i in owners)
+        if one.settings.normal_flip==two.settings.normal_flip and dot(one.normal,two.normal)>1e-5:out.smooth_rails.add(edge)
     out.plans_by_loop.update((p.boundary,p) for p in plans)
     from .topology import RailRegistry
     widths={p.index:max(1,min(32,int(p.settings.width))) for p in plans}

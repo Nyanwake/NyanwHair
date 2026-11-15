@@ -176,7 +176,7 @@ def _preview_polygon_count(cache):
     return sum(len(record.get('preview_result',record['result']).faces)*len(getattr(record.get('preview_result',record['result']),'preview_masks',(0,))) for record in records)
 
 
-def _ray_zone(cache,origin,direction):
+def _ray_zone(cache,origin,direction,with_group=False):
     from . import decorations
     obj=bpy.context.edit_object;records=_render_caches(obj) if is_guide(obj) and cache.get('object_pointer')==obj.as_pointer() else [cache]
     nearest=None
@@ -193,6 +193,7 @@ def _ray_zone(cache,origin,direction):
                 if nearest is None or distance<nearest[0]:nearest=(distance,record,result,index,mask)
     if nearest is None:return None
     distance,record,result,index,mask=nearest
+    if with_group:return record.get('group_id',1),None if mask or index in getattr(result,'replica_faces',()) else result.owners[index]
     if (record is not cache and record.get('_parent_cache_id')!=id(cache)) or mask or index in getattr(result,'replica_faces',()):return None
     return result.owners[index]
 
@@ -379,11 +380,17 @@ class NYANW35_OT_pick_zone(Operator):
         origin=view3d_utils.region_2d_to_origin_3d(context.region,context.region_data,xy)
         direction=view3d_utils.region_2d_to_vector_3d(context.region,context.region_data,xy)
         inverse=obj.matrix_world.inverted_safe()
-        hovered=_ray_zone(cached,inverse@origin,(inverse.to_3x3()@direction).normalized())
-        _PENDING_PICK=(obj,hovered,cached['topology'],context.area,bool(getattr(event,'shift',False)),_near_control_component(context,obj,xy,cached))
+        component=_near_control_component(context,obj,xy,cached)
+        hit=_ray_zone(cached,inverse@origin,(inverse.to_3x3()@direction).normalized(),with_group=True)
+        switched=bool(hit and hit[0]!=groups.active_id(obj) and not component)
+        if switched:
+            bpy.ops.nyanw35.group('EXEC_DEFAULT',action='SELECT',uid=hit[0]);cached=_CACHE.get(obj.as_pointer())
+            if cached is None:return {'FINISHED'}
+        hovered=hit[1] if hit and hit[0]==groups.active_id(obj) else None
+        _PENDING_PICK=(obj,hovered,cached['topology'],context.area,bool(getattr(event,'shift',False)),component)
         if not bpy.app.timers.is_registered(_finish_zone_pick):
             bpy.app.timers.register(_finish_zone_pick,first_interval=0.)
-        return {'PASS_THROUGH'}
+        return {'FINISHED'} if switched else {'PASS_THROUGH'}
 
 
 def _selected_guide_edges(bm,result,vertex_mode):
@@ -1010,7 +1017,7 @@ def _rebuild(obj,force=False,lazy=False,group_id=None,_background=False):
     if old is None and _CACHE.get(key,{}).get('group_id',1)==uid:old=_CACHE.get(key)
     if old and getattr(old.get('result'),'frozen_preview',False):old=None
     if old is not None and not _background:_CACHE[key]=old
-    group=groups.settings(obj,uid);reference=(group.reference_length if group else 0.) or (obj.nh35.detail_length if uid==1 else 0.)
+    group=groups.settings(obj,uid);reference=groups.reference_length(obj,uid)
     from . import mirror
     seam=mirror.configuration(obj,group)
     state=(obj.mode,int(obj.nh35.rows),float(reference),True,uid,seam)
@@ -1953,7 +1960,7 @@ def _draw_presets(layout,obj):
 
 
 class NYANW35_PT_main(Panel):
-    bl_label='NyanwHair v1.16 Preview'
+    bl_label='NyanwHair v1.17 Preview'
     bl_idname='NYANW35_PT_main'
     bl_space_type='VIEW_3D'
     bl_region_type='UI'

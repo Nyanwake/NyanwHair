@@ -26,7 +26,7 @@ def create(context,cap=False):
 class NYANW35_OT_create_cap(Operator):
     bl_idname='nyanw35.create_cap'
     bl_label='Create hair cap'
-    bl_description='Create a mirrored head cap with automatic cross-section curvature'
+    bl_description='Create a mirrored head cap with a gentle editable cross-section bulge'
     bl_options={'REGISTER','UNDO'}
     def execute(self,context):
         create(context,cap=True)

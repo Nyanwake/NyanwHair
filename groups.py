@@ -11,6 +11,9 @@ _JOURNAL='nh35_groups_'
 
 def active_id(obj):return max(1,int(obj.nh35.active_group))
 def settings(obj,uid=None):return next((g for g in obj.nh35.groups if g.uid==(uid or active_id(obj))),None)
+def reference_length(obj,uid=None):
+    group=settings(obj,uid)
+    return obj.nh35.detail_length or (group.reference_length if group else 0.)
 def ids(obj):return [g.uid for g in obj.nh35.groups] or [1]
 def get_index(self):return next((i for i,g in enumerate(self.groups) if g.uid==self.active_group),0)
 def set_index(self,value):
@@ -218,16 +221,32 @@ class NYANW35_OT_group(Operator):
     @classmethod
     def description(cls,context,properties):
         return {'SELECT':tr('Switch the editable group; other groups display only their surfaces'),
-                'ADD':tr('Add an empty independent group to this object'),
+                'ADD':tr('Add a group; selected faces move into it in Face mode'),
                 'MOVE':tr('Move selected segments into this group, separating shared points'),
                 'REMOVE':tr('Remove the active group, keeping its segments in a neighbouring group')}.get(properties.action,tr('Hair groups'))
     def execute(self,context):
         from . import addon as a
         obj=context.object
         if not a.is_guide(obj):return {'CANCELLED'}
-        ensure(obj);previous=active_id(obj);a._prepare_object(obj)
+        ensure(obj);previous=active_id(obj)
+        if self.action!='SELECT':a._prepare_object(obj)
         if self.action=='ADD':
-            group=obj.nh35.groups.add();group.uid=max(g.uid for g in obj.nh35.groups)+1;group.name=tr('Group %d')%group.uid;self.uid=group.uid
+            chosen=set()
+            if obj.mode=='EDIT' and context.tool_settings.mesh_select_mode[2]:
+                bm=bmesh.from_edit_mesh(obj.data);bm.faces.index_update()
+                chosen={f.index for f in bm.faces if f.select and not f.hide and face_group(f,bm,previous)==previous}
+            reference=reference_length(obj,previous)
+            group=obj.nh35.groups.add();group.uid=max(g.uid for g in obj.nh35.groups)+1;group.name=tr('Group %d')%group.uid;group.reference_length=reference;self.uid=group.uid
+            if chosen:
+                def operation(stage):
+                    a._prepare_bmesh(stage);stage.faces.index_update();layer=stage.faces.layers.int[a.L_GROUP]
+                    for face in stage.faces:
+                        if face.index in chosen:face[layer]=self.uid
+                    separate(stage);isolate(stage,self.uid)
+                try:a._edit_transaction(obj,operation)
+                except (ValueError,RuntimeError) as exc:
+                    obj.nh35.groups.remove(len(obj.nh35.groups)-1);remember(obj);self.report({'WARNING'},str(exc));return {'CANCELLED'}
+                CACHE.get(obj.as_pointer(),{}).pop(previous,None)
         elif self.action=='REMOVE':
             if len(obj.nh35.groups)<2:return {'CANCELLED'}
             self.uid=next(g.uid for g in obj.nh35.groups if g.uid!=previous)
@@ -246,13 +265,14 @@ class NYANW35_OT_group(Operator):
         obj.nh35.active_group=self.uid
         bm,owned=a._mesh_bm(obj)
         try:
+            a._prepare_bmesh(bm,group_id=self.uid)
             isolate(bm,self.uid)
             if owned:bm.to_mesh(obj.data);obj.data.update()
             else:bmesh.update_edit_mesh(obj.data,loop_triangles=False,destructive=False)
         finally:
             if owned:bm.free()
         remember(obj)
-        a._clear_zone_pick();a._CACHE.pop(obj.as_pointer(),None);a._rebuild(obj,True);a._sync_ui(obj)
+        a._clear_zone_pick();a._CACHE.pop(obj.as_pointer(),None);a._rebuild(obj);a._sync_ui(obj)
         return {'FINISHED'}
 
 class NYANW35_OT_group_starter(Operator):

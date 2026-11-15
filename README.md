@@ -1,10 +1,10 @@
-# NyanwHair 1.16 Preview
+# NyanwHair 1.17 Preview
 
 Shape expressive stylized hair with a few guides. NyanwHair stitches neighbouring segments into a continuous mesh as you work. Grow branches easily and adjust polygon density both along and across a strand.
 
 **Blender 5.1+ · English / Русский · Native Windows / Linux x64**
 
-[Download](https://github.com/Nyanwake/NyanwHair/releases/tag/v1.0.16-preview.1) · [Русский](#русский) · [GPL-3.0](LICENSE)
+[Download](https://github.com/Nyanwake/NyanwHair/releases/tag/v1.0.17-preview.1) · [Русский](#русский) · [GPL-3.0](LICENSE)
 
 ## What it does
 
@@ -53,7 +53,7 @@ Volume side walls run as whole segments along the strand. Connections across the
 | **Start / End** | The two boundaries that define segment flow. Each can be an edge or a point. Green marks **Start**, purple marks **End**, matching the button icons. The **×** button detects that end again while keeping the other. |
 | **Detail** | Polygon density along the strand. |
 | **Width** | Number of columns across the segment. |
-| **Convexity** | Cross-section bulge. Side neighbours provide a small automatic base; positive and negative values adjust it in either direction. |
+| **Convexity** | Manual cross-section bulge. Zero adds no bulge; positive and negative values bend the profile in either direction. The cap preset starts with a gentle editable bulge. |
 | **Distribution** | Column placement across the width: **0** is uniform, **+** concentrates columns toward the centre, **−** toward the edges. |
 | **Smoothing** | Guide tangent smoothing: **1** is smooth; **0** separates the spline calculation at that guide end, so curves beyond the boundary do not bend the following section. |
 
@@ -61,11 +61,13 @@ Volume side walls run as whole segments along the strand. Connections across the
 
 **Flip normals**, below Local density, reverses selected segments while preserving their shape. Back faces are slightly darker, and positive convexity follows the chosen front side.
 
+Independent strands have separate caches: moving one does not rebuild the others. Groups share the object’s base density.
+
 ## Reverse sides, groups and Mirror
 
 **Create reverse side** keeps the front and adds two editable rear segments with their own centre guide. **Offset** and **Convexity** update the preview immediately. **Connect edges** joins the sides; at zero offset it joins them directly without intermediate walls. The end caps stay open.
 
-**Hair groups** keep parts of a hairstyle independently editable within one object. Add or remove groups, move selected segments between them, and assign group colours. Other groups display their surfaces while the active group is edited. Empty groups offer **Create strand in group**.
+**Hair groups** keep parts of a hairstyle independently editable within one object. Add or remove groups, move selected segments between them, and assign group colours. Other groups display their surfaces while the active group is edited. Empty groups offer **Create strand in group**. Click another group’s surface to activate it. Adding a group moves selected faces in **3 · Faces** mode, duplicating shared control points so neighbouring segments stay intact. Point and edge modes create an empty group.
 
 **Mirror X / Y / Z** reflects the active group. **Merge** joins halves on the mirror planes within the chosen distance, **0.001** by default. **Apply** makes the reflections editable in the same object and switches that group's axes off. **M → Mirror X/Y/Z** places selected points exactly on a mirror plane.
 
@@ -158,7 +160,7 @@ For the active NyanwHair guide in Edit Mode.
 | **Начало / Конец** | Два торца, задающих направление сегмента. Каждый может быть ребром или точкой. **Начало** отмечено зелёным, **Конец** — фиолетовым; значки кнопок повторяют эти цвета. Кнопка **×** заново определяет выбранный торец, сохраняя противоположный. |
 | **Детализация** | Плотность полигонов вдоль локона. |
 | **Ширина** | Количество колонок поперёк сегмента. |
-| **Выпуклость** | Поперечный выгиб. Боковые соседи дают небольшую автоматическую основу, а значения в плюс и минус корректируют её в обе стороны. |
+| **Выпуклость** | Ручной поперечный выгиб. При нуле дополнительного выгиба нет; значения в плюс и минус меняют его в обе стороны. В пресете шапки уже задан лёгкий редактируемый выгиб. |
 | **Распределение** | Расположение колонок по ширине: **0** — равномерно, **+** — ближе к центру, **−** — к краям. |
 | **Сглаживание** | Касательные направляющей: **1** — плавные, **0** — независимый расчёт от этого конца направляющей; изгибы за границей не влияют на следующий участок. |
 
@@ -166,11 +168,13 @@ For the active NyanwHair guide in Edit Mode.
 
 **Перевернуть нормали**, под локальной плотностью, разворачивает выбранные сегменты с сохранением формы. Обратная сторона слегка затемнена; положительная выпуклость следует выбранной лицевой стороне.
 
+Независимые локоны используют отдельные кэши. Движение одного не перестраивает остальные; группы используют общую базовую плотность объекта.
+
 ### Обратная сторона, группы и Mirror
 
 **Создать обратную сторону** сохраняет лицевой сегмент и добавляет два задних со своей центральной направляющей. **Смещение** и **выпуклость** сразу видны в предпросмотре. **Соединить края** сшивает бока; при нулевом смещении они соединяются напрямую, без промежуточных стенок. Торцы остаются открытыми.
 
-**Группы волос** позволяют независимо редактировать части причёски внутри одного объекта. Группы можно добавлять и удалять, переносить между ними выбранные сегменты и назначать цвета. Пока редактируется активная группа, остальные показывают готовую поверхность. В пустой группе доступна кнопка **Создать локон в группе**.
+**Группы волос** позволяют независимо редактировать части причёски внутри одного объекта. Клик по поверхности другой группы делает её активной. При добавлении группы выбранные грани в режиме **3 · Faces** переносятся в неё; общие с оставшимися сегментами точки дублируются. В режимах точек и рёбер создаётся пустая группа. Группы можно добавлять и удалять, переносить между ними выбранные сегменты и назначать цвета. Пока редактируется активная группа, остальные показывают готовую поверхность. В пустой группе доступна кнопка **Создать локон в группе**.
 
 **Mirror X / Y / Z** отражает активную группу. **Слияние** соединяет половины на плоскостях зеркала в пределах допуска, по умолчанию **0.001**. **Применить** делает отражения редактируемыми в том же объекте и выключает оси этой группы. **M → На плоскость Mirror X/Y/Z** точно ставит выбранные точки на плоскость зеркала.
 

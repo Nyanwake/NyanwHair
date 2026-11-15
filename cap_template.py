@@ -17,6 +17,7 @@ POINTS=((0.0, -0.1777614504, 0.1444406062),
 FACES=((0, 5, 4, 6, 7, 1), (1, 7, 6, 8, 9, 2), (3, 2, 9, 8, 10, 11), (3, 11, 10, 14, 13, 12))
 CAPS=((('edge', 5), ('edge', 2)), (('edge', 5), ('edge', 2)), (('edge', 0), ('edge', 3)), (('edge', 5), ('edge', 2)))
 REFERENCE_LENGTH=0.366441935300827
+BULGES=(.07,.07,.055,.045)
 
 def add(bm,group=1):
     from . import addon as a
@@ -26,7 +27,7 @@ def add(bm,group=1):
     for index,(ring,caps) in enumerate(zip(FACES,CAPS)):
         face=bm.faces.new([vertices[i] for i in ring]);face[order]=identity+index
         face[bm.faces.layers.int[a.L_GROUP]]=group
-        for name,value in (('width',2),('bulge',0.)):a._set_zone(face,bm,name,value)
+        for name,value in (('width',2),('bulge',BULGES[index])):a._set_zone(face,bm,name,value)
         a._write_boundary_pair(face,bm,caps);face.select_set(True)
     for vertex in vertices:vertex[bm.verts.layers.int[a.L_VERTEX_GROUP]]=group
     return vertices
