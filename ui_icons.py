@@ -8,6 +8,9 @@ _ICONS={}
 
 
 def _shapes(kind):
+    if kind in ('START','END'):
+        ring=[(16+11*math.cos(i*math.tau/20),16+11*math.sin(i*math.tau/20)) for i in range(21)]
+        return [ring],[],[ring]
     quad=((4.,4.),(27.,5.),(28.,27.),(4.,28.),(4.,4.))
     if kind in ('VERT','EDGE','FACE','FILL'):return [quad],list(quad[:-1]) if kind=='VERT' else [],[quad] if kind in ('FACE','FILL') else []
     if kind in ('MESH','LOOP'):
@@ -53,12 +56,13 @@ def _pixels(kind,color):
     return pixels
 
 
-def icon(props,kind):
+def icon(props,kind,color=None):
     global _PREVIEWS
     if bpy.app.background:return 0
     style=palette.get(props) if props else palette.WARM
-    color=tuple(12.92*c if c<=.0031308 else 1.055*c**(1/2.4)-.055 for c in style.group)
-    if props and props.palette=='BLENDER':color=tuple(style.points[1][:3])
+    explicit=color is not None
+    color=color if explicit else tuple(12.92*c if c<=.0031308 else 1.055*c**(1/2.4)-.055 for c in style.group)
+    if not explicit and props and props.palette=='BLENDER':color=tuple(style.points[1][:3])
     key=(props.palette if props else 'WARM',kind);saved=_ICONS.get(key)
     if saved is None or saved[0]!=color:
         from bpy.utils import previews

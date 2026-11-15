@@ -1,8 +1,8 @@
 """Progressive cross-row transitions with exact inherited cap samples."""
 from .i18n import tr
 import math
-from .core import EPS,add,sub,mul,dot,cross,length,norm,mix,bias_cross_position,edge_key
-from .surface import _rotate,CapBlend
+from .core import EPS,sub,length,mix,edge_key
+from .surface import FlowSurface,AlignedMap
 from .ribbon import zipper_flows
 
 
@@ -57,7 +57,7 @@ def _coherent_paths(fractions):
     return paths
 
 
-def _regular_transition(plan,width,ca,cb,left,right,caps,max_polygons):
+def _regular_transition(plan,width,ca,cb,left,right,caps,max_polygons,surface):
     """Fair interior rows; unequal border budgets affect only the rim strips."""
     points=[];faces=[];indices={}
     def vertex(key,pos):
@@ -73,16 +73,6 @@ def _regular_transition(plan,width,ca,cb,left,right,caps,max_polygons):
     aa=[ca.at(station(fa,i/count)) for i in range(count+1)]
     bb=[cb.at(station(fb,i/count)) for i in range(count+1)]
     flows=[(station(fa,i/count)+station(fb,i/count))*.5 for i in range(count+1)]
-    centers=[mul(add(a,b),.5) for (_,a),(_,b) in zip(aa,bb)]
-    tangents=[norm(sub(centers[min(count,i+1)],centers[max(0,i-1)])) for i in range(count+1)]
-    normals=[];reference=plan.normal;old_tangent=tangents[0]
-    for k,((ka,a),(kb,b)) in enumerate(zip(aa,bb)):
-        transported=_rotate(reference,old_tangent,tangents[k]);normal=norm(cross(sub(b,a),tangents[k]))
-        if length(normal)<EPS:normal=transported
-        if dot(normal,transported)<0.:normal=mul(normal,-1.)
-        normals.append(normal);reference=normal;old_tangent=tangents[k]
-    cap_blend=CapBlend(plan,[(aa[i][1],bb[i][1]) for i in (0,-1)],(normals[0],normals[-1]),
-        [[point for key,point in cap] if cap else None for cap in caps])
     widths=[length(sub(b,a)) for (_,a),(_,b) in zip(aa,bb)];span=max(EPS,max(widths))
     counts=[len(cap)-1 if cap else width for cap in caps]
     def smooth(t):t=max(0.,min(1.,t));return t*t*(3.-2.*t)
@@ -101,7 +91,6 @@ def _regular_transition(plan,width,ca,cb,left,right,caps,max_polygons):
         j=min(len(values)-1,bisect.bisect_left(values,u));return j-1 if j and abs(values[j-1]-u)<abs(values[j]-u) else j
     for k,((ka,a),(kb,b)) in enumerate(zip(aa,bb)):
         n=row_counts[k];cap=caps[0] if k==0 else caps[1] if k==count else None
-        weights=cap_blend.weights(flows[k])
         coords=[];row=[]
         for x in range(n+1):
             if cap:key,pos=cap[x]
@@ -109,9 +98,7 @@ def _regular_transition(plan,width,ca,cb,left,right,caps,max_polygons):
             elif x==0:key,pos=ka,a
             elif x==n:key,pos=kb,b
             else:
-                v=bias_cross_position(x/n,plan.settings.bias);amount=plan.bulge*widths[k]*math.sin(math.pi*v)
-                key=('width',plan.index,k,x,n);pos=add(mix(a,b,v),mul(normals[k],amount))
-                pos=cap_blend.apply(pos,x/n,weights)
+                key=('width',plan.index,k,x,n);pos=surface.position(flows[k],x/n)
             coords.append(pos)
             if x==0:index=borders[0][nearest(fa,station(fa,k/count))]
             elif x==n:index=borders[1][nearest(fb,station(fb,k/count))]
@@ -155,9 +142,10 @@ def build_transition(plan,width,registry,ca,cb,left,right,profiles,put,emit,max_
         else:caps.append(None)
     signature=('width_coherent',plan,width,ca.geometry_signature,cb.geometry_signature,tuple(left),tuple(right),tuple(caps),mapping is not None)
     old=previous.get(plan.boundary);reused=bool(old and old[0]==signature)
+    surface=None if reused else FlowSurface(plan,width,mapping or AlignedMap(ca,cb),profiles,registry.cap_keys)
     if reused:recipe=old[1]
     elif mapping is None and width>=2 and all(cap is None or len(cap)>=3 for cap in caps):
-        recipe=_regular_transition(plan,width,ca,cb,left,right,caps,max_polygons)
+        recipe=_regular_transition(plan,width,ca,cb,left,right,caps,max_polygons,surface)
     else:
         points=[];faces=[];indices={}
         def vertex(key,pos):
@@ -167,16 +155,6 @@ def build_transition(plan,width,registry,ca,cb,left,right,profiles,put,emit,max_
         fb=[mapping.fraction(cb,k) if mapping else cb.fraction(k) for k,p in right]
         path=zipper_flows(fa,fb)
         if len(path)*(max([width]+[len(cap)-1 for cap in caps if cap])+1)>2*max_polygons:raise ValueError(tr('Width-transition vertex limit exceeded'))
-        centers=[mul(add(left[i][1],right[j][1]),.5) for i,j in path]
-        tangents=[norm(sub(centers[min(len(path)-1,i+1)],centers[max(0,i-1)])) for i in range(len(path))]
-        normals=[];previous_normal=plan.normal;old_tangent=tangents[0]
-        for k,(i,j) in enumerate(path):
-            reference=_rotate(previous_normal,old_tangent,tangents[k]);normal=norm(cross(sub(right[j][1],left[i][1]),tangents[k]))
-            if length(normal)<EPS:normal=reference
-            if dot(normal,reference)<0.:normal=mul(normal,-1.)
-            normals.append(normal);previous_normal=normal;old_tangent=tangents[k]
-        ends=[(left[i][1],right[j][1]) for i,j in (path[0],path[-1])]
-        cap_blend=CapBlend(plan,ends,(normals[0],normals[-1]),[[point for key,point in cap] if cap else None for cap in caps])
         counts=[len(cap)-1 if cap else width for cap in caps]
         def smooth(t):t=max(0.,min(1.,t));return t*t*(3.-2.*t)
         row_counts=[]
@@ -188,7 +166,6 @@ def build_transition(plan,width,registry,ca,cb,left,right,profiles,put,emit,max_
         rows=[];sections=[];coordinates=[];fractions=[]
         for k,(i,j) in enumerate(path):
             u=(fa[i]+fb[j])*.5
-            weights=cap_blend.weights(u)
             count=row_counts[k]
             cap=caps[0] if k==0 else caps[1] if k==len(path)-1 else None
             if cap:count=len(cap)-1
@@ -199,9 +176,7 @@ def build_transition(plan,width,registry,ca,cb,left,right,profiles,put,emit,max_
                 elif x==count:key,pos=kb,pb
                 elif ka==kb:key,pos=ka,pa
                 else:
-                    v=bias_cross_position(x/count,plan.settings.bias);amount=plan.bulge*length(sub(pb,pa))*math.sin(math.pi*v)
-                    key=('width',plan.index,k,x,count);pos=add(mix(pa,pb,v),mul(normals[k],amount))
-                    pos=cap_blend.apply(pos,x/count,weights)
+                    key=('width',plan.index,k,x,count);pos=surface.position(u,x/count)
                 row.append(vertex(key,pos));coords.append(pos)
             rows.append(tuple(row));coordinates.append(coords);fractions.append([x/count for x in range(count+1)])
             # Cut supports lie on the actual transverse mesh edges.

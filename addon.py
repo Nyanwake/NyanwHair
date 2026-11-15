@@ -1949,7 +1949,7 @@ def _draw_presets(layout,obj):
 
 
 class NYANW35_PT_main(Panel):
-    bl_label='NyanwHair v1.09'
+    bl_label='NyanwHair v1.10'
     bl_idname='NYANW35_PT_main'
     bl_space_type='VIEW_3D'
     bl_region_type='UI'
@@ -1997,7 +1997,7 @@ class NYANW35_PT_main(Panel):
         section=editing.mode_section(layout,context,'EDGE','Segment boundaries','EDGESEL')
         ends=section.column(align=True);ends.enabled=bool(_zone_ui_faces(bm,obj))
         for slot,label in [('FIRST',tr('Start')),('SECOND',tr('End'))]:
-            row=ends.row(align=True);op=row.operator('nyanw35.boundary',text=label);op.slot=slot;op.clear=False
+            row=ends.row(align=True);op=row.operator('nyanw35.boundary',text=label,icon_value=ui_icons.icon(props,'START' if slot=='FIRST' else 'END',palette.CAP_POINTS[0 if slot=='FIRST' else 1][:3]));op.slot=slot;op.clear=False
             op=row.operator('nyanw35.boundary',text='',icon='X');op.slot=slot;op.clear=True
         section=editing.mode_section(layout,context,'VERT','Points','VERTEXSEL')
         row=section.row(align=True);row.enabled=bool(_smooth_targets(bm,result));row.prop(ui,'direction_smoothing',text=tr('Smoothing'),slider=True);row.operator('nyanw35.direction_smoothing',text='',icon='LOOP_BACK').value=1.

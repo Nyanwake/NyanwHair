@@ -1,4 +1,4 @@
-# NyanwHair 1.09
+# NyanwHair 1.10
 
 Shape expressive stylized hair with a few guides. NyanwHair stitches neighbouring segments into a continuous mesh as you work. Grow branches easily and adjust polygon density both along and across a strand.
 
@@ -46,12 +46,12 @@ Volume side walls run as whole segments along the strand. Connections across the
 
 | Parameter | Meaning |
 | --- | --- |
-| **Start / End** | The two boundaries that define segment flow. Each can be an edge or a point. The **×** button detects that end again while keeping the other. |
+| **Start / End** | The two boundaries that define segment flow. Each can be an edge or a point. Green marks **Start**, purple marks **End**, matching the button icons. The **×** button detects that end again while keeping the other. |
 | **Detail** | Polygon density along the strand. |
 | **Width** | Number of columns across the segment. |
 | **Convexity** | Cross-section bulge. Side neighbours provide a small automatic base; positive and negative values adjust it in either direction. |
 | **Distribution** | Column placement across the width: **0** is uniform, **+** concentrates columns toward the centre, **−** toward the edges. |
-| **Smoothing** | Guide tangent smoothing: **1** is smooth; **0** separates the spline calculation at that guide end, so curves beyond the boundary do not bend the following section. |
+| **Smoothing** | Guide tangent smoothing: **1** is smooth; **0** points toward the next control point. Every logical Start/End boundary is calculated independently of neighbouring guides. |
 
 **Local density** adds polygons around selected points without changing the guides. **Density 1** is the regular grid; larger values refine it. **Radius** controls the influence along the guides, with a smooth falloff. **Reset** clears the selected points; **Reset all** clears the active group's local density.
 
@@ -147,12 +147,12 @@ For the active NyanwHair guide in Edit Mode.
 
 | Параметр | За что отвечает |
 | --- | --- |
-| **Начало / Конец** | Два торца, задающих направление сегмента. Каждый может быть ребром или точкой. Кнопка **×** заново определяет выбранный торец, сохраняя противоположный. |
+| **Начало / Конец** | Два торца, задающих направление сегмента. Каждый может быть ребром или точкой. **Начало** отмечено зелёным, **Конец** — фиолетовым; значки кнопок повторяют эти цвета. Кнопка **×** заново определяет выбранный торец, сохраняя противоположный. |
 | **Детализация** | Плотность полигонов вдоль локона. |
 | **Ширина** | Количество колонок поперёк сегмента. |
 | **Выпуклость** | Поперечный выгиб. Боковые соседи дают небольшую автоматическую основу, а значения в плюс и минус корректируют её в обе стороны. |
 | **Распределение** | Расположение колонок по ширине: **0** — равномерно, **+** — ближе к центру, **−** — к краям. |
-| **Сглаживание** | Касательные направляющей: **1** — плавные, **0** — независимый расчёт от этого конца направляющей; изгибы за границей не влияют на следующий участок. |
+| **Сглаживание** | Касательные направляющей: **1** — плавные, **0** — направлены к следующей точке. Каждый торец «Начало / Конец» рассчитывается независимо от соседних направляющих. |
 
 **Локальная плотность** добавляет полигоны возле выбранных точек, сохраняя форму направляющих. **Плотность 1** — обычная сетка, большие значения уплотняют её. **Радиус** задаёт область влияния вдоль кривых с мягким спадом. **Сброс** очищает выбранные точки, **Сброс все** — локальное уплотнение активной группы.
 
