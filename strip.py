@@ -1,4 +1,5 @@
 """A common row grid between two rails, with local border transitions."""
+from .mesh_views import IndexRows,Sections
 from .i18n import tr
 import math
 from .core import add,sub,mul,length,mix,bias_cross_position,edge_key
@@ -64,11 +65,11 @@ def build_strip(plan,width,registry,ca,cb,left,right,profiles,put,emit,max_polyg
             for (i,j),(ni,nj) in zip(path,path[1:]):
                 faces.append((columns[x][i],columns[x+1][j],columns[x+1][nj],columns[x][ni]))
         if len(faces)>max_polygons:raise ValueError(tr('Strip polygon limit exceeded'))
-        recipe=(tuple(points),tuple(faces),tuple(sections),tuple(tuple(c) for c in columns),tuple(grid))
+        recipe=(tuple(points),tuple(faces),Sections(sections),tuple(tuple(c) for c in columns),tuple(grid))
     cache[plan.boundary]=(signature,recipe)
     points,faces,sections,columns,grid=recipe
     remap=[put(key,pos) for key,pos in points]
     if hasattr(emit,'bulk'):emit.bulk(faces,remap)
     else:
         for face in faces:emit([remap[v] for v in face])
-    return sections,[[remap[v] for v in c] for c in columns],[[remap[v] if v is not None else None for v in row] for row in grid],reused
+    return sections,IndexRows(columns,(remap,)),IndexRows(grid,(remap,),True),reused

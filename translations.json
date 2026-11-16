@@ -65,7 +65,6 @@
   "Apply Mirror": "Применить Mirror",
   "Make mirrored guides editable and turn off the active group's Mirror axes": "Сделать зеркальные направляющие редактируемыми и отключить Mirror у активной группы",
   "Create hair cap": "Создать шапку",
-  "Create a mirrored head cap with automatic cross-section curvature": "Создать шапку для головы с Mirror и автоматическим поперечным выгибом",
   "Flip normals": "Перевернуть нормали",
   "Reverse selected segment normals while preserving the current shape": "Развернуть нормали выделенных сегментов, сохраняя текущую форму",
   "Rip guides": "Разделить направляющие",
@@ -217,7 +216,6 @@
   "Main": "Основная",
   "Group %d": "Группа %d",
   "Switch the editable group; other groups display only their surfaces": "Переключить редактируемую группу; остальные видны только как поверхность",
-  "Add an empty independent group to this object": "Добавить пустую независимую группу в этот объект",
   "Move selected segments into this group, separating shared points": "Перенести выбранные сегменты в эту группу, разделив общие точки",
   "Remove the active group, keeping its segments in a neighbouring group": "Убрать активную группу, сохранив её сегменты в соседней группе",
   "Moving and deleting groups requires Edit Mode": "Перенос и удаление группы доступны в Edit Mode",
@@ -300,5 +298,9 @@
   "Select two neighbouring segments or their shared edge": "Выбери два соседних сегмента или их общее ребро",
   "Join segments within the active hair group": "Объединяй сегменты внутри активной группы волос",
   "Segments must share one continuous edge chain": "Сегменты должны соприкасаться одной непрерывной цепочкой рёбер",
-  "The joined contour must be a single closed loop": "Объединённый контур должен быть одним замкнутым кольцом"
+  "The joined contour must be a single closed loop": "Объединённый контур должен быть одним замкнутым кольцом",
+  "Accelerated engine": "Ускоренное ядро",
+  "Python engine": "Ядро Python",
+  "Add a group; selected faces move into it in Face mode": "Создать группу; выбранные грани в режиме Faces переносятся в неё",
+  "Create a mirrored head cap with a gentle editable cross-section bulge": "Создать зеркальную шапку с лёгким редактируемым поперечным выгибом"
 }

@@ -176,7 +176,7 @@ def _preview_polygon_count(cache):
     return sum(len(record.get('preview_result',record['result']).faces)*len(getattr(record.get('preview_result',record['result']),'preview_masks',(0,))) for record in records)
 
 
-def _ray_zone(cache,origin,direction):
+def _ray_zone(cache,origin,direction,with_group=False):
     from . import decorations
     obj=bpy.context.edit_object;records=_render_caches(obj) if is_guide(obj) and cache.get('object_pointer')==obj.as_pointer() else [cache]
     nearest=None
@@ -193,6 +193,7 @@ def _ray_zone(cache,origin,direction):
                 if nearest is None or distance<nearest[0]:nearest=(distance,record,result,index,mask)
     if nearest is None:return None
     distance,record,result,index,mask=nearest
+    if with_group:return record.get('group_id',1),None if mask or index in getattr(result,'replica_faces',()) else result.owners[index]
     if (record is not cache and record.get('_parent_cache_id')!=id(cache)) or mask or index in getattr(result,'replica_faces',()):return None
     return result.owners[index]
 
@@ -379,11 +380,17 @@ class NYANW35_OT_pick_zone(Operator):
         origin=view3d_utils.region_2d_to_origin_3d(context.region,context.region_data,xy)
         direction=view3d_utils.region_2d_to_vector_3d(context.region,context.region_data,xy)
         inverse=obj.matrix_world.inverted_safe()
-        hovered=_ray_zone(cached,inverse@origin,(inverse.to_3x3()@direction).normalized())
-        _PENDING_PICK=(obj,hovered,cached['topology'],context.area,bool(getattr(event,'shift',False)),_near_control_component(context,obj,xy,cached))
+        component=_near_control_component(context,obj,xy,cached)
+        hit=_ray_zone(cached,inverse@origin,(inverse.to_3x3()@direction).normalized(),with_group=True)
+        switched=bool(hit and hit[0]!=groups.active_id(obj) and not component)
+        if switched:
+            bpy.ops.nyanw35.group('EXEC_DEFAULT',action='SELECT',uid=hit[0]);cached=_CACHE.get(obj.as_pointer())
+            if cached is None:return {'FINISHED'}
+        hovered=hit[1] if hit and hit[0]==groups.active_id(obj) else None
+        _PENDING_PICK=(obj,hovered,cached['topology'],context.area,bool(getattr(event,'shift',False)),component)
         if not bpy.app.timers.is_registered(_finish_zone_pick):
             bpy.app.timers.register(_finish_zone_pick,first_interval=0.)
-        return {'PASS_THROUGH'}
+        return {'FINISHED'} if switched else {'PASS_THROUGH'}
 
 
 def _selected_guide_edges(bm,result,vertex_mode):
@@ -1010,7 +1017,7 @@ def _rebuild(obj,force=False,lazy=False,group_id=None,_background=False):
     if old is None and _CACHE.get(key,{}).get('group_id',1)==uid:old=_CACHE.get(key)
     if old and getattr(old.get('result'),'frozen_preview',False):old=None
     if old is not None and not _background:_CACHE[key]=old
-    group=groups.settings(obj,uid);reference=(group.reference_length if group else 0.) or (obj.nh35.detail_length if uid==1 else 0.)
+    group=groups.settings(obj,uid);reference=groups.reference_length(obj,uid)
     from . import mirror
     seam=mirror.configuration(obj,group)
     state=(obj.mode,int(obj.nh35.rows),float(reference),True,uid,seam)
@@ -1045,7 +1052,7 @@ def _rebuild(obj,force=False,lazy=False,group_id=None,_background=False):
             selected=next((_zone_key(p) for p in old['result'].plans_by_loop.values() if p.index==old.get('active',-1)),None)
             active=lookup.get(selected,min((lookup[k] for k in keys),default=-1));selection={'zone_selection':keys,'zone_selection_explicit':True}
         if active not in indices:active=indices[0] if indices else -1
-        reuse={k:old[k] for k in ('gpu_chunks','gpu_wire_chunks','gpu_rails','gpu_rail_records','gpu_rail_signature','native_selection_stamp','normal_topology','gpu_layout','preview_normal_groups','preview_axis_sharp','render_parts') if old and k in old}
+        reuse={k:old[k] for k in ('gpu_chunks','gpu_wire_chunks','gpu_rails','gpu_rail_records','gpu_rail_signature','native_selection_stamp','normal_topology','gpu_layout','gpu_boundary_layout','preview_normal_groups','preview_axis_sharp','render_parts') if old and k in old}
         cached=dict(selection,**reuse,signature=signature,topology=tuple(full_zones),face_indices=tuple(indices),group_zones=tuple(zones),group_id=uid,object_pointer=key,
                     rows=rows,revision=_SOURCE_REVISION,source_state=state,source_dirty=False,data_pointer=obj.data.as_pointer(),positions=tuple(positions),zones=tuple(full_zones),
                     result=result,active=active,status='; '.join(tr('Segment %d: %s')%(i+1,v) for i,v in list(sorted(warnings.items()))[:3]) if warnings else tr('%d segments, %d polygons')%(len(zones),len(result.faces)),
@@ -1936,6 +1943,8 @@ def _draw_extra_panels(layout,context,obj,cached,edit):
         from . import i18n
         preferences=context.preferences.addons.get(__package__)
         if preferences:body.prop(preferences.preferences,'language',text='Language',expand=True)
+        from . import kernels
+        body.label(text=tr('Accelerated engine') if kernels.available() else tr('Python engine'),icon='INFO')
         if edit:
             body.operator('nyanw35.refresh_layout',text=tr('Refresh row layout'),icon='FILE_REFRESH')
             if context.space_data.overlay.show_retopology:body.operator('nyanw35.hide_retopology',text=tr('Hide Retopology fill'),icon='OVERLAY')
@@ -1951,7 +1960,7 @@ def _draw_presets(layout,obj):
 
 
 class NYANW35_PT_main(Panel):
-    bl_label='NyanwHair v1.14'
+    bl_label='NyanwHair v1.17'
     bl_idname='NYANW35_PT_main'
     bl_space_type='VIEW_3D'
     bl_region_type='UI'
@@ -2147,14 +2156,28 @@ class _BatchGroup:
 
 def _buffer_layout(result,indices,offsets,edges):
     import numpy as np
-    vertices=[];corners=[];owners=[];normal=[];reflected=[];dynamic=False
-    for fi in indices:
-        face=result.faces[fi];n=len(face);offset=len(vertices)
-        vertices.extend(face);corners.extend(range(int(offsets[fi]),int(offsets[fi])+n));owners.extend([result.owners[fi]]*n)
-        if n>4:dynamic=True
-        normal.extend((offset,offset+i,offset+i+1) for i in range(1,n-1))
-        reflected.extend((offset+n-1,offset+i,offset+i-1) for i in range(n-2,0,-1))
-    return dict(vertices=np.asarray(vertices,dtype=np.int32),corners=np.asarray(corners,dtype=np.int32),owners=np.asarray(owners,dtype=np.int32),normal=np.asarray(normal,dtype=np.int32),reflected=np.asarray(reflected,dtype=np.int32),edges=np.asarray(edges,dtype=np.int32).reshape(-1,2),dynamic=dynamic)
+    selected=np.asarray(indices,dtype=np.intp)
+    sizes=np.diff(np.r_[offsets,len(result.normal_topology[2])])[selected]
+    starts=np.cumsum(sizes)-sizes
+    corners=np.repeat(offsets[selected]-starts,sizes)+np.arange(sizes.sum())
+    vertices=result.normal_topology[2][corners].astype(np.int32)
+    owners=np.repeat(np.asarray(result.owners,dtype=np.int32)[selected],sizes)
+    counts=sizes-2;triangles=np.repeat(np.arange(len(selected)),counts)
+    local=np.arange(counts.sum())-np.repeat(np.cumsum(counts)-counts,counts)+1
+    base=starts[triangles]
+    normal=np.column_stack((base,base+local,base+local+1)).astype(np.int32)
+    back=sizes[triangles]-1-local
+    reflected=np.column_stack((base+sizes[triangles]-1,base+back,base+back-1)).astype(np.int32)
+    corners=corners.astype(np.int32);dynamic=bool(np.any(sizes>4))
+    groups=result.normal_topology[5]
+    if not dynamic and len(vertices) and groups is not None:
+        first_owner=int(owners.min());span=int(owners.max())-first_owner+1
+        # A normal fan belongs to one vertex; owner keeps highlight boundaries.
+        codes=groups[corners]*span+owners-first_owner
+        _,first,remap=np.unique(codes,return_index=True,return_inverse=True)
+        vertices=vertices[first];corners=corners[first];owners=owners[first]
+        normal=remap[normal].astype(np.int32);reflected=remap[reflected].astype(np.int32)
+    return dict(vertices=vertices,corners=corners,owners=owners,normal=normal,reflected=reflected,edges=np.asarray(edges,dtype=np.int32).reshape(-1,2),dynamic=dynamic)
 
 
 def _gpu_mesh_records(cache,result,smooth):
@@ -2163,6 +2186,10 @@ def _gpu_mesh_records(cache,result,smooth):
     if cache.get('gpu_mesh_signature')==signature:return cache['gpu_mesh_records']
     from . import appearance
     import numpy as np
+    if not result.faces:
+        cache.update(gpu_normal_array=np.empty((0,3)),gpu_vertex_array=np.empty((0,3)),normal_topology=None,
+            gpu_buffer_layout={},gpu_boundary_normals={},gpu_mesh_signature=signature,gpu_mesh_records=())
+        return ()
     base_normals=appearance.corner_normals(result,smooth,cache.get('normal_topology'),packed=True)
     from . import decorations
     normals=decorations.preview_normals(result,smooth,base_normals,cache,packed=True)
@@ -2175,41 +2202,52 @@ def _gpu_mesh_records(cache,result,smooth):
     boundary=tuple(i for i,key in enumerate(boundary_keys) if key[0] in ('v','s'))
     front_count=len(cache['result'].faces)
     layout_signature=(tuple(result.faces),tuple(result.owners),boundary,front_count,
-        tuple(sorted((owner,p.settings.order) for owner,p in plans.items())))
+        tuple(sorted((owner,p.settings.order) for owner,p in plans.items())),bool(smooth),result.normal_topology[0][2] if result.faces else frozenset())
     saved=cache.get('gpu_layout')
-    if saved and saved[0]==layout_signature:layout=saved[1]
+    if saved and saved[0]==layout_signature and 'gpu_boundary_layout' in cache:layout=saved[1]
     else:
-        chunks={};edge_groups={}
-        for fi,(face,owner) in enumerate(zip(result.faces,result.owners)):
-            plan=plans[owner];key=(plan.settings.order if plan.settings.order>0 else owner)//4
-            chunks.setdefault(key,[]).append(fi)
-            for a,b in zip(face,face[1:]+face[:1]):
-                if a!=b:edge_groups.setdefault(core.edge_key(a,b),key)
-        owned_edges={key:[] for key in chunks}
-        for edge,key in edge_groups.items():owned_edges[key].append(edge)
+        corner_vertices=result.normal_topology[2];next_vertices=result.normal_topology[3]
+        face_ids=result.normal_topology[4]
+        chunk_by_owner={owner:(p.settings.order if p.settings.order>0 else owner)//4 for owner,p in plans.items()}
+        face_chunks=np.asarray([chunk_by_owner[owner] for owner in result.owners])
+        chunks={int(key):np.flatnonzero(face_chunks==key).tolist() for key in dict.fromkeys(face_chunks.tolist())}
+        count=len(result.vertices)
+        codes=np.minimum(corner_vertices,next_vertices)*count+np.maximum(corner_vertices,next_vertices)
+        first=np.sort(np.unique(codes,return_index=True)[1])
+        first=first[corner_vertices[first]!=next_vertices[first]]
+        pairs=np.column_stack((np.minimum(corner_vertices[first],next_vertices[first]),np.maximum(corner_vertices[first],next_vertices[first])))
+        edge_chunks=face_chunks[face_ids[first]]
+        owned_edges={key:[tuple(edge) for edge in pairs[edge_chunks==key].tolist()] for key in chunks}
         layout=[]
         for key,indices in chunks.items():
             owners=tuple(sorted({result.owners[fi] for fi in indices}))
             vertices=tuple(sorted({v for fi in indices for v in result.faces[fi]}))
-            faces_key=(tuple((result.owners[fi],result.faces[fi]) for fi in indices),vertices)
-            edges=tuple(owned_edges[key]);keys=edges
+            edges=tuple(owned_edges[key])
             info=_buffer_layout(result,indices,result.normal_topology[1],edges)
+            faces_key=(tuple((result.owners[fi],result.faces[fi]) for fi in indices),vertices)
+            keys=edges
             layout.append((key,tuple(indices),owners,vertices,faces_key,edges,keys,info))
         cache['gpu_layout']=(layout_signature,tuple(layout))
         boundary=set(boundary)
-        cache['gpu_boundary_corners']=tuple((vertex,owner,fi,corner) for fi,(face,owner) in enumerate(zip(result.faces[:front_count],result.owners[:front_count])) for corner,vertex in enumerate(face) if vertex in boundary)
+        grouped={};corners=[];indices=[]
+        for fi,(face,owner) in enumerate(zip(result.faces[:front_count],result.owners[:front_count])):
+            for corner,vertex in enumerate(face):
+                if vertex in boundary:
+                    key=(vertex,owner)
+                    if key not in grouped:grouped[key]=len(grouped)
+                    corners.append(int(result.normal_topology[1][fi])+corner);indices.append(grouped[key])
+        cache['gpu_boundary_layout']=(tuple(grouped),np.asarray(corners,dtype=np.intp),np.asarray(indices,dtype=np.intp))
     records=[]
     cache['gpu_buffer_layout']={row[0]:row[-1] for row in layout}
     for key,indices,owners,vertices,faces_key,edges,keys,info in layout:
-        faces=tuple((result.faces[fi],result.owners[fi],normals[fi]) for fi in indices)
+        faces=tuple((result.faces[fi],result.owners[fi],normals[fi]) for fi in indices) if info['dynamic'] else ()
         geometry=(faces_key,positions[np.asarray(vertices)].tobytes(),values[info['corners']].tobytes())
         records.append((key,faces,owners,geometry,edges,keys))
-    boundary_normals={}
-    for vertex,owner,fi,corner in cache.get('gpu_boundary_corners',()):
-        key=(boundary_keys[vertex],owner);value=normals[fi][corner]
-        if key in boundary_normals:boundary_normals[key]=core.add(boundary_normals[key],value)
-        else:boundary_normals[key]=value
-    cache['gpu_boundary_normals']={key:core.norm(value) for key,value in boundary_normals.items()}
+    pairs,corners,groups=cache['gpu_boundary_layout']
+    boundary_values=values[corners]
+    sums=np.stack([np.bincount(groups,weights=boundary_values[:,axis],minlength=len(pairs)) for axis in range(3)],axis=1)
+    sizes=np.linalg.norm(sums,axis=1);sums/=np.where(sizes>core.EPS,sizes,1.)[:,None];sums[sizes<=core.EPS]=0.
+    cache['gpu_boundary_normals']={(boundary_keys[vertex],owner):tuple(normal) for (vertex,owner),normal in zip(pairs,sums.tolist())}
     cache['gpu_mesh_signature']=signature;cache['gpu_mesh_records']=tuple(records)
     return cache['gpu_mesh_records']
 
@@ -2725,6 +2763,8 @@ def _unregister_keys():
 
 def register():
     global _RUNNING,_DRAW_HANDLER,_POINT_HANDLER
+    from . import kernels
+    kernels.reset()
     from . import i18n
     bpy.utils.register_class(i18n.NHLanguagePreferences)
     for cls in _CLASSES: bpy.utils.register_class(cls)

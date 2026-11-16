@@ -6,7 +6,7 @@ from . import core,appearance
 
 def _clone(result,copy_mesh=True):
     out=core.MeshResult()
-    for field in fields(out):setattr(out,field.name,getattr(result,field.name))
+    for field in fields(out):setattr(out,field.name,getattr(result,field.name,getattr(out,field.name)))
     if copy_mesh:
         out.vertices=list(result.vertices);out.vertex_keys=list(result.vertex_keys);out.faces=list(result.faces);out.owners=list(result.owners)
     out.source_result=result
@@ -147,11 +147,11 @@ def preview_normals(result,smooth,normals,cache=None,packed=False):
         bits=np.asarray([group_bits.get(int(g),0) for g in groups])
         if cache is not None:cache['preview_normal_groups']=(signature,bits)
     if not np.any(bits):return normals
-    values=np.asarray([normal for face in normals for normal in face],dtype=float)
+    values=result.normal_array.copy()
     for axis,on in enumerate(axes):
         if on:values[(bits&(1<<axis))!=0,axis]=0.
     sizes=np.linalg.norm(values,axis=1);values/=np.maximum(sizes,1e-12)[:,None]
-    output=tuple(values[offset:offset+len(face)] for offset,face in zip(offsets,result.faces))
+    output=appearance._CornerNormals(values,offsets,result.faces)
     result.preview_normal_array=values
     result.preview_normal_cache=(normals,output)
     return output if packed else tuple(tuple(tuple(v) for v in face) for face in output)

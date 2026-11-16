@@ -41,7 +41,7 @@ class CurvePath:
         self.points=points; self.path=tuple(path); self.evaluate=evaluate
         self.vertices={v:i for i,v in enumerate(path)}
         self.edges={edge_key(a,b):(i,a,b) for i,(a,b) in enumerate(zip(path,path[1:]))}
-        self.tables=[]; self.offsets=[0.]; self._samples={}
+        self.tables=[]; self.offsets=[0.]; self._samples={}; self._fractions={}
         if cached is not None:
             self.tables,self.offsets,self.total,self._old_samples=cached
             return
@@ -83,6 +83,8 @@ class CurvePath:
         return i+(key[3] if a<b else 1.-key[3])
 
     def fraction(self,key):
+        value=self._fractions.get(key)
+        if value is not None:return value
         s=self.parameter(key)
         if s is None:raise ValueError(tr('Point does not belong to the guide'))
         i=min(len(self.tables)-1,int(s));t=s-i
@@ -90,7 +92,8 @@ class CurvePath:
         x=max(0.,min(float(subdivisions),t*subdivisions))
         j=min(subdivisions-1,int(x));blend=x-j
         arc=self.tables[i]
-        return (self.offsets[i]+arc[j]*(1.-blend)+arc[j+1]*blend)/self.total
+        value=(self.offsets[i]+arc[j]*(1.-blend)+arc[j+1]*blend)/self.total
+        self._fractions[key]=value;return value
 
     def at(self,u):
         if u in self._samples:return self._samples[u]
@@ -114,7 +117,7 @@ class CurvePath:
         arc=self.tables[i];d=distance-self.offsets[i]
         j=min(CURVE_SUBDIVISIONS,max(1,bisect.bisect_left(arc,d)))
         t=((j-1)+(d-arc[j-1])/max(EPS,arc[j]-arc[j-1]))/CURVE_SUBDIVISIONS
-        a,b=self.path[i:i+2];lo,hi=edge_key(a,b)
+        a,b=self.path[i],self.path[i+1];lo,hi=edge_key(a,b)
         t=round(t if a==lo else 1.-t,10)
         if t<=1e-10:return ('v',lo),self.points[lo]
         if t>=1.-1e-10:return ('v',hi),self.points[hi]
@@ -145,6 +148,11 @@ class CurvePath:
         for u in tuple(missing):
             if u in old:self._samples[u]=old[u]
         missing=[u for u in missing if u not in self._samples]
+        if not missing:return
+        from . import kernels
+        accelerated=kernels.sample(self,missing)
+        if accelerated is not NotImplemented:
+            self._samples.update(accelerated);return
         if np is None or len(missing)<max(16,8*len(self.tables)) or not hasattr(self.evaluate,'coefficients'):
             for u in missing:self.at(u)
             return
@@ -155,7 +163,7 @@ class CurvePath:
             members=np.flatnonzero(indices==i);arc=np.asarray(self.tables[i]);d=distance[members]-offsets[i]
             j=np.clip(np.searchsorted(arc,d),1,CURVE_SUBDIVISIONS)
             t=((j-1)+(d-arc[j-1])/np.maximum(EPS,arc[j]-arc[j-1]))/CURVE_SUBDIVISIONS
-            a,b=self.path[i:i+2];lo,hi=edge_key(a,b)
+            a,b=self.path[i],self.path[i+1];lo,hi=edge_key(a,b)
             active=[];parameters=[];keys=[]
             for k,local in zip(members,t.tolist()):
                 u=missing[k]
@@ -180,6 +188,15 @@ class CurvePath:
         fractions=list(fractions);self.prime(fractions)
         return [self._samples[u] for u in fractions]
 
+
+
+
+def _refine_rows(curve,a,b,spacing,detail_at,depth=0):
+    middle=(a+b)*.5
+    pa=curve.at(a)[1];pb=curve.at(b)[1];pm=curve.at(middle)[1]
+    if depth<6 and length(sub(pm,mix(pa,pb,.5)))>spacing/max(EPS,detail_at(middle))*.065:
+        return _refine_rows(curve,a,middle,spacing,detail_at,depth+1)[:-1]+_refine_rows(curve,middle,b,spacing,detail_at,depth+1)
+    return [a,b]
 
 
 class RailRegistry:
@@ -251,21 +268,17 @@ class RailRegistry:
                 intervals=len(fractions)-1
                 allocated+=intervals
                 if allocated>2*max_samples:raise ValueError(tr('Detail sample limit exceeded'))
+                from . import kernels
+                if len(fractions)>=8 and kernels.available():curve.prime(fractions+[(a+b)*.5 for a,b in zip(fractions,fractions[1:])])
                 # A small curvature safeguard at low detail, independent of
                 # support count. Straight parts keep their sparse spacing.
-                def refine(a,b,depth=0):
-                    middle=(a+b)*.5
-                    pa=curve.at(a)[1];pb=curve.at(b)[1];pm=curve.at(middle)[1]
-                    if depth<6 and length(sub(pm,mix(pa,pb,.5)))>spacing/max(EPS,detail_at(middle))*.065:
-                        return refine(a,middle,depth+1)[:-1]+refine(middle,b,depth+1)
-                    return [a,b]
                 row_key=(curve.path,first,last)
                 row_signature=(curve.geometry_signature,spacing,lo,hi,phase,phase_difference,direction,tuple(detail_at((a+b)*.5) for a,b in zip(knots,knots[1:])))
                 old=old_rows.get(row_key)
                 if old and old[0]==row_signature:adaptive=list(old[1])
                 else:
                     adaptive=[]
-                    for a,b in zip(fractions,fractions[1:]):adaptive.extend(refine(a,b)[:-1])
+                    for a,b in zip(fractions,fractions[1:]):adaptive.extend(_refine_rows(curve,a,b,spacing,detail_at)[:-1])
                     adaptive.append(hi)
                 self.row_cache[row_key]=(row_signature,tuple(adaptive))
                 allocated+=len(adaptive)-len(fractions)

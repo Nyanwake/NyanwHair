@@ -30,13 +30,18 @@ class MonotoneMap:
 
     def many(self,t):
         if np is None:return [self(value) for value in t]
-        t=np.clip(np.asarray(t),self.x[0],self.x[-1]);x=np.asarray(self.x);y=np.asarray(self.y);d=np.asarray(self.d)
+        numeric=getattr(self,'_numeric',None)
+        if numeric is None:numeric=tuple(np.asarray(values) for values in (self.x,self.y,self.d));self._numeric=numeric
+        x,y,d=numeric;t=np.clip(np.asarray(t),self.x[0],self.x[-1])
         i=np.clip(np.searchsorted(x,t,side='right')-1,0,len(x)-2);h=x[i+1]-x[i];u=(t-x[i])/h
         u2=u*u;u3=u2*u
         return (2*u3-3*u2+1)*y[i]+(u3-2*u2+u)*h*d[i]+(-2*u3+3*u2)*y[i+1]+(u3-u2)*h*d[i+1]
 
 def _projected_match(a,b,us,aa,ta):
     if np is None:return None
+    from . import kernels
+    accelerated=kernels.projection(b,us,aa,ta)
+    if accelerated is not NotImplemented:return accelerated
     u=np.asarray(us);v=u.copy();pa=np.asarray(aa);ta=np.asarray(ta)
     def samples(values):
         size=len(values)
@@ -141,9 +146,17 @@ class RibbonMap:
         if curve is self.b:u=self.v_to_u(u)
         return self.u_to_flow(u)
 
+    def fractions(self,curve,keys):
+        if np is None or len(keys)<8:return [self.fraction(curve,key) for key in keys]
+        values=[curve.fraction(key) for key in keys]
+        if curve is self.b:values=self.v_to_u.many(values)
+        return self.u_to_flow.many(values).tolist()
+
     def sample(self,flows):
         missing=list(dict.fromkeys(u for u in flows if u not in self._samples))
-        left=[self.flow_to_u(u) for u in missing];right=[self.u_to_v(u) for u in left]
+        if np is not None and len(missing)>=8:
+            left=self.flow_to_u.many(missing);right=self.u_to_v.many(left).tolist();left=left.tolist()
+        else:left=[self.flow_to_u(u) for u in missing];right=[self.u_to_v(u) for u in left]
         self._samples.update(zip(missing,zip(self.a.sample(left),self.b.sample(right))))
         return [self._samples[u] for u in flows]
 
@@ -164,6 +177,10 @@ def zipper_flows(a,b):
     long,short=(b,a) if swap else (a,b)
     na=len(long)-1;nb=len(short)-1;extra=na-nb
     if extra==0:return [(i,i) for i in range(na+1)]
+    if (nb+1)*(extra+1)<=400000:
+        from . import kernels
+        accelerated=kernels.zipper(long,short)
+        if accelerated is not NotImplemented:return [(j,i) for i,j in accelerated] if swap else accelerated
     if (nb+1)*(extra+1)>400000:
         # Bounded-memory fallback for extreme detail or count imbalance.
         j=k=0;path=[(0,0)]

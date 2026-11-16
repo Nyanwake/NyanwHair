@@ -5,7 +5,7 @@ from mathutils.bvhtree import BVHTree
 from bpy_extras import view3d_utils
 
 
-def hit(context,origin,direction):
+def hit(context,origin,direction,with_group=False):
     from . import addon as a,groups,decorations
     nearest=None
     for obj in context.selectable_objects:
@@ -21,9 +21,9 @@ def hit(context,origin,direction):
                 point,normal,index,distance=record['pick_bvh'].ray_cast(inverse@origin,(inverse.to_3x3()@direction).normalized())
                 if point is None:continue
                 distance=(matrix@point-origin).length
-                if nearest is None or distance<nearest[0]:nearest=(distance,obj)
+                if nearest is None or distance<nearest[0]:nearest=(distance,obj,record.get('group_id',1))
     if nearest is None:return None
-    distance,obj=nearest
+    distance,obj,uid=nearest
     if not a._xray_enabled(context):
         cursor=origin.copy();epsilon=max(1e-6,distance*1e-6);depsgraph=context.evaluated_depsgraph_get()
         for _ in range(32):
@@ -33,7 +33,7 @@ def hit(context,origin,direction):
             if not found:break
             if not a.is_guide(occluder.original):return None
             cursor=point+direction*epsilon
-    return obj
+    return (obj,uid) if with_group else obj
 
 
 class NYANW35_OT_pick_object(Operator):
@@ -51,13 +51,17 @@ class NYANW35_OT_pick_object(Operator):
         xy=(event.mouse_region_x,event.mouse_region_y)
         origin=view3d_utils.region_2d_to_origin_3d(context.region,context.region_data,xy)
         direction=view3d_utils.region_2d_to_vector_3d(context.region,context.region_data,xy)
-        obj=hit(context,origin,direction)
-        if obj is None:return {'PASS_THROUGH'}
+        found=hit(context,origin,direction,with_group=True)
+        if found is None:return {'PASS_THROUGH'}
+        obj,uid=found
         selected=obj.select_get()
         if not event.shift:
             for other in context.selected_objects:other.select_set(False)
         obj.select_set(not selected if event.shift else True)
-        if obj.select_get():context.view_layer.objects.active=obj
+        if obj.select_get():
+            context.view_layer.objects.active=obj
+            from . import groups
+            if uid!=groups.active_id(obj):bpy.ops.nyanw35.group('EXEC_DEFAULT',action='SELECT',uid=uid)
         context.area.tag_redraw();return {'FINISHED'}
 
 
