@@ -33,7 +33,7 @@ def filter_faces(vertices,faces,owners,valid=None):
 
 def build(vertices,faces,owners,previous,limit,registry,index):
     from . import kernels
-    native=kernels.assemble(vertices,faces,owners) if not registry.needs_stitch else NotImplemented
+    native=kernels.assemble(vertices,faces,owners,packed=True) if not registry.needs_stitch else NotImplemented
     if native is not NotImplemented:
         kept,kept_owners,used,remap,compact,corner_layout=native
         if len(kept)>limit:raise ValueError(tr('Polygon limit exceeded'))

@@ -216,8 +216,14 @@ def build_transition(plan,width,registry,ca,cb,left,right,profiles,put,emit,max_
             if 0<x<width and (length(sub(points[column[0]][1],sections[0][x]))>1e-7 or length(sub(points[column[-1]][1],sections[-1][x]))>1e-7):column=[]
             columns.append(tuple(column))
         recipe=(tuple(points),tuple(faces),sections,tuple(columns),tuple(rows))
-    cache[plan.boundary]=(signature,recipe);points,faces,sections,columns,rows=recipe;remap=[put(k,p) for k,p in points]
-    if hasattr(emit,'bulk'):emit.bulk(faces,remap)
+    points,faces,sections,columns,rows=recipe
+    if hasattr(put,'bind'):
+        from .packed import RecipeBlock,IndexMap
+        block=old[2] if reused and len(old)>2 else RecipeBlock(points,faces)
+        cache[plan.boundary]=(signature,recipe,block);mapping=put.bind(block);emit.block(block.faces,mapping);remap=IndexMap(mapping)
     else:
-        for face in faces:emit([remap[v] for v in face])
+        cache[plan.boundary]=(signature,recipe);remap=[put(k,p) for k,p in points]
+        if hasattr(emit,'bulk'):emit.bulk(faces,remap)
+        else:
+            for face in faces:emit([remap[v] for v in face])
     return sections,IndexRows(columns,(remap,)),IndexRows(rows,(remap,),True),reused

@@ -90,17 +90,17 @@ def geometry(a,b,fa,fb,baseline):
     return [tuple(v) for v in out[:size][::-1].tolist()] if size>0 else baseline if size==0 else NotImplemented
 
 
-def normals(aa,bb,reference):
+def normals(aa,bb,reference,packed=False):
     lib=_get()
     if lib is None:return NotImplemented
     a,b,ref=(np.ascontiguousarray(v,dtype=np.float64) for v in ([p for k,p in aa],[p for k,p in bb],reference))
     if a.ndim!=2 or a.shape[1]!=3 or b.shape!=a.shape or ref.shape!=(3,):return NotImplemented
     out=np.empty_like(a)
     status=lib.nwh_normals(a,b,len(a),ref,out)
-    return out.tolist() if status>0 else NotImplemented
+    return (out if packed else out.tolist()) if status>0 else NotImplemented
 
 
-def grid(aa,bb,normals,bulge,profile,blend,fractions):
+def grid(aa,bb,normals,bulge,profile,blend,fractions,packed=False):
     lib=_get()
     if lib is None:return NotImplemented
     import math
@@ -112,23 +112,34 @@ def grid(aa,bb,normals,bulge,profile,blend,fractions):
             if value is not None:shifts[x,end]=value
     out=np.empty((len(a),len(v),3))
     status=lib.nwh_grid(a,b,n,len(a),v,sine,len(v),bulge,weights,shifts,out)
-    return out.tolist() if status>0 else NotImplemented
+    return (out if packed else out.tolist()) if status>0 else NotImplemented
 
 
-def assemble(vertices,faces,owners):
+def assemble(vertices,faces,owners,packed=False):
     lib=_get()
     if lib is None:return NotImplemented
     from itertools import chain
     points=np.ascontiguousarray(vertices,dtype=np.float64)
     if len(points) and points.shape!=(len(points),3):return NotImplemented
     if len(owners)!=len(faces):return NotImplemented
-    sizes=np.fromiter(map(len,faces),dtype=np.intp,count=len(faces));offsets=np.r_[0,np.cumsum(sizes)]
-    flat=np.fromiter(chain.from_iterable(faces),dtype=np.intp,count=int(offsets[-1]))
+    from .packed import FaceStream,PackedFaces,SelectedRows,IndexMap
+    numeric=faces.packed() if isinstance(faces,FaceStream) else faces if isinstance(faces,PackedFaces) else None
+    if numeric is not None:offsets=numeric.offsets;flat=numeric.indices
+    else:
+        sizes=np.fromiter(map(len,faces),dtype=np.intp,count=len(faces));offsets=np.r_[0,np.cumsum(sizes)]
+        flat=np.fromiter(chain.from_iterable(faces),dtype=np.intp,count=int(offsets[-1]))
     keep=np.empty(len(faces),dtype=np.uint8);remap=np.empty(len(vertices),dtype=np.intp);used=np.empty_like(remap)
     indices=np.empty_like(flat);next_vertices=np.empty_like(flat);face_ids=np.empty_like(flat);out_offsets=np.empty_like(offsets);counts=np.empty(3,dtype=np.intp)
     status=lib.nwh_assembly(points,len(points),flat,len(flat),offsets,len(faces),keep,remap,used,indices,out_offsets,next_vertices,face_ids,counts)
     if status<0:return NotImplemented
-    nf,nv,nvalues=map(int,counts);used=used[:nv].tolist();values=indices[:nvalues].tolist();bounds=out_offsets[:nf+1].tolist()
+    nf,nv,nvalues=map(int,counts)
+    if packed:
+        compact=PackedFaces(out_offsets[:nf+1],indices[:nvalues]);positions=np.flatnonzero(keep)
+        kept=SelectedRows(faces,positions);kept_owners=[owners[int(i)] for i in positions]
+        layout=(out_offsets[:nf],indices[:nvalues],next_vertices[:nvalues],face_ids[:nvalues])
+        for value in layout:value.setflags(write=False)
+        return kept,kept_owners,used[:nv],IndexMap(remap),compact,(compact.signature,*layout)
+    used=used[:nv].tolist();values=indices[:nvalues].tolist();bounds=out_offsets[:nf+1].tolist()
     compact=[tuple(values[a:b]) for a,b in zip(bounds,bounds[1:])]
     positions=np.flatnonzero(keep).tolist();kept=[faces[i] for i in positions];kept_owners=[owners[i] for i in positions]
     packed=(out_offsets[:nf],indices[:nvalues],next_vertices[:nvalues],face_ids[:nvalues])

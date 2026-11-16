@@ -13,7 +13,8 @@ def rails(cache,result,evaluate,matrix,normal_matrix,visible):
         for path in paths:
             for one,two in zip(path,path[1:]):edges.setdefault(core.edge_key(one,two),set()).add(owner)
     samples={edge:{0.:('v',edge[0]),1.:('v',edge[1])} for edge in edges}
-    positions={key:point for key,point in zip(result.vertex_keys,result.vertices) if key[0] in ('v','s')}
+    from .packed import shared_items
+    positions={key:result.vertices[i] for key,i in shared_items(result.vertex_keys) if key[0] in ('v','s')}
     for key in positions:
         if key[0]=='s' and key[1:3] in samples:samples[key[1:3]][float(key[3])]=key
     normals=cache.get('gpu_boundary_normals',{});old=cache.get('gpu_rail_records',{});records={};segments={};attributes={};pending=[]
