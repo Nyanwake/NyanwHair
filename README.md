@@ -1,10 +1,12 @@
-# NyanwHair 1.17
+# NyanwHair 1.18 Preview
 
 Shape expressive stylized hair with a few guides. NyanwHair stitches neighbouring segments into a continuous mesh as you work. Grow branches easily and adjust polygon density both along and across a strand.
 
 **Blender 5.1+ · English / Русский · Native Windows / Linux x64**
 
-[Download](https://github.com/Nyanwake/NyanwHair/releases/tag/v1.0.17) · [Русский](#русский) · [GPL-3.0](LICENSE)
+[Download](https://raw.githubusercontent.com/Nyanwake/NyanwHair/install-v1.0.18-preview1/downloads/NyanwHair_v1.18_preview.zip) · [Русский](#русский) · [GPL-3.0](LICENSE)
+
+This preview reduces Live mesh assembly work, especially on dense strands. It keeps the current curve, surface and topology calculation. Stable: [1.17](https://github.com/Nyanwake/NyanwHair/releases/tag/v1.0.17).
 
 ## What it does
 
@@ -112,6 +114,8 @@ For the active NyanwHair guide in Edit Mode.
 <summary>Возможности, параметры и все сценарии E</summary>
 
 Формируй выразительные стилизованные локоны несколькими направляющими. NyanwHair автоматически сшивает соседние сегменты в единый меш. Добавляй ответвления и меняй плотность вдоль и поперёк пряди по ходу работы.
+
+В этой Preview ускорена сборка Live-меша, особенно на плотных локонах. Расчёт формы кривых, поверхности и топологии сохранён. Стабильная версия: [1.17](https://github.com/Nyanwake/NyanwHair/releases/tag/v1.0.17).
 
 ### Возможности
 

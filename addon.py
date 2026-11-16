@@ -1960,7 +1960,7 @@ def _draw_presets(layout,obj):
 
 
 class NYANW35_PT_main(Panel):
-    bl_label='NyanwHair v1.17'
+    bl_label='NyanwHair v1.18 Preview'
     bl_idname='NYANW35_PT_main'
     bl_space_type='VIEW_3D'
     bl_region_type='UI'
@@ -2198,10 +2198,11 @@ def _gpu_mesh_records(cache,result,smooth):
     cache['gpu_normal_array']=values;cache['gpu_vertex_array']=positions
     cache['normal_topology']=getattr(result,'normal_topology',None)
     plans={p.index:p for p in result.plans_by_loop.values()}
-    boundary_keys=tuple(result.vertex_keys)
-    boundary=tuple(i for i,key in enumerate(boundary_keys) if key[0] in ('v','s'))
+    from .packed import shared_items,face_signature
+    boundary_keys={i:key for key,i in shared_items(result.vertex_keys)}
+    boundary=tuple(i for i,key in boundary_keys.items() if key[0] in ('v','s'))
     front_count=len(cache['result'].faces)
-    layout_signature=(tuple(result.faces),tuple(result.owners),boundary,front_count,
+    layout_signature=(face_signature(result.faces),tuple(result.owners),boundary,front_count,
         tuple(sorted((owner,p.settings.order) for owner,p in plans.items())),bool(smooth),result.normal_topology[0][2] if result.faces else frozenset())
     saved=cache.get('gpu_layout')
     if saved and saved[0]==layout_signature and 'gpu_boundary_layout' in cache:layout=saved[1]
@@ -2221,28 +2222,27 @@ def _gpu_mesh_records(cache,result,smooth):
         layout=[]
         for key,indices in chunks.items():
             owners=tuple(sorted({result.owners[fi] for fi in indices}))
-            vertices=tuple(sorted({v for fi in indices for v in result.faces[fi]}))
+            vertices=tuple(np.unique(corner_vertices[face_chunks[face_ids]==key]).tolist())
             edges=tuple(owned_edges[key])
             info=_buffer_layout(result,indices,result.normal_topology[1],edges)
-            faces_key=(tuple((result.owners[fi],result.faces[fi]) for fi in indices),vertices)
+            faces_key=(tuple((result.owners[fi],result.faces[fi]) for fi in indices),vertices) if info['dynamic'] else (info['normal'].tobytes(),info['reflected'].tobytes(),info['owners'].tobytes())
             keys=edges
             layout.append((key,tuple(indices),owners,vertices,faces_key,edges,keys,info))
         cache['gpu_layout']=(layout_signature,tuple(layout))
-        boundary=set(boundary)
-        grouped={};corners=[];indices=[]
-        for fi,(face,owner) in enumerate(zip(result.faces[:front_count],result.owners[:front_count])):
-            for corner,vertex in enumerate(face):
-                if vertex in boundary:
-                    key=(vertex,owner)
-                    if key not in grouped:grouped[key]=len(grouped)
-                    corners.append(int(result.normal_topology[1][fi])+corner);indices.append(grouped[key])
-        cache['gpu_boundary_layout']=(tuple(grouped),np.asarray(corners,dtype=np.intp),np.asarray(indices,dtype=np.intp))
+        end=int(result.normal_topology[1][front_count]) if front_count<len(result.faces) else len(corner_vertices)
+        corners=np.flatnonzero(np.isin(corner_vertices[:end],np.asarray(boundary,dtype=np.intp)))
+        vertex=corner_vertices[corners];owner=np.asarray(result.owners,dtype=np.intp)[face_ids[corners]]
+        minimum=int(owner.min()) if len(owner) else 0;span=int(owner.max())-minimum+1 if len(owner) else 1
+        _,first,inverse=np.unique(vertex*span+owner-minimum,return_index=True,return_inverse=True)
+        order=np.argsort(first);first=first[order];rank=np.empty(len(order),dtype=np.intp);rank[order]=np.arange(len(order))
+        grouped=tuple(zip(vertex[first].tolist(),owner[first].tolist()))
+        cache['gpu_boundary_layout']=(grouped,corners,rank[inverse])
     records=[]
     cache['gpu_buffer_layout']={row[0]:row[-1] for row in layout}
     for key,indices,owners,vertices,faces_key,edges,keys,info in layout:
         faces=tuple((result.faces[fi],result.owners[fi],normals[fi]) for fi in indices) if info['dynamic'] else ()
-        geometry=(faces_key,positions[np.asarray(vertices)].tobytes(),values[info['corners']].tobytes())
-        records.append((key,faces,owners,geometry,edges,keys))
+        geometry=(faces_key,positions[np.asarray(vertices)].tobytes(),values[info['corners']].tobytes(),bool(len(getattr(result,'preview_masks',(0,)))>1))
+        records.append((key,faces,owners,geometry,edges,positions[info['edges']].tobytes()))
     pairs,corners,groups=cache['gpu_boundary_layout']
     boundary_values=values[corners]
     sums=np.stack([np.bincount(groups,weights=boundary_values[:,axis],minlength=len(pairs)) for axis in range(3)],axis=1)

@@ -389,10 +389,16 @@ def build_patch(plan,width,registry,left_curve,right_curve,left,right,cap_profil
         def local_emit(face):faces.append(tuple(face))
         sections,columns=_build_patch(plan,width,registry,left_curve,right_curve,left,right,cap_profiles,local_put,local_emit,max_polygons)
         recipe=(tuple(points),tuple(faces),sections,tuple(tuple(c) for c in columns))
-    if cache is not None:cache[plan.boundary]=(signature,recipe)
     points,faces,sections,columns=recipe
-    remap=[put(key,pos) for key,pos in points]
-    if hasattr(emit,'bulk'):emit.bulk(faces,remap)
+    if hasattr(put,'bind'):
+        from .packed import RecipeBlock,IndexMap
+        block=old[2] if reused and len(old)>2 else RecipeBlock(points,faces)
+        if cache is not None:cache[plan.boundary]=(signature,recipe,block)
+        mapping=put.bind(block);emit.block(block.faces,mapping);remap=IndexMap(mapping)
     else:
-        for face in faces:emit([remap[v] for v in face])
+        if cache is not None:cache[plan.boundary]=(signature,recipe)
+        remap=[put(key,pos) for key,pos in points]
+        if hasattr(emit,'bulk'):emit.bulk(faces,remap)
+        else:
+            for face in faces:emit([remap[v] for v in face])
     return sections,[[remap[v] for v in column] for column in columns],reused

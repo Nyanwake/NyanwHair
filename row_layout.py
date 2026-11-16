@@ -7,9 +7,9 @@ except ImportError:
     np=None
 
 
-def profile_normals(aa,bb,reference):
+def profile_normals(aa,bb,reference,packed=False):
     from . import kernels
-    accelerated=kernels.normals(aa,bb,reference)
+    accelerated=kernels.normals(aa,bb,reference,packed=packed)
     if accelerated is not NotImplemented:return accelerated
     from .surface import _rotate
     if np is None:
@@ -38,12 +38,13 @@ def profile_normals(aa,bb,reference):
     transported[sine<EPS]=previous[sine<EPS]
     signs=np.ones(len(raw));signs[0]=-1. if float(raw[0]@np.asarray(reference))<0. else 1.
     signs[1:]=np.where(np.einsum('ij,ij->i',raw[1:],transported)<0.,-1.,1.)
-    return (raw*np.cumprod(signs)[:,None]).tolist()
+    output=raw*np.cumprod(signs)[:,None]
+    return output if packed else output.tolist()
 
 
-def profile_grid(aa,bb,normals,bulge,profile,blend,fractions):
+def profile_grid(aa,bb,normals,bulge,profile,blend,fractions,packed=False):
     from . import kernels
-    accelerated=kernels.grid(aa,bb,normals,bulge,profile,blend,fractions)
+    accelerated=kernels.grid(aa,bb,normals,bulge,profile,blend,fractions,packed=packed)
     if accelerated is not NotImplemented:return accelerated
     if np is None:return None
     a=np.asarray([p for key,p in aa]);b=np.asarray([p for key,p in bb])
@@ -55,7 +56,7 @@ def profile_grid(aa,bb,normals,bulge,profile,blend,fractions):
     for x in range(1,len(profile)-1):
         for end,shift in enumerate(blend.column(x/(len(profile)-1))):
             if shift is not None:positions[:,x,:]+=weights[:,end,None]*np.asarray(shift)
-    return positions.tolist()
+    return positions if packed else positions.tolist()
 
 
 def station(values,t):

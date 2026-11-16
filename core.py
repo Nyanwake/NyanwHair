@@ -533,6 +533,7 @@ class _FaceEmitter:
         else:
             for face in faces:self([remap[v] for v in face])
         self.cache[self.boundary]=(faces,mapping_key,self.reverse,tuple(self.local))
+    def block(self,faces,remap):self.local.extend(faces.mapped(remap,self.reverse))
 
 def _orientation(plans):
     issues=set()
@@ -668,13 +669,9 @@ def generate(points,boundaries,settings=None,rows=12,max_polygons=200000,
     out.layout_lengths=dict(registry.layout_lengths)
     out.reference_length=registry.reference_length
     out.target_spacing=registry.spacing
-    vertex_index={}
-    produced=set()
-    def put(key,pos):
-        if key not in vertex_index:
-            vertex_index[key]=len(out.vertices)
-            out.vertices.append(pos)
-        return vertex_index[key]
+    from .packed import VertexPool,FaceStream,PointArray,MappedKeys,IndexMap
+    import numpy as np
+    vertex_index=put=VertexPool();out.vertices=put;out.faces=FaceStream()
     from .mesh_views import IndexRows,OwnerEdges,CutLines
     production={};ordered=sorted(plans,key=_plan_priority)
     out.plan_order=tuple(p.boundary for p in ordered);prefix_same=out.plan_order==getattr(previous,'plan_order',())
@@ -695,7 +692,7 @@ def generate(points,boundaries,settings=None,rows=12,max_polygons=200000,
             if signs[p.index]<0:reverse=not reverse
             if p.settings.normal_flip:reverse=not reverse
             out.orientation_by_face[p.index]=reverse
-            local=[];local_keys=set()
+            local=FaceStream()
             emit=_FaceEmitter(local,reverse,getattr(previous,'emission_cache',{}).get(p.boundary),p.boundary,out.emission_cache)
             mapping=registry.maps.get((ca.path,cb.path))
             density_here=any(registry.density.get(edge,1.)>1. for curve in (ca,cb) for edge in curve.edges)
@@ -716,7 +713,6 @@ def generate(points,boundaries,settings=None,rows=12,max_polygons=200000,
                 sections,columns,grid,reused=build_strip(p,w,registry,ca,cb,left,right,cap_profiles,put,emit,max_polygons,
                     out.patch_cache,getattr(previous,'patch_cache',{}))
                 out.reused_patches+=reused
-            local=tuple(local)
             out.surface_columns[p.index]=columns if isinstance(columns,IndexRows) else IndexRows(columns)
             out.faces.extend(local);out.owners.extend([p.index]*len(local))
             if len(out.faces)>2*max_polygons:
@@ -740,8 +736,9 @@ def generate(points,boundaries,settings=None,rows=12,max_polygons=200000,
     kept,owners,used,remap,compact_faces,owner_edges,saved,corner_layout=assembly.build(out.vertices,out.faces,out.owners,getattr(previous,'dense_assembly_cache',None),max_polygons,registry,vertex_index)
     out.dense_assembly_cache=saved;out.corner_layout=corner_layout
     out.owners=owners
-    keys=tuple(vertex_index)
-    out.vertex_keys=[keys[v] for v in used];out.vertices=[out.vertices[v] for v in used];out.faces=compact_faces
+    used=np.asarray(used,dtype=np.intp)
+    out.vertex_keys=MappedKeys(put.keys,used,remap,put.shared)
+    out.vertices=PointArray(np.asarray(put)[used]);out.faces=compact_faces
     out.surface_grids={zone:grid.remapped(remap) for zone,grid in out.surface_grids.items()}
     out.surface_columns={zone:columns.remapped(remap) for zone,columns in out.surface_columns.items()}
     out.cut_lines=CutLines(out.vertices,out.surface_columns,owner_edges)

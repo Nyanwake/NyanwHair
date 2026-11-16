@@ -9,6 +9,9 @@ from .row_layout import correspondence,rows,profile_grid,profile_normals
 
 
 def build_strip(plan,width,registry,ca,cb,left,right,profiles,put,emit,max_polygons,cache,previous):
+    if hasattr(put,'bind'):
+        from .strip_blocks import build
+        return build(plan,width,registry,ca,cb,left,right,profiles,put,emit,max_polygons,cache,previous)
     cap_data=[]
     for kind,i in (plan.start,plan.end):
         if kind=='edge':

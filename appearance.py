@@ -1,13 +1,14 @@
 """Corner normals with sharp guide boundaries; GPU-only MatCap resources."""
 from .i18n import tr
 from .core import edge_key
+from .packed import shared_items,face_signature,PackedFaces
 
 
 def _guide_edges(result,sharp_only):
     signature=(id(result.vertex_keys),len(result.vertex_keys),id(result.rail_samples),id(result.cap_widths),id(result.rim_caps),id(result.smooth_rails))
     saved=getattr(result,'guide_edge_cache',None)
     if saved is None or saved[0]!=signature:
-        saved=(signature,{key:i for i,key in enumerate(result.vertex_keys)},{})
+        saved=(signature,dict(shared_items(result.vertex_keys)),{})
         result.guide_edge_cache=saved
     if sharp_only in saved[2]:return saved[2][sharp_only]
     indices=saved[1];sharp=set()
@@ -60,7 +61,8 @@ def _normal_groups(vertices,next_vertices,offsets,sharp,count):
 class _CornerNormals:
     __slots__=('values','offsets','sizes')
     def __init__(self,values,offsets,faces):
-        self.values=values;self.offsets=offsets;self.sizes=tuple(map(len,faces))
+        self.values=values;self.offsets=offsets
+        self.sizes=faces.offsets[1:]-faces.offsets[:-1] if isinstance(faces,PackedFaces) else tuple(map(len,faces))
     def __len__(self):return len(self.offsets)
     def __getitem__(self,index):
         if isinstance(index,slice):return tuple(self[i] for i in range(*index.indices(len(self))))
@@ -76,11 +78,11 @@ def corner_normals(result,smooth=True,topology=None,packed=False):
     if not faces:
         result.normal_cache=(smooth,());return ()
     sharp=frozenset(sharp_edges(result)) if smooth else frozenset()
-    signature=(bool(smooth),tuple(faces),sharp)
+    signature=(bool(smooth),face_signature(faces),sharp)
     topology=topology or getattr(result,'normal_topology',None)
     if topology is None or topology[0]!=signature:
         layout=getattr(result,'corner_layout',None)
-        if layout is not None and layout[0]==tuple(faces):
+        if layout is not None and layout[0]==face_signature(faces):
             _,offsets,vertices,next_vertices,face_ids=layout
         else:
             offsets=[];vertices=[];next_vertices=[];face_ids=[]
