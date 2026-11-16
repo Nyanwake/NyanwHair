@@ -1,10 +1,10 @@
-# NyanwHair 1.17 Preview
+# NyanwHair 1.17
 
 Shape expressive stylized hair with a few guides. NyanwHair stitches neighbouring segments into a continuous mesh as you work. Grow branches easily and adjust polygon density both along and across a strand.
 
 **Blender 5.1+ · English / Русский · Native Windows / Linux x64**
 
-[Download](https://github.com/Nyanwake/NyanwHair/releases/tag/v1.0.17-preview.1) · [Русский](#русский) · [GPL-3.0](LICENSE)
+[Download](https://github.com/Nyanwake/NyanwHair/releases/tag/v1.0.17) · [Русский](#русский) · [GPL-3.0](LICENSE)
 
 ## What it does
 
