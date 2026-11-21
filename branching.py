@@ -1,4 +1,4 @@
-"""Alt+V creates one editable strip per chain, or a pointed fork."""
+"""Alt+V opens a guide seam and fills the gap with one segment."""
 import bpy,bmesh
 from bpy.types import Operator
 from bpy.props import BoolProperty,FloatVectorProperty,IntProperty,FloatProperty
@@ -7,41 +7,62 @@ from . import addon as a,editing as e,extrusion as x
 from .i18n import tr
 
 
-def point(bm,source,offset):
+def point(bm,result,source,offset):
     parents=[f for f in source.link_faces if not f.hide]
     if not parents:return x._wire(bm,source,offset)
-    parent=bm.faces.active if bm.faces.active in parents else min(parents,key=lambda f:int(f[bm.faces.layers.int[a.L_ORDER]]))
-    normal=parent.normal.copy();origin=source.co.copy();attrs=x._attributes(parent,bm)
-    left=bm.verts.new(origin);right=bm.verts.new(origin);tip=bm.verts.new(origin+offset)
-    for v in (left,right,tip):v[bm.verts.layers.int[a.L_VERTEX_GROUP]]=source[bm.verts.layers.int[a.L_VERTEX_GROUP]]
-    identity=max(int(f[bm.faces.layers.int[a.L_ORDER]]) for f in bm.faces)+1
-    face=x._face(bm,[source,left,tip,right],attrs,identity,(frozenset((source,)),frozenset((tip,))))
-    direction=sum((source.co-edge.other_vert(source).co for edge in source.link_edges if edge.other_vert(source) not in (left,right)),Vector())
-    data=x._finish(bm,offset,[tip],origin,direction,'BRANCH',1,x._records(bm))
-    data['branch_supports']=(left.index,right.index,tuple(origin),tuple(normal));update(bm,data,offset)
-    bm.faces.active=face;return data
+    candidates=tuple((int(f[bm.faces.layers.int[a.L_ORDER]]),tuple(f.calc_center_median()-source.co)) for f in parents)
+    selected=max(candidates,key=lambda item:(Vector(item[1]).dot(offset),item[0]))[0]
+    parent=next(f for f in parents if int(f[bm.faces.layers.int[a.L_ORDER]])==selected)
+    slots=e.boundary_vertices(parent,bm)
+    if len(parents)==1 and frozenset((source,)) in slots:
+        from . import ripping
+        ring=list(parent.verts);i=ring.index(source)
+        choices=((0,tuple(ring[i-1].co-source.co)),(1,tuple(ring[(i+1)%len(ring)].co-source.co)))
+        side=max(choices,key=lambda item:(Vector(item[1]).dot(offset),item[0]))[0]
+        data=ripping.split(bm,offset,before=side==0)
+        data.update(ripfill_corner=True,ripfill_choices=choices,ripfill_key=(side,False));return data
+    ring=list(parent.verts);i=ring.index(source);attrs=x._attributes(parent,bm);identity=int(parent[bm.faces.layers.int[a.L_ORDER]])
+    next_order=max(int(f[bm.faces.layers.int[a.L_ORDER]]) for f in bm.faces)+1
+    shared=[v for v in (ring[i-1],ring[(i+1)%len(ring)]) if len(bm.edges.get((source,v)).link_faces)>1]
+    path=[shared[0],source] if len(shared)==1 else [ring[i-1],source,ring[(i+1)%len(ring)]]
+    records=list(x._records(bm));old_edges=list(parent.edges);origin=source.co.copy()
+    moving=bm.verts.new(source.co+offset,source)
+    changed={frozenset(edge.verts) for edge in parent.edges if source in edge.verts}
+    for values in records:
+        values.update({(moving if u is source else u,moving if v is source else v):value for (u,v),value in list(values.items()) if frozenset((u,v)) in changed})
+    keep=len(parents)==1 and (parent.calc_center_median()-source.co).dot(offset)<0.
+    if not keep:bm.faces.remove(parent)
+    main=parent if keep else x._face(bm,[moving if v is source else v for v in ring],attrs,identity,tuple(frozenset(moving if v is source else v for v in cap) for cap in slots))
+    gap=path+[moving] if len(path)==3 else [path[0],source,moving]
+    ends=(frozenset((path[0],)),frozenset((path[-1],))) if len(path)==3 else (frozenset((path[0],)),frozenset((source,moving)))
+    band=x._face(bm,gap,attrs,next_order,ends)
+    for name,value in (('width',1),('bulge',0.),('bias',0.)):a._set_zone(band,bm,name,value)
+    for edge in old_edges:
+        if edge.is_valid and not edge.link_faces:bm.edges.remove(edge)
+    data=x._finish(bm,offset,[moving],origin,main.calc_center_median()-origin,'RIPFILL',1,records)
+    bm.faces.active=main
+    data.update(ripfill_choices=candidates,ripfill_boundary=len(parents)==1,ripfill_key=(selected,keep))
+    return data
 
 
-def update(bm,data,offset):
-    bm.verts.ensure_lookup_table();left,right,origin,normal=data['branch_supports'];origin=Vector(origin)
-    across=Vector(normal).cross(offset)
-    if across.length<1e-8:across=Vector((1.,0.,0.))
-    across.normalize();across*=offset.length*.2
-    bm.verts[left].co=origin+offset*.5+across;bm.verts[right].co=origin+offset*.5-across
+def choice(data,offset):
+    selected,vector=max(data['ripfill_choices'],key=lambda item:(Vector(item[1]).dot(offset),item[0]))
+    keep=bool(data.get('ripfill_boundary') and Vector(vector).dot(offset)<0.)
+    return selected,keep
 
 
 def stage(bm,result,offset):
     a._prepare_bmesh(bm,result);bm.verts.index_update();bm.faces.index_update();bm.normal_update()
     selected={v for v in bm.verts if v.select and not v.hide}
-    if len(selected)==1:return point(bm,next(iter(selected)),offset)
+    if len(selected)==1:return point(bm,result,next(iter(selected)),offset)
     chains=x._edge_chains(bm,selected)
     if not chains or any(closed for path,closed,edges in chains):raise ValueError(tr('Select an open guide chain or one point'))
     return x._chain(bm,result,offset,chains)
 
 
 class NYANW35_OT_branch(Operator):
-    bl_idname='nyanw35.branch';bl_label='Branch guides'
-    bl_description='Alt+V: create one segment from an edge chain, or a fork from a point'
+    bl_idname='nyanw35.branch';bl_label='Rip and fill guides'
+    bl_description='Alt+V: open a guide seam and fill the gap with one segment'
     bl_options={'REGISTER','UNDO','BLOCKING'}
     from_panel:BoolProperty(default=False,options={'HIDDEN','SKIP_SAVE'})
     offset:FloatVectorProperty(name='Offset',subtype='TRANSLATION',default=(.05,0.,0.))

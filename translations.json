@@ -309,7 +309,6 @@
   "Join hair objects": "Объединить объекты волос",
   "Could not join hair objects": "Не удалось объединить объекты волос",
   "Branch guides": "Ответвление",
-  "Alt+V: create one segment from an edge chain, or a fork from a point": "Alt+V: один сегмент из цепочки рёбер или ответвление из точки",
   "Select an open guide chain or one point": "Выбери открытую цепочку рёбер или одну точку",
   "Knife": "Нож",
   "Knife hair guides": "Нож по локонам",
@@ -320,5 +319,8 @@
   "Show guide points slightly behind the hair surface; deeper points stay hidden": "Показывать точки немного за поверхностью волос; глубоко скрытые точки остаются невидимыми",
   "Bend position": "Положение изгиба",
   "Bend · intermediate points: %d · mouse: bend and position · wheel: points · LMB / Enter · Esc": "Кривая · промежуточных точек: %d · мышь: изгиб и положение · колесо: точки · ЛКМ / Enter · Esc",
-  "Join hair objects; duplicate group names receive numeric suffixes": "Объединить объекты волос; повторяющиеся имена групп получат числовые суффиксы"
+  "Join hair objects; duplicate group names receive numeric suffixes": "Объединить объекты волос; повторяющиеся имена групп получат числовые суффиксы",
+  "Rip and fill guides": "Раздвинуть направляющие",
+  "Rip + fill": "Раздвинуть",
+  "Alt+V: open a guide seam and fill the gap with one segment": "Alt+V: раздвинуть направляющую и заполнить промежуток одним сегментом"
 }

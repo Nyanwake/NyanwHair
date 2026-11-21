@@ -1,7 +1,7 @@
 """Chord-parameterized cubic spline network, independent of mesh sampling."""
 from .i18n import tr
 from collections import defaultdict
-from .core import EPS,add,sub,mul,dot,length,norm,edge_key,_plan_priority,mix
+from .core import EPS,add,sub,mul,dot,length,norm,edge_key,_plan_priority,mix,cross
 
 
 def _tridiagonal(lower,diagonal,upper,rhs):
@@ -33,16 +33,43 @@ def _spline(points,start,end):
     return h,derivatives
 
 
+def _terminal_tangents(points,derivatives,first,last,prefer_first=False,frame=None):
+    """Limit a free tail's adjacent tangent; interior joints keep one C1 tangent."""
+    if len(points)<3:return
+    ends=[True,False] if first and last and len(points)>3 else ([prefer_first] if first and last else [True] if first else [False] if last else [])
+    for at_start in ends:
+        outer,inner,previous=(0,1,2) if at_start else (-1,-2,-3)
+        step_out=norm(sub(points[outer],points[inner]));step_in=norm(sub(points[inner],points[previous]))
+        direction=mul(derivatives[inner],-1. if at_start else 1.)
+        basis=frame or ((1.,0.,0.),(0.,1.,0.),(0.,0.,1.))
+        limited=[]
+        for axis in basis:
+            value,before,after=dot(direction,axis),dot(step_in,axis),dot(step_out,axis)
+            if abs(after)<1e-10 or before*after<0. or value*after<0.:value=0.
+            elif abs(value)>3.*abs(after):value=3.*after
+            limited.append(value)
+        vector=tuple(sum(value*axis[i] for value,axis in zip(limited,basis)) for i in range(3))
+        derivatives[inner]=mul(vector,-1. if at_start else 1.)
+
+
 class CurveNetwork:
     def __init__(self,points,plans,smoothing=None):
         self.smoothing=dict(smoothing or {})
         self.points=points;self.edges=set();self.continuations={};self.paths=[]
-        candidates=[];priorities={}
+        candidates=[];priorities={};self.tips=set();self.frames={}
         for plan in sorted(plans,key=_plan_priority):
             priority=_plan_priority(plan)
+            self.tips.update(plan.boundary[index] for kind,index in (plan.start,plan.end) if kind=='point')
+            edge_cap=next((i for kind,i in (plan.start,plan.end) if kind=='edge'),None)
+            if edge_cap is not None:across=sub(points[plan.boundary[(edge_cap+1)%len(plan.boundary)]],points[plan.boundary[edge_cap]])
+            else:across=sub(points[plan.right[len(plan.right)//2]],points[plan.left[len(plan.left)//2]])
+            normal=norm(plan.normal);across=sub(across,mul(normal,dot(across,normal)))
+            if length(across)<EPS:across=cross(sub(points[plan.left[1]],points[plan.left[0]]),normal)
+            across=norm(across);frame=(across,norm(cross(normal,across)),normal)
+
             for rail in (plan.left,plan.right):
                 for a,b in zip(rail,rail[1:]):
-                    edge=edge_key(a,b);self.edges.add(edge);priorities.setdefault(edge,priority)
+                    edge=edge_key(a,b);self.edges.add(edge);priorities.setdefault(edge,priority);self.frames.setdefault(edge,(priority,frame))
                 for a,node,b in zip(rail,rail[1:],rail[2:]):
                     candidates.append((priority,node,*sorted((a,b))))
         # End caps are not votes to break a through-curve. At a true fork,
@@ -105,6 +132,12 @@ class CurveNetwork:
             start=end=norm(add(norm(sub(self.points[path[0]],self.points[path[-2]])),
                                norm(sub(self.points[path[1]],self.points[path[0]]))))
         h,d=_spline([self.points[v] for v in path],start,end)
+        if path[0]!=path[-1]:
+            first=not any(parent!=ci for parent,index in self.through.get(path[0],()))
+            last=not any(parent!=ci for parent,index in self.through.get(path[-1],()))
+            prefer=(path[0] in self.tips and path[-1] not in self.tips) or (path[0] in self.tips)==(path[-1] in self.tips) and h[0]>h[-1]
+            frame=min((self.frames[edge_key(a,b)] for a,b in zip(path,path[1:])),key=lambda entry:entry[0])[1]
+            _terminal_tangents([self.points[v] for v in path],d,first,last,prefer,frame)
         self.derivatives[ci]=d
         for i,(a,b) in enumerate(zip(path,path[1:])):
             self.coefficients[a,b]=(self.points[a],self.points[b],mul(d[i],h[i]),mul(d[i+1],h[i]))

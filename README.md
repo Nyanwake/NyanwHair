@@ -1,10 +1,10 @@
-# NyanwHair 1.19 Preview
+# NyanwHair 1.19 Preview 2
 
 Shape expressive stylized hair with a few guides. NyanwHair stitches neighbouring segments into a continuous mesh as you work. Grow branches easily and adjust polygon density both along and across a strand.
 
 **Blender 5.1+ · English / Русский · Native Windows / Linux x64**
 
-[Download](https://github.com/Nyanwake/NyanwHair/releases/tag/v1.0.19-preview.1) · [Русский](#русский) · [GPL-3.0](LICENSE)
+[Download](https://github.com/Nyanwake/NyanwHair/releases/tag/v1.0.19-preview.2) · [Русский](#русский) · [GPL-3.0](LICENSE)
 
 Preview with group and modelling-tool improvements.
 
@@ -31,7 +31,7 @@ In **Object Mode**, click the visible Live surface to select its object, includi
 | Only a free Start/End boundary: a point or an edge | Continues the existing strand. A pointed end stays a point; the wheel adds a curved extension. Several free ends can be extended together. |
 | One point that is not a free marked end | Extends a guide wire. The wheel adds intermediate points and enters curve bending. |
 | An open wire chain without faces, selected as points or edges | Creates one editable surface segment from the chain. |
-| A boundary or internal edge, or a continuous edge chain | Extrudes an editable strip from the shared base. Internal edges work on closed strands too. |
+| A boundary or internal edge, or a continuous edge chain | Extrudes an editable strip from the shared base. For one edge, the base is Start and the moved edge is End; the wheel curves its guides. Internal edges work on closed strands too. |
 | Several separate edge chains | Extrudes all selected chains together as separate strips. |
 | A closed edge contour, without selecting whole segments | Extrudes walls around the contour. |
 | Exactly two separate, opposite side edges of one segment | Creates a branch from the middle, keeping the portions outside the selected band. |
@@ -42,7 +42,7 @@ Whole-segment and opposite-side-edge selections take priority over generic chain
 
 During E: move the mouse, use **X / Y / Z** to constrain an axis, enter a distance, or hold **Shift** for precision. **LMB / Enter** confirms; **RMB / Esc** cancels.
 
-For a **curve from a point or pointed strand end**, first place the new end, then scroll the wheel. Move across the strand to bend it and along it to shift the bend toward either end. Scroll again to change the number of intermediate points.
+For a **curve from a point or pointed strand end**, first place the new end, then scroll the wheel. The bend uses one smooth curve with a primary point in the middle. Move across the strand to bend it and along it to shift the bend toward either end. Curves start at the parent guides; E from one edge supports the wheel too. Scroll again to change the number of intermediate points.
 
 Volume side walls run as whole segments along the strand. Thickness connections start with smoothing **0** at the source and **1** at the new ends.
 
@@ -104,7 +104,7 @@ For the active NyanwHair guide in Edit Mode.
 | **Ctrl+R** | Hair Loop: cut along a longitudinal mesh line, or add a support point by hovering a guide |
 | **M** | Merge: Center, Active, First, Last, Cursor or By Distance; mirror planes when enabled |
 | **V** | Rip a guide point, including a sparse boundary corner |
-| **Alt+V** | Add one segment from an open edge chain, or a branch from a point |
+| **Alt+V** | Open a guide seam with a filled strip; a pointed end opens as an edge |
 | **K** | Blender Knife on the curved hair silhouette; new cut points follow the Live surface |
 | **F / X** | Blender Fill / Delete; also available in Hotkeys |
 | **Shift+wheel** | Width |
@@ -146,7 +146,7 @@ For the active NyanwHair guide in Edit Mode.
 | Только свободный торец «Начало» или «Конец»: точку либо ребро | Продолжение существующего локона. Острый кончик остаётся точкой; колесо добавляет кривое продолжение. Можно продолжать несколько свободных торцов одновременно. |
 | Одну точку, которая не является свободным отмеченным торцом | Новое ребро направляющей. Колесо добавляет промежуточные точки и включает изгиб кривой. |
 | Незамкнутую цепочку без граней — точками или рёбрами | Один редактируемый сегмент поверхности из этой цепочки. |
-| Граничное или внутреннее ребро, либо непрерывную цепочку рёбер | Вытягивание полосы с общей исходной базой. Внутренние рёбра работают и у замкнутых локонов. |
+| Граничное или внутреннее ребро, либо непрерывную цепочку рёбер | Вытягивание полосы с общей исходной базой. Для одного ребра исходная пара точек — «Начало», вытянутая — «Конец»; колесо изгибает направляющие. Внутренние рёбра работают и у замкнутых локонов. |
 | Несколько раздельных цепочек рёбер | Все цепочки вытягиваются одновременно отдельными полосами. |
 | Замкнутый контур рёбер без выделения сегментов целиком | Вытягивание стенок по контуру. |
 | Ровно два отдельных противоположных боковых ребра одного сегмента | Ответвление из середины с сохранением частей вне выбранной полосы. |
@@ -157,7 +157,7 @@ For the active NyanwHair guide in Edit Mode.
 
 Во время E: мышь задаёт смещение, **X / Y / Z** ограничивают ось, число задаёт расстояние, **Shift** включает точное перемещение. **ЛКМ / Enter** — подтвердить, **ПКМ / Esc** — отменить.
 
-Для **кривой из точки или кончика локона** сначала расположи новый конец, затем прокрути колесо. Движение мыши поперёк локона задаёт изгиб, вдоль — положение изгиба ближе к началу или концу. Колесо меняет число промежуточных точек. Кончик остаётся одной точкой.
+Для **кривой из точки или кончика локона** сначала расположи новый конец, затем прокрути колесо. Движение мыши поперёк локона задаёт изгиб, вдоль — положение изгиба ближе к началу или концу. Основная точка находится в середине гладкого сгиба. Кривая начинается от родительских направляющих; колесо доступно и при E из одного ребра. Колесо меняет число промежуточных точек. Кончик остаётся одной точкой.
 
 Боковины объёма идут цельными сегментами вдоль локона. Соединения по толщине получают сглаживание **0** у исходных точек и **1** у новых.
 
@@ -219,7 +219,7 @@ For the active NyanwHair guide in Edit Mode.
 | **Ctrl+R** | Hair Loop: разрез по продольной линии сетки или опорная точка при наведении на направляющую |
 | **M** | Слияние: в центре, в активной, первой или последней точке, у курсора, по расстоянию; при Mirror — на его плоскость |
 | **V** | Разделить точку направляющей, включая краевой угол редкого каркаса |
-| **Alt+V** | Добавить один сегмент из цепочки рёбер или ответвление из точки |
+| **Alt+V** | Раздвинуть направляющую с заполнением промежутка; точечный торец раскрывается в ребро |
 | **K** | Штатный нож Blender по кривому контуру; точки разреза следуют Live-поверхности |
 | **F / X** | Стандартные Fill / Delete Blender; также доступны в разделе «Хоткеи» |
 | **Shift+колесо** | Ширина |

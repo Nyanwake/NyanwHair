@@ -294,13 +294,12 @@ class NYANW35_OT_extrude(Operator):
         a._rebuild(obj);backup=bmesh.from_edit_mesh(obj.data).copy();selection=a._selection_state(bmesh.from_edit_mesh(obj.data));committed=False
         def operation(bm):
             data=self._stage(bm,a._CACHE[obj.as_pointer()]['result'],obj.matrix_world.inverted_safe().to_3x3()@Vector(self.offset))
-            if (data['mode']=='WIRE' or data.get('tip_curve')) and self.curve_points:
-                from . import wirecurve
-                start=obj.matrix_world@Vector(data['anchor']);coords=wirecurve.positions(start,start+Vector(self.offset),self.curve_bend,self.curve_points,self.curve_peak)
-                if data.get('tip_curve'):
-                    from . import tipcurve
-                    tipcurve.insert(bm,data,[obj.matrix_world.inverted_safe()@point for point in coords])
-                else:wirecurve.rebuild(bm,data['wire_start'],data['indices'][0],(),[obj.matrix_world.inverted_safe()@point for point in coords])
+            if (data['mode']=='WIRE' or data.get('tip_curve') or data.get('edge_curve')) and self.curve_points:
+                from . import curve_extrusion
+                frame=curve_extrusion.configuration(bm,data,obj.matrix_world)
+                rails,parameters=curve_extrusion.coordinates(frame,Vector(self.curve_bend),self.curve_points,self.curve_peak)
+                inverse=obj.matrix_world.inverted_safe()
+                curve_extrusion.insert(bm,frame,[[inverse@p for p in row] for row in rails],parameters)
             from . import mirror
             mirror.snap_bmesh(bm,obj)
             if data['mode']!='WIRE':validate_stage(bm,obj)
@@ -322,6 +321,7 @@ class NYANW35_OT_extrude(Operator):
         self._obj=obj;self._backup=bmesh.from_edit_mesh(obj.data).copy();self._selection=a._selection_state(bmesh.from_edit_mesh(obj.data))
         self._mouse=Vector((event.mouse_region_x,event.mouse_region_y));self._axis=None;self._number='';self._delta=Vector();self._precision=False;self._motion_offset=Vector();self._raw=Vector()
         a._rebuild(obj)
+        self._source_result=a._CACHE[obj.as_pointer()]['result']
         self._zone_state={key:a._CACHE[obj.as_pointer()][key] for key in ('active','zone_selection','zone_selection_explicit') if key in a._CACHE[obj.as_pointer()]}
         try:self._data=a._edit_transaction(obj,lambda bm:self._stage(bm,a._CACHE[obj.as_pointer()]['result'],Vector()))
         except (ValueError,RuntimeError,ReferenceError) as exc:
@@ -337,9 +337,9 @@ class NYANW35_OT_extrude(Operator):
     def _status(self,context):
         if getattr(self,'_curve_phase',False):
             context.area.header_text_set(tr('Bend · intermediate points: %d · mouse: bend and position · wheel: points · LMB / Enter · Esc')%self.curve_points);return
-        label={'EXTEND':tr('Extend'),'BRANCH':tr('Branch'),'CHAIN':tr('Edge chain'),'SOLID':tr('Closed strand'),'REGION':'E-Face','WIRE':tr('Guide wire'),'RIP':tr('Rip')}.get(self._data['mode'],tr('Extrude'))
+        label={'EXTEND':tr('Extend'),'BRANCH':tr('Branch'),'CHAIN':tr('Edge chain'),'SOLID':tr('Closed strand'),'REGION':'E-Face','WIRE':tr('Guide wire'),'RIP':tr('Rip'),'RIPFILL':tr('Rip and fill guides')}.get(self._data['mode'],tr('Extrude'))
         if self._data.get('count',1)>1:label+=' ×%d'%self._data['count']
-        extra=tr(' · wheel: bend') if self._data['mode']=='WIRE' or self._data.get('tip_curve') else ''
+        extra=tr(' · wheel: bend') if self._data['mode']=='WIRE' or self._data.get('tip_curve') or self._data.get('edge_curve') else ''
         context.area.header_text_set(label+tr(' · mouse / X Y Z / number')+extra+tr(' · LMB / Enter · Esc'))
     def _move(self,context,event):
         mouse=Vector((event.mouse_region_x,event.mouse_region_y));delta=view3d_utils.region_2d_to_location_3d(context.region,context.region_data,mouse,self._anchor)-self._start
@@ -362,12 +362,17 @@ class NYANW35_OT_extrude(Operator):
                 delta=axis*value
             except ValueError:pass
         self._delta=delta;local=self._obj.matrix_world.inverted_safe().to_3x3()@delta
+        if 'ripfill_key' in self._data:
+            from . import branching
+            if branching.choice(self._data,local)!=self._data['ripfill_key']:
+                stage=self._backup.copy()
+                try:
+                    self._data=self._stage(stage,self._source_result,local)
+                    restore_backup(self._obj,stage,a._selection_state(stage))
+                finally:stage.free()
         bm=bmesh.from_edit_mesh(self._obj.data);bm.verts.ensure_lookup_table()
         for index,base in zip(self._data['indices'],self._data['bases']):bm.verts[index].co=Vector(base)+local
         for index,axis in self._data.get('clip_axes',()):bm.verts[index].co[axis]=0.
-        if self._data.get('branch_supports'):
-            from . import branching
-            branching.update(bm,self._data,local)
         if self._data.get('opening'):
             from . import extrusion
             extrusion.update_opening(bm,self._data['opening'],local)
@@ -376,46 +381,48 @@ class NYANW35_OT_extrude(Operator):
         bmesh.update_edit_mesh(self._obj.data,loop_triangles=False,destructive=False)
         a._rebuild(self._obj);context.area.tag_redraw()
     def _curve_update(self,context,event=None,rebuild=False):
-        from . import wirecurve
+        from . import curve_extrusion
         if event is not None:
             mouse=Vector((event.mouse_region_x,event.mouse_region_y))
             raw=view3d_utils.region_2d_to_location_3d(context.region,context.region_data,mouse,self._curve_middle)-self._curve_mouse_start
-            chord=self._curve_end-self._anchor
+            chord=self._curve_end-self._curve_frame['start']
             if event.shift!=self._curve_precision:
                 if event.shift:self._curve_precision_raw=raw.copy();self._curve_precision_base=self._curve_bend.copy()
                 else:self._curve_motion_offset=self._curve_bend-raw
                 self._curve_precision=event.shift
             self._curve_bend=self._curve_precision_base+(raw-self._curve_precision_raw)*.1 if self._curve_precision else raw+self._curve_motion_offset
-        chord=self._curve_end-self._anchor
-        longitudinal=self._curve_bend.dot(chord)/chord.length_squared
-        self.curve_peak=max(.05,min(.95,.5+longitudinal))
-        bend=self._curve_bend-chord*longitudinal
-        points=wirecurve.positions(self._anchor,self._curve_end,bend,self.curve_points,self.curve_peak)
-        inverse=self._obj.matrix_world.inverted_safe();bm=bmesh.from_edit_mesh(self._obj.data);bm.verts.ensure_lookup_table()
-        local=[inverse@point for point in points]
-        if self._data.get('tip_curve'):
-            from . import tipcurve
-            if rebuild:
-                restore_backup(self._obj,self._curve_base,a._selection_state(self._curve_base))
-                bm=bmesh.from_edit_mesh(self._obj.data);self._tip_points=tipcurve.insert(bm,self._data,local)
-            else:tipcurve.move(bm,self._tip_points,local)
-        elif rebuild:self._curve_inside=wirecurve.rebuild(bm,self._data['wire_start'],self._data['indices'][0],self._curve_inside,local)
+        chord=self._curve_end-self._curve_frame['start']
+        longitudinal=self._curve_bend.dot(chord)/max(1e-20,chord.length_squared)
+        self.curve_peak=max(.05,min(.95,self._curve_frame['peak']+longitudinal))
+        bend=self._curve_frame['bend']+self._curve_bend-chord*longitudinal
+        rails,parameters=curve_extrusion.coordinates(self._curve_frame,bend,self.curve_points,self.curve_peak)
+        inverse=self._obj.matrix_world.inverted_safe();local=[[inverse@point for point in row] for row in rails]
+        if rebuild:
+            restore_backup(self._obj,self._curve_base,a._selection_state(self._curve_base))
+            bm=bmesh.from_edit_mesh(self._obj.data);self._curve_mapping=curve_extrusion.insert(bm,self._curve_frame,local,parameters)
         else:
-            for index,point in zip(self._curve_inside,local[1:-1]):bm.verts[index].co=point
-            bm.verts[self._data['indices'][0]].co=local[-1]
+            bm=bmesh.from_edit_mesh(self._obj.data);curve_extrusion.move(bm,self._curve_mapping,local)
         self.curve_bend=tuple(bend)
-        self._curve_preview=tuple(tuple(p) for p in wirecurve.positions(self._anchor,self._curve_end,bend,47,self.curve_peak))
+        preview,_=curve_extrusion.coordinates(self._curve_frame,bend,47,self.curve_peak)
+        self._curve_preview_lines=tuple(tuple(tuple(p) for p in row) for row in preview)
+        self._curve_preview=self._curve_preview_lines[0]
         from . import mirror
         mirror.snap_bmesh(bm,self._obj)
-        bmesh.update_edit_mesh(self._obj.data,loop_triangles=bool(rebuild and self._data.get('tip_curve')),destructive=rebuild)
-        a._rebuild(self._obj);self._status(context);context.area.tag_redraw()
+        bmesh.update_edit_mesh(self._obj.data,loop_triangles=rebuild,destructive=rebuild)
+        a._rebuild(self._obj)
+        actual=curve_extrusion.preview(self._curve_frame,self._curve_mapping,a._CACHE[self._obj.as_pointer()]['result'],self._obj.matrix_world)
+        if actual:self._curve_preview_lines=actual;self._curve_preview=actual[0]
+        self._status(context);context.area.tag_redraw()
 
     def _curve_wheel(self,context,event):
-        from . import wirecurve
+        from . import wirecurve,curve_extrusion
         if not self._curve_phase:
             if self._delta.length<1e-8:return
-            if self._data.get('tip_curve'):self._curve_base=bmesh.from_edit_mesh(self._obj.data).copy()
-            self._curve_phase=True;self._curve_end=self._anchor+self._delta;self._curve_middle=(self._anchor+self._curve_end)*.5
+            bm=bmesh.from_edit_mesh(self._obj.data)
+            self._curve_frame=curve_extrusion.configuration(bm,self._data,self._obj.matrix_world)
+            if (self._curve_frame['end']-self._curve_frame['start']).length<1e-8:return
+            self._curve_base=bm.copy()
+            self._curve_phase=True;self._curve_end=self._curve_frame['end'];self._curve_middle=(self._curve_frame['start']+self._curve_end)*.5
             mouse=Vector((event.mouse_region_x,event.mouse_region_y))
             self._curve_mouse_start=view3d_utils.region_2d_to_location_3d(context.region,context.region_data,mouse,self._curve_middle)
             self._curve_bend=Vector();self._curve_precision=False;self._curve_motion_offset=Vector();self.curve_points=1
@@ -436,7 +443,8 @@ class NYANW35_OT_extrude(Operator):
             scale,limit=strokes.view_style(a._CACHE.get(self._obj.as_pointer(),{}),self._obj,ctx)
             shader=a._stroke_shader(style.selected_width*scale,max_clearance=limit);shader.bind();shader.uniform_float('color',palette.preview_color(self._obj.nh35,style.selected))
             gpu.state.blend_set('ALPHA');gpu.state.depth_test_set('NONE' if a._xray_enabled(ctx) else 'LESS_EQUAL');gpu.state.depth_mask_set(False)
-            a._stroke_batch(shader,'LINE_STRIP',{'pos':self._curve_preview}).draw(shader)
+            for line in getattr(self,'_curve_preview_lines',(self._curve_preview,)):
+                a._stroke_batch(shader,'LINE_STRIP',{'pos':line}).draw(shader)
         except (ReferenceError,RuntimeError,ValueError):pass
         finally:gpu.state.depth_test_set(depth);gpu.state.depth_mask_set(mask);gpu.state.line_width_set(width);gpu.state.blend_set(blend)
 
@@ -452,6 +460,7 @@ class NYANW35_OT_extrude(Operator):
         except ReferenceError:pass
         finally:
             if self._backup is not None:self._backup.free();self._backup=None
+            self._source_result=None
             if getattr(self,'_curve_base',None) is not None:self._curve_base.free();self._curve_base=None
             _ACTIVE.discard(self)
             if context.area:context.area.header_text_set(None);context.area.tag_redraw()
@@ -463,7 +472,7 @@ class NYANW35_OT_extrude(Operator):
         if getattr(self,'_backup',None) is None:return {'CANCELLED'}
         if event.ctrl and event.type=='Z' and event.value=='PRESS':self._end(context,True);return {'CANCELLED'}
         if event.type in ('ESC','RIGHTMOUSE') and event.value=='PRESS':self._end(context,True);return {'CANCELLED'}
-        if event.type in ('WHEELUPMOUSE','WHEELDOWNMOUSE') and event.value=='PRESS' and (self._data['mode']=='WIRE' or self._data.get('tip_curve')):
+        if event.type in ('WHEELUPMOUSE','WHEELDOWNMOUSE') and event.value=='PRESS' and (self._data['mode']=='WIRE' or self._data.get('tip_curve') or self._data.get('edge_curve')):
             self._curve_wheel(context,event);return {'RUNNING_MODAL'}
         if event.type in ('RET','NUMPAD_ENTER','LEFTMOUSE') and event.value=='PRESS':
             if self._delta.length<1e-8:self._end(context,True);return {'CANCELLED'}

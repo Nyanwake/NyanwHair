@@ -1,4 +1,4 @@
-"""NyanwHair 1.19 Preview Guided Surfaces."""
+"""NyanwHair 1.19 Preview 2 Guided Surfaces."""
 bl_info = {
     'name': 'NyanwHair - Guided Surfaces',
     'author': 'NyanWake',
