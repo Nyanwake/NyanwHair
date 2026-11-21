@@ -1135,6 +1135,8 @@ class NHGuidedProperties(PropertyGroup):
     generate_uv: BoolProperty(name='UV',default=True,description='Unwrap along strands, join compatible segments and mark island seams; calculated only on Mesh conversion')
     mirror_uv: BoolProperty(name='Mirror UV',default=True,description='Mirrored strands share the original UV; disable for separate mirrored islands')
     uv_merge_angle: FloatProperty(name='UV stitch angle',default=math.radians(60.),min=0.,max=math.radians(75.),subtype='ANGLE',description='Maximum surface and strand-direction angle for joining UV islands; islands run from top to bottom')
+    uv_margin: FloatProperty(name='Island spacing',default=.008,min=0.,max=.1,subtype='FACTOR',description='Spacing between packed UV islands')
+    point_depth: FloatProperty(name='Point depth tolerance',default=6.,min=0.,max=30.,subtype='PIXEL',description='Show guide points slightly behind the hair surface; deeper points stay hidden')
     follow_matcap: BoolProperty(name='Viewport MatCap',default=True,description='Legacy field; lighting follows the viewport',options={'HIDDEN'})
     regular_rows: BoolProperty(name='Regular quad strips',default=True,description='Legacy saved field; tools use regular quad strips')
     rows: IntProperty(name='Length detail',default=12,min=2,max=160,description='Base row density: shorter strands receive fewer rows')
@@ -1274,7 +1276,7 @@ class NYANW35_OT_bake(Operator):
         uv_data=None
         if src.nh35.generate_uv:
             from . import uv
-            try:uv_data=uv.generate(uv_sources,src.matrix_world,angle=src.nh35.uv_merge_angle,mirror_uv=src.nh35.mirror_uv)
+            try:uv_data=uv.generate(uv_sources,src.matrix_world,angle=src.nh35.uv_merge_angle,margin=src.nh35.uv_margin,mirror_uv=src.nh35.mirror_uv)
             except (ValueError,KeyError,IndexError) as exc:
                 self.report({'WARNING'},str(exc)+tr('; UV can be disabled below Convert to Mesh'))
                 return {'CANCELLED'}
@@ -1553,9 +1555,8 @@ def _split_single_bmesh(bm, zone, t, result, select_result=False):
     cap_slots=[raw_caps.index(cap) for cap in (plan.start,plan.end)] if raw_caps else [0,1]
     side_b = {plan.right[0],plan.right[-1]}
     side_index = next((vid for vid in plan.left if vid not in side_b),None)
-    if side_index is None:
-        raise ValueError(tr('Could not determine the left side'))
-    side_vertex = bm.verts[side_index]
+    side_vertex=bm.verts[side_index] if side_index is not None else None
+    side_edge=_cap_edge(source,bm.verts[plan.left[0]],bm.verts[plan.left[1]])
     profile = core.sample_cut_guide(result, zone, t,
                   max(2,min(12,max(len(plan.left),len(plan.right))-1)))
     if len(profile) < 3 or any(not all(math.isfinite(float(v)) for v in p)
@@ -1610,28 +1611,30 @@ def _split_single_bmesh(bm, zone, t, result, select_result=False):
     if start==finish: raise ValueError(tr('Both cut ends coincide'))
     # After cap edge splits, re-discover the face. Its former Python wrapper
     # is not relied on by any subsequent operation.
-    candidates=[f for f in bm.faces if f.is_valid and start in f.verts and finish in f.verts]
+    candidates=[f for f in bm.faces if f.is_valid and int(f[bm.faces.layers.int[L_ORDER]])==settings.order and start in f.verts and finish in f.verts]
     if len(candidates)!=1:
         raise ValueError(tr('Could not uniquely identify the guide face'))
     target=candidates[0]
     if _cap_edge(target,start,finish) is not None:
-        raise ValueError(tr('Cut lies on an existing edge'))
+        chord=finish.co-start.co
+        if all(chord.cross(Vector(p)-start.co).length<1e-10 for p in profile[1:-1]):raise ValueError(tr('Cut lies on an existing edge'))
     # face_split(coords=...) creates the entire internal rail in ONE native
     # BMesh mutation. The previous implementation subdivided the resulting
     # seam N times with edge_split. Every split could reconstruct both incident
     # BMFaces; retaining their Python wrappers was fundamentally unsafe.
     # With this call we never need the old `target` or any intermediate face.
+    untouched=set(bm.faces)-{target}
     created=bmesh.utils.face_split(target,start,finish,
                                    coords=tuple(tuple(p) for p in profile[1:-1]))
     if created is None:
         raise ValueError(tr('Blender could not split the face'))
     # `target` and `created[0]` MUST NOT be used after the mutation. Determine
     # the two children by topology from the CURRENT mesh, not by face indices.
-    children=tuple(f for f in bm.faces if f.is_valid and
+    children=tuple(f for f in bm.faces if f.is_valid and f not in untouched and
                    start in f.verts and finish in f.verts)
     if len(children)!=2:
         raise ValueError(tr('The new edge must have exactly two faces'))
-    left_child=next((f for f in children if side_vertex in f.verts),None)
+    left_child=next((f for f in children if (side_vertex in f.verts if side_vertex is not None else side_edge in f.edges)),None)
     if left_child is None or all(f==left_child for f in children):
         raise ValueError(tr('Could not determine the cut sides'))
 
@@ -1926,11 +1929,14 @@ def _draw_extra_panels(layout,context,obj,cached,edit):
             else:ui_icons.button(buttons,props,'mesh.rip_move',tr('Rip')+' · V','RIP','MOD_EDGESPLIT')
             ui_icons.button(buttons,props,'mesh.edge_face_add',tr('Fill')+' · F','FILL','FACESEL')
             ui_icons.button(buttons,props,'wm.call_menu',tr('Delete')+' · X','DELETE','TRASH').name='VIEW3D_MT_edit_mesh_delete'
+            ui_icons.button(buttons,props,'nyanw35.branch',tr('Rip + fill')+' · Alt+V','RIP','MOD_EDGESPLIT').from_panel=True
+            ui_icons.button(buttons,props,'nyanw35.knife',tr('Knife')+' · K','LOOP','EDGESEL')
             ui_icons.button(buttons,props,'nyanw35.join_segments',tr('Join segments'),'MERGE','DISSOLVE_FACES')
     header,body=layout.panel('nyanw_appearance',default_closed=True);header.label(text=tr('Appearance'),icon='SHADING_SOLID')
     if body is not None:
         if edit:body.prop(props,'palette',text=tr('Theme'))
         body.prop(props,'smooth_preview',text='Smooth + Sharp')
+        if edit:body.prop(props,'point_depth',text=tr('Point depth tolerance'))
         body.prop(props,'brightness',text=tr('Brightness'),slider=True)
         body.prop(props,'transparency',text=tr('Transparency'),slider=True)
         row=body.row(align=True);row.prop(props,'show_wire',text=tr('Wire'));column=row.column();column.enabled=props.show_wire;column.prop(props,'wire_opacity',text='',slider=True)
@@ -1960,7 +1966,7 @@ def _draw_presets(layout,obj):
 
 
 class NYANW35_PT_main(Panel):
-    bl_label='NyanwHair v1.18'
+    bl_label='NyanwHair v1.19 Preview 2'
     bl_idname='NYANW35_PT_main'
     bl_space_type='VIEW_3D'
     bl_region_type='UI'
@@ -1981,7 +1987,9 @@ class NYANW35_PT_main(Panel):
             row=layout.row(align=True);row.prop(props,'generate_uv',text='UV')
             option=row.row(align=True);option.enabled=props.generate_uv and any(group.mirror_x or group.mirror_y or group.mirror_z for group in props.groups)
             option.prop(props,'mirror_uv',text='Mirror UV')
-            if props.generate_uv:layout.prop(props,'uv_merge_angle',text=tr('Stitch angle'))
+            if props.generate_uv:
+                layout.prop(props,'uv_merge_angle',text=tr('Stitch angle'))
+                layout.prop(props,'uv_margin',text=tr('Island spacing'))
             _draw_extra_panels(layout,context,obj,cached,False)
             return
         row=layout.row(align=True);row.prop(props,'live',text='Live',toggle=True,icon='PLAY');row.prop(props,'show_preview',text='',icon='HIDE_OFF');row.prop(context.space_data.overlay,'show_overlays',text='',icon='OVERLAY');row.operator('nyanw35.rebuild',text='',icon='FILE_REFRESH')
@@ -2380,15 +2388,15 @@ def _point_visible(ctx,world,state=None,screen=None):
     delta=world-origin;distance=delta.length
     if distance<1e-8:return True
     direction=delta/distance
-    # One-pixel tolerance keeps a source point visible on its own sampled
-    # curved boundary without exposing points through an overlapping sheet.
+    # Scene occluders stay strict; hair has a small screen-space depth allowance.
     if ray:tolerance=max(1e-5,abs((projection@world.to_4d()).w)*pixel_scale*.75)
     else:
         neighbor=view3d_utils.region_2d_to_location_3d(ctx.region,ctx.region_data,(screen.x+1,screen.y),world)
         tolerance=max(1e-5,(neighbor-world).length*.75)
+    hair_tolerance=tolerance*max(0.,getattr(ctx.edit_object.nh35,'point_depth',6.))/.75 if is_guide(ctx.edit_object) else tolerance
     for bvh,inverse,matrix in state[0]:
         hit,_,_,_=bvh.ray_cast(inverse@origin,(inverse.to_3x3()@direction).normalized())
-        if hit is not None and (matrix@hit-origin).length<distance-tolerance:return False
+        if hit is not None and (matrix@hit-origin).length<distance-hair_tolerance:return False
     # Native source faces are wire guides, so skip them while checking
     # ordinary scene occluders (head, other meshes and baked surfaces).
     cursor=origin.copy();depsgraph=state[1]
@@ -2534,6 +2542,7 @@ def _draw_control_points():
         return
     ctx = bpy.context
     obj = ctx.edit_object
+    if knife.active(obj):return
     if not _helpers_visible(ctx):return
     if not is_guide(obj) or obj.nh35.transparency>=1. or ctx.region_data is None or ctx.region is None:
         return
@@ -2552,7 +2561,7 @@ def _draw_control_points():
         record=saved.get(region_key)
         from . import controls
         cap_lines,cap_vertices=controls.caps(bm,obj,cache)
-        signature=signature+(tuple(sorted(cap_vertices.items())),point_scale)
+        signature=signature+(tuple(sorted(cap_vertices.items())),point_scale,obj.nh35.point_depth)
         point_sets=[[],[],[],[],[],[],[]]
         if record is None or record[0]!=signature:
             occlusion=_occlusion_state(ctx)
@@ -2671,6 +2680,7 @@ def _on_scene_update(_scene,_depsgraph):
 def _on_load(_dummy):
     for obj in bpy.data.objects:
         if is_guide(obj):cage_display.update(obj)
+    knife.cancel_all(False)
     editing.cancel_all(False)
     reverse.cancel_all(False)
     _clear_zone_pick()
@@ -2682,6 +2692,7 @@ def _on_load(_dummy):
 
 @persistent
 def _on_undo_pre(_dummy):
+    knife.cancel_all(False)
     editing.cancel_all(False)
     reverse.cancel_all(False)
     _clear_zone_pick()
@@ -2719,9 +2730,9 @@ def _on_undo_post(_dummy):
     _UNDO_DISPLAY.clear()
 
 
-from . import editing,reverse,mirror,presets,object_pick
+from . import editing,reverse,mirror,presets,object_pick,object_join,branching,knife
 
-_CLASSES=groups.CLASSES+(NHGuidedProperties,NHGuidedUISettings,NYANW35_OT_direction_smoothing,NYANW35_OT_local_density,NYANW35_OT_point_density,NYANW35_OT_density_reset,NYANW35_OT_set_cap,NYANW35_OT_refresh_layout,
+_CLASSES=(object_join.NYANW35_OT_join_objects,branching.NYANW35_OT_branch,knife.NYANW35_OT_knife,)+groups.CLASSES+(NHGuidedProperties,NHGuidedUISettings,NYANW35_OT_direction_smoothing,NYANW35_OT_local_density,NYANW35_OT_point_density,NYANW35_OT_density_reset,NYANW35_OT_set_cap,NYANW35_OT_refresh_layout,
           NYANW35_OT_create_guide,NYANW35_OT_disable,
           NYANW35_OT_demo,NYANW35_OT_rebuild,NYANW35_OT_bake,presets.NYANW35_OT_create_cap,
           NYANW35_OT_pin_rails, NYANW35_OT_adjust,NYANW35_OT_pick_zone,
@@ -2735,11 +2746,14 @@ def _register_keys():
     preferences=bpy.context.window_manager.keyconfigs.active.preferences
     button='RIGHTMOUSE' if getattr(preferences,'select_mouse','LEFT')=='RIGHT' else 'LEFTMOUSE'
     item=objects.keymap_items.new('nyanw35.pick_object',button,'PRESS',any=True,head=True);_KEYMAPS.append((objects,item))
+    item=objects.keymap_items.new('nyanw35.join_objects','J','PRESS',ctrl=True,head=True);_KEYMAPS.append((objects,item))
     km=kc.keymaps.new(name='Mesh',space_type='EMPTY')
     click=km.keymap_items.new('nyanw35.pick_zone','LEFTMOUSE','CLICK',any=True)
     _KEYMAPS.append((km,click))
     for name,key in [('nyanw35.extrude','E'),('nyanw35.merge_menu','M'),('nyanw35.rip','V')]:
         item=km.keymap_items.new(name,key,'PRESS');_KEYMAPS.append((km,item))
+    item=km.keymap_items.new('nyanw35.knife','K','PRESS');_KEYMAPS.append((km,item))
+    item=km.keymap_items.new('nyanw35.branch','V','PRESS',alt=True);_KEYMAPS.append((km,item))
     # Add-on Mesh keymap takes precedence over Blender's default Mesh Ctrl+R
     # only when poll() accepts a NyanwHair guide. Shift+R is untouched.
     kmi=km.keymap_items.new('nyanw35.hair_loop','R','PRESS',ctrl=True)
@@ -2783,6 +2797,7 @@ def register():
     bpy.app.timers.register(cage_display.initialize,first_interval=0.)
     _RUNNING=True
     _register_keys()
+    bpy.types.VIEW3D_MT_object_context_menu.append(object_join.draw_join)
     if not bpy.app.timers.is_registered(_ticker):
         bpy.app.timers.register(_ticker,first_interval=0.05,persistent=True)
     if gpu is not None and not bpy.app.background:
@@ -2792,6 +2807,7 @@ def register():
 
 def unregister():
     global _RUNNING,_DRAW_HANDLER,_POINT_HANDLER,_CUT_PREVIEW,_STROKE_SHADER
+    knife.cancel_all()
     editing.cancel_all()
     reverse.cancel_all()
     from . import appearance
@@ -2800,6 +2816,7 @@ def unregister():
     _RUNNING=False
     _clear_zone_pick()
     _CUT_PREVIEW=None
+    bpy.types.VIEW3D_MT_object_context_menu.remove(object_join.draw_join)
     _unregister_keys()
     if bpy.app.timers.is_registered(cage_display.initialize):bpy.app.timers.unregister(cage_display.initialize)
     if hasattr(bpy.data,'objects'):cage_display.clear_all()
