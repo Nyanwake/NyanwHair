@@ -28,10 +28,10 @@ def _records(bm):
     return a._directional_smoothing(bm,True),a._edge_density(bm,True),a._layout_lengths(bm,True)
 
 
-def straight_connections(bm,records,pairs):
+def straight_connections(bm,records,pairs,new_smoothing=0.):
     for one,two in pairs:
         if one is not two and bm.edges.get((one,two)) is not None:
-            records[0][one,two]=records[0][two,one]=0.
+            records[0][one,two]=0.;records[0][two,one]=new_smoothing
 
 
 def _boundary_walls(bm,result,faces):
@@ -105,9 +105,10 @@ def update_opening(bm,opening,offset):
             point=(2*t3-3*t2+1)*p+(-2*t3+3*t2)*q+(t3-2*t2+t)*ma+(t3-t2)*mb
             bm.verts[base].co=point;positions.append(point)
         center=positions[carrier];direction=offset.normalized() if distance>1e-8 else (origin-center).normalized()
+        pointed=len({end for base,end,curve in rows})==1
         for (base,end,curve),point in zip(rows,positions):
             across=point-center;across-=direction*across.dot(direction)
-            bm.verts[end].co=origin+offset+across
+            bm.verts[end].co=origin+offset+(Vector() if pointed else across)
 
 
 def _extend(bm,targets,offset,result):
@@ -133,7 +134,8 @@ def _extend(bm,targets,offset,result):
             if base is not tip:
                 for name in (a.L_POINT_DENSITY,a.L_POINT_RADIUS):base[bm.verts.layers.float[name]]=tip[bm.verts.layers.float[name]]
                 base[bm.verts.layers.int[a.L_VERTEX_GROUP]]=tip[bm.verts.layers.int[a.L_VERTEX_GROUP]]
-            aliases[tip,neighbor]=base;end=bm.verts.new(origin+offset);moving[base]=end;rows.append((base,end,curve))
+            if i==0:end=bm.verts.new(origin+offset)
+            aliases[tip,neighbor]=base;moving[base]=end;rows.append((base,end,curve))
         descriptions.append((tuple(origin),span,carrier,rows))
     if aliases:
         records=[{(aliases.get((u,v),u),aliases.get((v,u),v)):value for (u,v),value in values.items()} for values in records]
@@ -145,8 +147,8 @@ def _extend(bm,targets,offset,result):
                 tip=vertices[0];i=ring.index(tip);previous,following=ring[i-1],ring[(i+1)%len(ring)]
                 directions.append(center-(previous.co+following.co)*.5)
                 first,second=aliases[tip,previous],aliases[tip,following]
-                replacements[tip]=[first,moving[first],moving[second],second]
-                slots[index]=frozenset((moving[first],moving[second]))
+                replacements[tip]=[first,moving[first],second]
+                slots[index]=frozenset((moving[first],))
             else:
                 i=next(i for i,v in enumerate(ring) if v in cap and ring[(i+1)%len(ring)] in cap)
                 first,second=ring[i],ring[(i+1)%len(ring)]
@@ -170,6 +172,7 @@ def _extend(bm,targets,offset,result):
     origin=sum(origins,Vector())/len(origins);direction=sum(directions,Vector())
     data=_finish(bm,offset,values,origin,direction,'EXTEND',sum(len(indices) for face,indices in targets),records)
     data['opening']=opening
+    data['tip_curve']=bool(opening) and len(opening)==1 and len(values)==1
     return data
 
 
@@ -189,12 +192,12 @@ def _solid(bm,result,offset,faces):
     origin=sum((v.co for v in vertices),Vector())/len(vertices)
     normal=sum((face.normal for face in faces),Vector())
     shared_seam=any(len(edge.link_faces)==1 and any(on and all(abs(v.co[axis])<1e-7 for v in edge.verts) for axis,on in enumerate(axes)) for face in faces for edge in face.edges)
-    clips=[]
+    clips=[];pairs=[]
     if shared_seam:
         result,indices,gains,recipes=reverse.prepare_closed_base(bm,result,indices,obj,axes)
         before=set(bm.verts)
         positions={i:point-vector*a._DEFAULT_BULGE for i,(point,vector) in recipes.items()}
-        created=reverse.create(bm,result,indices,0.,obj.matrix_world,True,axes,a._DEFAULT_BULGE,True,positions,gains)
+        created=reverse.create(bm,result,indices,0.,obj.matrix_world,True,axes,a._DEFAULT_BULGE,True,positions,gains,copied_vertices=pairs)
         moving=[v for v in bm.verts if v not in before]
         for vertex in moving:
             locked=[axis for axis,on in enumerate(axes) if on and abs(vertex.co[axis])<1e-7]
@@ -203,11 +206,12 @@ def _solid(bm,result,offset,faces):
             clips.extend((vertex,axis) for axis in locked)
     else:
         created=reverse.create(bm,result,indices,0.,obj.matrix_world if obj else Matrix.Identity(4),
-            True,axes,translation=offset)
+            True,axes,translation=offset,copied_vertices=pairs)
         bm.faces.ensure_lookup_table()
         moving=sorted({v for index in created for v in bm.faces[index].verts},key=lambda v:v.index)
     bm.faces.ensure_lookup_table()
-    data=_finish(bm,offset,moving,origin,normal,'SOLID',len(faces),_records(bm))
+    records=list(_records(bm));straight_connections(bm,records,((source,target) for source,face,target in pairs),1.)
+    data=_finish(bm,offset,moving,origin,normal,'SOLID',len(faces),records)
     data['clip_axes']=tuple((vertex.index,axis) for vertex,axis in clips)
     for index in created:bm.faces[index].select_set(True)
     bm.faces.active=bm.faces[created[-1]]
@@ -236,7 +240,7 @@ def _capped_region(bm,result,offset,faces):
         created.append(_face(bm,[moving[v] for v in ring],attrs,identity,
             tuple(frozenset(moving[v] for v in cap) for cap in caps)))
     _build_walls(bm,walls,moving,next_order)
-    straight_connections(bm,records,moving.items())
+    straight_connections(bm,records,moving.items(),1.)
     for edge in old_edges:
         if edge.is_valid and not edge.link_faces:bm.edges.remove(edge)
     for vertex in vertices:
@@ -303,7 +307,7 @@ def _region(bm,result,offset,faces=(),band=None):
     for one,two,attrs,width in walls:
         new=_face(bm,(one,two,moving[two],moving[one]),attrs,identity(attrs),(frozenset((one,two)),frozenset((moving[one],moving[two]))))
         a._set_zone(new,bm,'width',max(1,min(32,width)))
-    straight_connections(bm,records,moving.items())
+    straight_connections(bm,records,moving.items(),1.)
     for edge in old_edges:
         if edge.is_valid and not edge.link_faces:bm.edges.remove(edge)
     for vertex in candidates:
@@ -381,7 +385,7 @@ def _chain(bm,result,offset,chains):
     if not direction.length:
         tangent=vertices[-1].co-vertices[0].co;direction=tangent.cross(Vector((0.,1.,0.)))
         if not direction.length:direction=Vector((1.,0.,0.))
-    straight_connections(bm,records,moving.items())
+    straight_connections(bm,records,moving.items(),1.)
     origin=sum((v.co for v in vertices),Vector())/len(vertices)
     return _finish(bm,offset,[moving[v] for v in vertices],origin,direction,'CHAIN',count,records)
 

@@ -10,6 +10,7 @@ def hit(context,origin,direction,with_group=False):
     nearest=None
     for obj in context.selectable_objects:
         if not a.is_guide(obj) or not obj.nh35.show_preview or obj.nh35.transparency>=1.:continue
+        if obj.nh35.groups and not any(g.visible for g in obj.nh35.groups):continue
         if not groups.all_caches(obj):a._rebuild(obj)
         for record in a._render_caches(obj):
             result=decorations.preview(record,obj)

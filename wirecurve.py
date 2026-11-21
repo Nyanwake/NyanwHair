@@ -1,19 +1,27 @@
-"""A temporary quadratic Bezier wire, sampled at approximately equal arc length."""
+"""An arc-length-sampled wire with a movable bend apex."""
 from .i18n import tr
 import bisect
 from mathutils import Vector
 
 MAX_POINTS=64
 
-def positions(start,end,bend,intermediate):
+def positions(start,end,bend,intermediate,peak=.5):
     start=Vector(start);end=Vector(end);bend=Vector(bend);chord=end-start
     divisions=max(64,4*(intermediate+1))
-    dense=[start+chord*(i/divisions)+bend*(4*(i/divisions)*(1-i/divisions)) for i in range(divisions+1)]
+    peak=max(.05,min(.95,peak))
+    def profile(u):
+        t=u/peak if u<=peak else (1.-u)/(1.-peak)
+        return t*(2.-t)
+    parameters=sorted(set([i/divisions for i in range(divisions+1)]+[peak]))
+    dense=[start+chord*u+bend*profile(u) for u in parameters]
+    divisions=len(dense)-1
     lengths=[0.]
     for a,b in zip(dense,dense[1:]):lengths.append(lengths[-1]+(b-a).length)
-    out=[start.copy()]
+    out=[start.copy()];intervals=intermediate+1;apex=lengths[parameters.index(peak)]
+    apex_index=max(1,min(intermediate,int(apex/max(1e-20,lengths[-1])*intervals+.5)))
     for i in range(1,intermediate+1):
-        target=lengths[-1]*i/(intermediate+1);j=min(divisions,max(1,bisect.bisect_left(lengths,target)))
+        target=apex*i/apex_index if i<=apex_index else apex+(lengths[-1]-apex)*(i-apex_index)/(intervals-apex_index)
+        j=min(divisions,max(1,bisect.bisect_left(lengths,target)))
         t=(target-lengths[j-1])/max(1e-20,lengths[j]-lengths[j-1]);out.append(dense[j-1].lerp(dense[j],t))
     out.append(end.copy());return out
 

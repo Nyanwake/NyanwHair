@@ -48,6 +48,10 @@ def changed(self,context):
     obj=self.id_data
     if getattr(obj,'type',None)=='MESH':
         remember(obj)
+        if obj.mode=='EDIT':
+            bm=bmesh.from_edit_mesh(obj.data);active=settings(obj)
+            isolate(bm,active_id(obj),active.visible if active else True)
+            bmesh.update_edit_mesh(obj.data,loop_triangles=False,destructive=False)
         for screen in bpy.data.screens:
             for area in screen.areas:
                 if area.type=='VIEW_3D':area.tag_redraw()
@@ -61,6 +65,7 @@ class NH35HairGroup(PropertyGroup):
     mirror_z:BoolProperty(name='Mirror Z',default=False,update=changed,description="Linked mirror on the object's local Z axis; edit the source half")
     mirror_merge:BoolProperty(name='Merge seam',default=True,update=changed,description='Join reflected halves when guide points are within the seam distance')
     mirror_distance:FloatProperty(name='Merge distance',default=.001,min=.000001,soft_max=.01,subtype='DISTANCE',update=changed)
+    visible:BoolProperty(name='Visible',default=True,update=changed,description='Show this group in the viewport')
     reference_length:FloatProperty(default=0.,min=0.)
 
 def ensure(obj):
@@ -78,7 +83,7 @@ def ensure(obj):
 
 
 def _state(obj):
-    return [active_id(obj),[[g.uid,g.name,(list(_custom_color(g)) if _custom_color(g) is not None else None),[g.mirror_x,g.mirror_y,g.mirror_z],g.reference_length,_custom_color(g) is not None,g.mirror_merge,g.mirror_distance] for g in obj.nh35.groups]]
+    return [active_id(obj),[[g.uid,g.name,(list(_custom_color(g)) if _custom_color(g) is not None else None),[g.mirror_x,g.mirror_y,g.mirror_z],g.reference_length,_custom_color(g) is not None,g.mirror_merge,g.mirror_distance,g.visible] for g in obj.nh35.groups]]
 
 
 def remember(obj):
@@ -137,6 +142,7 @@ def restore(obj):
             group.mirror_x,group.mirror_y,group.mirror_z=axes;group.reference_length=reference
             if len(record)>6:group.mirror_merge=record[6]
             if len(record)>7:group.mirror_distance=record[7]
+            if len(record)>8:group.visible=record[8]
         obj.nh35.active_group=state[0]
     finally:_RESTORING=False
 
@@ -151,20 +157,21 @@ def vertex_group(vertex,bm,fallback=1):
     if layer and vertex[layer]>0:return int(vertex[layer])
     return face_group(vertex.link_faces[0],bm,fallback) if vertex.link_faces else fallback
 
-def isolate(bm,uid):
+def isolate(bm,uid,visible=True):
     from . import addon as a
     group=bm.verts.layers.int[a.L_VERTEX_GROUP]
     for face in bm.faces:
-        hidden=face_group(face,bm,uid)!=uid
+        hidden=not visible or face_group(face,bm,uid)!=uid
         if hidden:face.select_set(False)
         face.hide=hidden
     for edge in bm.edges:
         edge.hide=all(f.hide for f in edge.link_faces) if edge.link_faces else all(int(v[group]) not in (0,uid) for v in edge.verts)
+        edge.hide=edge.hide or not visible
         if edge.hide:edge.select_set(False)
     for vertex in bm.verts:
         if vertex.link_faces:vertex[group]=face_group(vertex.link_faces[0],bm,uid)
         elif vertex[group]<=0:vertex[group]=uid
-        vertex.hide=int(vertex[group])!=uid
+        vertex.hide=not visible or int(vertex[group])!=uid
         if vertex.hide:vertex.select_set(False)
     for element in list(bm.select_history):
         if not element.is_valid or element.hide:bm.select_history.remove(element)
@@ -212,7 +219,7 @@ def separate(bm):
 def all_caches(obj):
     from . import addon as a
     current=a._CACHE.get(obj.as_pointer());stored=CACHE.get(obj.as_pointer(),{})
-    return [stored[uid] for uid in ids(obj) if uid in stored] or ([current] if current else [])
+    return [stored[uid] for uid in ids(obj) if uid in stored and (settings(obj,uid) is None or settings(obj,uid).visible)] or ([current] if current and (settings(obj,current.get('group_id',1)) is None or settings(obj,current.get('group_id',1)).visible) else [])
 
 class NYANW35_OT_group(Operator):
     bl_idname='nyanw35.group';bl_label='Hair groups';bl_options={'REGISTER','UNDO'}
@@ -221,7 +228,7 @@ class NYANW35_OT_group(Operator):
     @classmethod
     def description(cls,context,properties):
         return {'SELECT':tr('Switch the editable group; other groups display only their surfaces'),
-                'ADD':tr('Add a group; selected faces move into it in Face mode'),
+                'ADD':tr('Add a group and move fully selected segments into it'),
                 'MOVE':tr('Move selected segments into this group, separating shared points'),
                 'REMOVE':tr('Remove the active group, keeping its segments in a neighbouring group')}.get(properties.action,tr('Hair groups'))
     def execute(self,context):
@@ -232,9 +239,9 @@ class NYANW35_OT_group(Operator):
         if self.action!='SELECT':a._prepare_object(obj)
         if self.action=='ADD':
             chosen=set()
-            if obj.mode=='EDIT' and context.tool_settings.mesh_select_mode[2]:
+            if obj.mode=='EDIT':
                 bm=bmesh.from_edit_mesh(obj.data);bm.faces.index_update()
-                chosen={f.index for f in bm.faces if f.select and not f.hide and face_group(f,bm,previous)==previous}
+                chosen={f.index for f in a._zone_ui_faces(bm,obj) if face_group(f,bm,previous)==previous}
             reference=reference_length(obj,previous)
             group=obj.nh35.groups.add();group.uid=max(g.uid for g in obj.nh35.groups)+1;group.name=tr('Group %d')%group.uid;group.reference_length=reference;self.uid=group.uid
             if chosen:
@@ -266,7 +273,7 @@ class NYANW35_OT_group(Operator):
         bm,owned=a._mesh_bm(obj)
         try:
             a._prepare_bmesh(bm,group_id=self.uid)
-            isolate(bm,self.uid)
+            isolate(bm,self.uid,settings(obj,self.uid).visible)
             if owned:bm.to_mesh(obj.data);obj.data.update()
             else:bmesh.update_edit_mesh(obj.data,loop_triangles=False,destructive=False)
         finally:
@@ -294,6 +301,7 @@ class NYANW35_OT_group_starter(Operator):
 class NYANW35_UL_groups(UIList):
     def draw_item(self,context,layout,data,item,icon,active_data,active_propname,index,flt_flag=0):
         row=layout.row(align=True)
+        row.prop(item,'visible',text='',icon='HIDE_OFF' if item.visible else 'HIDE_ON',emboss=False)
         row.prop(item,'name',text='',emboss=False,icon='GROUP')
         color=row.row(align=True);color.ui_units_x=1.2;color.prop(item,'color',text='')
         if item.uid!=data.active_group:

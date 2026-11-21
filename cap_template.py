@@ -30,4 +30,14 @@ def add(bm,group=1):
         for name,value in (('width',2),('bulge',BULGES[index])):a._set_zone(face,bm,name,value)
         a._write_boundary_pair(face,bm,caps);face.select_set(True)
     for vertex in vertices:vertex[bm.verts.layers.int[a.L_VERTEX_GROUP]]=group
+    # True rail ends use their inward chord; internal cap junctions stay smooth.
+    from . import core
+    plans=[core.plan_face(POINTS,ring,i,core.ZoneSettings(),caps=caps) for i,(ring,caps) in enumerate(zip(FACES,CAPS))]
+    neighbors={}
+    for plan in plans:
+        for rail in (plan.left,plan.right):
+            for one,two in zip(rail,rail[1:]):
+                neighbors.setdefault(one,set()).add(two);neighbors.setdefault(two,set()).add(one)
+    for one,others in neighbors.items():
+        if len(others)==1:a._write_direction(bm,vertices[one],vertices[next(iter(others))],0.)
     return vertices

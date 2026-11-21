@@ -186,12 +186,14 @@ def construct(bm,result,indices,obj,distance,join,bend,axes):
 _ACTIVE=set()
 
 
+_LAST_DISTANCE=0.
+
 class NYANW35_OT_reverse(Operator):
     bl_idname='nyanw35.create_reverse'
     bl_label='Create reverse side'
     bl_description='Create an independent editable copy behind the selected segments'
     bl_options={'REGISTER','UNDO'}
-    distance:FloatProperty(name='Offset',description='Distance behind the selected guides',default=.01,min=0.,soft_max=.1,subtype='DISTANCE')
+    distance:FloatProperty(name='Offset',description='Distance behind the selected guides',default=0.,min=0.,soft_max=.1,subtype='DISTANCE')
     bend:FloatProperty(name='Convexity',description='Shape the reverse side across the strand',default=.08,min=0.,max=3.,step=5,precision=3)
     join:BoolProperty(name='Connect edges',default=True,description='Join the side guides; at zero offset share them without walls. End caps stay open')
     @classmethod
@@ -244,12 +246,7 @@ class NYANW35_OT_reverse(Operator):
         if context.area:context.area.tag_redraw()
     def invoke(self,context,event):
         if not self._begin(context):return {'CANCELLED'}
-        widths=[]
-        for index in self._indices:
-            rows=self._source.surface_sections.get(index)
-            if rows:
-                row=rows[len(rows)//2];widths.append((self._obj.matrix_world@Vector(row[-1])-self._obj.matrix_world@Vector(row[0])).length)
-        if not self.properties.is_property_set('distance') and widths:self.distance=sorted(widths)[len(widths)//2]*.15
+        if not self.properties.is_property_set('distance'):self.distance=_LAST_DISTANCE
         self._preview(context)
         return context.window_manager.invoke_props_dialog(self,width=320,title=tr('Create reverse side'),translate=False)
     def check(self,context):
@@ -279,6 +276,8 @@ class NYANW35_OT_reverse(Operator):
         if getattr(self,'_backup',None) is None and not self._begin(context):return {'CANCELLED'}
         if not self._preview(context):
             self.report({'WARNING'},self._error);self._end(context,True);return {'CANCELLED'}
+        global _LAST_DISTANCE
+        _LAST_DISTANCE=float(self.distance)
         a._prepare_object(self._obj);self._refresh(context);self._end(context,False)
         return {'FINISHED'}
     def cancel(self,context):

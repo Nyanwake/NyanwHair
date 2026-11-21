@@ -94,7 +94,7 @@ def _mapped(records,mapping,maximum=False):
 
 def merge_stage(bm,mode,distance,cursor):
     a._prepare_bmesh(bm);bm.verts.index_update();bm.faces.index_update()
-    selected=[v for v in bm.verts if v.select]
+    selected=[v for v in bm.verts if v.select and not v.hide]
     if len(selected)<2:raise ValueError(tr('Select at least two points'))
     history=[v for v in bm.select_history if isinstance(v,bmesh.types.BMVert) and v.select]
     if mode=='DISTANCE':mapping=bmesh.ops.find_doubles(bm,verts=selected,dist=distance)['targetmap']
@@ -114,7 +114,9 @@ def merge_stage(bm,mode,distance,cursor):
     selected_after={mapping.get(v,v) for v in selected}
     order=bm.faces.layers.int[a.L_ORDER]
     saved={int(face[order]):tuple(frozenset(mapping.get(v,v) for v in slot) for slot in boundary_vertices(face,bm)) for face in bm.faces}
-    if any(slots[0] and slots[1] and slots[0].intersection(slots[1]) for slots in saved.values()):raise ValueError(tr('Cannot merge both boundaries of one segment into one point'))
+    collapsed={identity for identity,slots in saved.items() if slots[0] and slots[1] and slots[0].intersection(slots[1])}
+    for face in list(bm.faces):
+        if int(face[order]) in collapsed:bm.faces.remove(face)
     directions=_mapped(a._directional_smoothing(bm,True),mapping)
     density=_mapped(a._edge_density(bm,True),mapping,True)
     layout=_mapped(a._layout_lengths(bm,True),mapping,True)
@@ -125,9 +127,11 @@ def merge_stage(bm,mode,distance,cursor):
     if mode!='DISTANCE':next(iter(survivors)).co=position
     bmesh.ops.weld_verts(bm,targetmap=mapping)
     bm.verts.index_update();bm.faces.index_update()
-    for face in bm.faces:
+    for face in list(bm.faces):
         slots=saved.get(int(face[order]))
-        if slots is not None:assign_vertices(face,bm,slots)
+        if slots is not None:
+            try:assign_vertices(face,bm,slots)
+            except ValueError:bm.faces.remove(face)
     a._restore_directions(bm,directions);a._restore_density(bm,density);a._restore_layout(bm,layout)
     for target,(gain,radius) in values.items():target[point_gain]=gain;target[point_radius]=radius
     _select(bm,list(selected_after))
@@ -279,6 +283,7 @@ class NYANW35_OT_extrude(Operator):
     offset:FloatVectorProperty(name='Offset',subtype='TRANSLATION',default=(0.,0.,.25))
     curve_points:IntProperty(name='Intermediate points',default=0,min=0,max=64)
     curve_bend:FloatVectorProperty(name='Bend',subtype='TRANSLATION',default=(0.,0.,0.))
+    curve_peak:FloatProperty(name='Bend position',default=.5,min=.05,max=.95)
     @classmethod
     def poll(cls,context):return bool(a.is_guide(context.edit_object))
     def _stage(self,bm,result,offset):return extrude_stage(bm,result,offset)
@@ -289,10 +294,13 @@ class NYANW35_OT_extrude(Operator):
         a._rebuild(obj);backup=bmesh.from_edit_mesh(obj.data).copy();selection=a._selection_state(bmesh.from_edit_mesh(obj.data));committed=False
         def operation(bm):
             data=self._stage(bm,a._CACHE[obj.as_pointer()]['result'],obj.matrix_world.inverted_safe().to_3x3()@Vector(self.offset))
-            if data['mode']=='WIRE' and self.curve_points:
+            if (data['mode']=='WIRE' or data.get('tip_curve')) and self.curve_points:
                 from . import wirecurve
-                start=obj.matrix_world@Vector(data['anchor']);coords=wirecurve.positions(start,start+Vector(self.offset),self.curve_bend,self.curve_points)
-                wirecurve.rebuild(bm,data['wire_start'],data['indices'][0],(),[obj.matrix_world.inverted_safe()@point for point in coords])
+                start=obj.matrix_world@Vector(data['anchor']);coords=wirecurve.positions(start,start+Vector(self.offset),self.curve_bend,self.curve_points,self.curve_peak)
+                if data.get('tip_curve'):
+                    from . import tipcurve
+                    tipcurve.insert(bm,data,[obj.matrix_world.inverted_safe()@point for point in coords])
+                else:wirecurve.rebuild(bm,data['wire_start'],data['indices'][0],(),[obj.matrix_world.inverted_safe()@point for point in coords])
             from . import mirror
             mirror.snap_bmesh(bm,obj)
             if data['mode']!='WIRE':validate_stage(bm,obj)
@@ -310,7 +318,7 @@ class NYANW35_OT_extrude(Operator):
         if context.region_data is None or context.region is None:return {'CANCELLED'}
         obj=context.edit_object
         if not any(v.select and not v.hide for v in bmesh.from_edit_mesh(obj.data).verts):return {'CANCELLED'}
-        self.curve_points=0;self.curve_bend=(0.,0.,0.);self._curve_phase=False;self._curve_inside=();self._curve_handle=None;self._curve_preview=()
+        self.curve_points=0;self.curve_bend=(0.,0.,0.);self._curve_phase=False;self._curve_inside=();self._curve_handle=None;self._curve_preview=();self._curve_base=None;self.curve_peak=.5
         self._obj=obj;self._backup=bmesh.from_edit_mesh(obj.data).copy();self._selection=a._selection_state(bmesh.from_edit_mesh(obj.data))
         self._mouse=Vector((event.mouse_region_x,event.mouse_region_y));self._axis=None;self._number='';self._delta=Vector();self._precision=False;self._motion_offset=Vector();self._raw=Vector()
         a._rebuild(obj)
@@ -328,10 +336,10 @@ class NYANW35_OT_extrude(Operator):
         return {'RUNNING_MODAL'}
     def _status(self,context):
         if getattr(self,'_curve_phase',False):
-            context.area.header_text_set(tr('Bend · intermediate points: %d · mouse: bend · wheel: points · LMB / Enter · Esc')%self.curve_points);return
+            context.area.header_text_set(tr('Bend · intermediate points: %d · mouse: bend and position · wheel: points · LMB / Enter · Esc')%self.curve_points);return
         label={'EXTEND':tr('Extend'),'BRANCH':tr('Branch'),'CHAIN':tr('Edge chain'),'SOLID':tr('Closed strand'),'REGION':'E-Face','WIRE':tr('Guide wire'),'RIP':tr('Rip')}.get(self._data['mode'],tr('Extrude'))
         if self._data.get('count',1)>1:label+=' ×%d'%self._data['count']
-        extra=tr(' · wheel: bend') if self._data['mode']=='WIRE' else ''
+        extra=tr(' · wheel: bend') if self._data['mode']=='WIRE' or self._data.get('tip_curve') else ''
         context.area.header_text_set(label+tr(' · mouse / X Y Z / number')+extra+tr(' · LMB / Enter · Esc'))
     def _move(self,context,event):
         mouse=Vector((event.mouse_region_x,event.mouse_region_y));delta=view3d_utils.region_2d_to_location_3d(context.region,context.region_data,mouse,self._anchor)-self._start
@@ -357,6 +365,9 @@ class NYANW35_OT_extrude(Operator):
         bm=bmesh.from_edit_mesh(self._obj.data);bm.verts.ensure_lookup_table()
         for index,base in zip(self._data['indices'],self._data['bases']):bm.verts[index].co=Vector(base)+local
         for index,axis in self._data.get('clip_axes',()):bm.verts[index].co[axis]=0.
+        if self._data.get('branch_supports'):
+            from . import branching
+            branching.update(bm,self._data,local)
         if self._data.get('opening'):
             from . import extrusion
             extrusion.update_opening(bm,self._data['opening'],local)
@@ -370,30 +381,40 @@ class NYANW35_OT_extrude(Operator):
             mouse=Vector((event.mouse_region_x,event.mouse_region_y))
             raw=view3d_utils.region_2d_to_location_3d(context.region,context.region_data,mouse,self._curve_middle)-self._curve_mouse_start
             chord=self._curve_end-self._anchor
-            raw-=chord*(raw.dot(chord)/chord.length_squared)
             if event.shift!=self._curve_precision:
                 if event.shift:self._curve_precision_raw=raw.copy();self._curve_precision_base=self._curve_bend.copy()
                 else:self._curve_motion_offset=self._curve_bend-raw
                 self._curve_precision=event.shift
             self._curve_bend=self._curve_precision_base+(raw-self._curve_precision_raw)*.1 if self._curve_precision else raw+self._curve_motion_offset
-        points=wirecurve.positions(self._anchor,self._curve_end,self._curve_bend,self.curve_points)
+        chord=self._curve_end-self._anchor
+        longitudinal=self._curve_bend.dot(chord)/chord.length_squared
+        self.curve_peak=max(.05,min(.95,.5+longitudinal))
+        bend=self._curve_bend-chord*longitudinal
+        points=wirecurve.positions(self._anchor,self._curve_end,bend,self.curve_points,self.curve_peak)
         inverse=self._obj.matrix_world.inverted_safe();bm=bmesh.from_edit_mesh(self._obj.data);bm.verts.ensure_lookup_table()
         local=[inverse@point for point in points]
-        if rebuild:self._curve_inside=wirecurve.rebuild(bm,self._data['wire_start'],self._data['indices'][0],self._curve_inside,local)
+        if self._data.get('tip_curve'):
+            from . import tipcurve
+            if rebuild:
+                restore_backup(self._obj,self._curve_base,a._selection_state(self._curve_base))
+                bm=bmesh.from_edit_mesh(self._obj.data);self._tip_points=tipcurve.insert(bm,self._data,local)
+            else:tipcurve.move(bm,self._tip_points,local)
+        elif rebuild:self._curve_inside=wirecurve.rebuild(bm,self._data['wire_start'],self._data['indices'][0],self._curve_inside,local)
         else:
             for index,point in zip(self._curve_inside,local[1:-1]):bm.verts[index].co=point
             bm.verts[self._data['indices'][0]].co=local[-1]
-        self.curve_bend=tuple(self._curve_bend)
-        self._curve_preview=tuple(tuple(p) for p in wirecurve.positions(self._anchor,self._curve_end,self._curve_bend,47))
+        self.curve_bend=tuple(bend)
+        self._curve_preview=tuple(tuple(p) for p in wirecurve.positions(self._anchor,self._curve_end,bend,47,self.curve_peak))
         from . import mirror
         mirror.snap_bmesh(bm,self._obj)
-        bmesh.update_edit_mesh(self._obj.data,loop_triangles=False,destructive=rebuild)
+        bmesh.update_edit_mesh(self._obj.data,loop_triangles=bool(rebuild and self._data.get('tip_curve')),destructive=rebuild)
         a._rebuild(self._obj);self._status(context);context.area.tag_redraw()
 
     def _curve_wheel(self,context,event):
         from . import wirecurve
         if not self._curve_phase:
             if self._delta.length<1e-8:return
+            if self._data.get('tip_curve'):self._curve_base=bmesh.from_edit_mesh(self._obj.data).copy()
             self._curve_phase=True;self._curve_end=self._anchor+self._delta;self._curve_middle=(self._anchor+self._curve_end)*.5
             mouse=Vector((event.mouse_region_x,event.mouse_region_y))
             self._curve_mouse_start=view3d_utils.region_2d_to_location_3d(context.region,context.region_data,mouse,self._curve_middle)
@@ -431,6 +452,7 @@ class NYANW35_OT_extrude(Operator):
         except ReferenceError:pass
         finally:
             if self._backup is not None:self._backup.free();self._backup=None
+            if getattr(self,'_curve_base',None) is not None:self._curve_base.free();self._curve_base=None
             _ACTIVE.discard(self)
             if context.area:context.area.header_text_set(None);context.area.tag_redraw()
     def modal(self,context,event):
@@ -441,7 +463,7 @@ class NYANW35_OT_extrude(Operator):
         if getattr(self,'_backup',None) is None:return {'CANCELLED'}
         if event.ctrl and event.type=='Z' and event.value=='PRESS':self._end(context,True);return {'CANCELLED'}
         if event.type in ('ESC','RIGHTMOUSE') and event.value=='PRESS':self._end(context,True);return {'CANCELLED'}
-        if event.type in ('WHEELUPMOUSE','WHEELDOWNMOUSE') and event.value=='PRESS' and self._data['mode']=='WIRE':
+        if event.type in ('WHEELUPMOUSE','WHEELDOWNMOUSE') and event.value=='PRESS' and (self._data['mode']=='WIRE' or self._data.get('tip_curve')):
             self._curve_wheel(context,event);return {'RUNNING_MODAL'}
         if event.type in ('RET','NUMPAD_ENTER','LEFTMOUSE') and event.value=='PRESS':
             if self._delta.length<1e-8:self._end(context,True);return {'CANCELLED'}

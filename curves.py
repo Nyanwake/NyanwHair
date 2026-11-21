@@ -93,7 +93,7 @@ class CurveNetwork:
             else:
                 self._solve(parent);tangent=self.derivatives[parent][index]
             return mul(tangent,-1. if dot(tangent,chord)<0 else 1.)
-        return (0.,0.,0.)
+        return norm(chord)
 
     def _solve(self,ci):
         if ci in self.derivatives:return
